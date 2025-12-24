@@ -1,32 +1,12 @@
 """The main agent loop."""
 
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import AsyncIterator, Callable
 
 from ..llm.base import LLMBackend, Message, Role, ToolCall
 from ..tools.base import ToolRegistry, create_default_registry
-
-
-SYSTEM_PROMPT = """You are Loader, a helpful AI coding assistant running locally on the user's machine.
-
-You have access to tools to help you accomplish tasks:
-- read: Read file contents
-- write: Write content to files
-- edit: Edit files by replacing text
-- glob: Find files matching patterns
-- grep: Search for patterns in code
-- bash: Execute shell commands
-
-When the user asks you to do something:
-1. Think about what you need to do
-2. Use tools to gather information or make changes
-3. Explain what you did and the results
-
-Be concise but thorough. When editing code, make sure to read the file first to understand the context.
-
-Current working directory: {cwd}
-"""
+from .prompts import build_system_prompt
+from .parsing import parse_tool_calls, format_tool_result
 
 
 @dataclass
@@ -35,6 +15,7 @@ class AgentConfig:
     max_iterations: int = 20
     temperature: float = 0.7
     max_tokens: int = 4096
+    force_react: bool = False  # Force ReAct even if model supports native tools
 
 
 @dataclass
@@ -60,14 +41,38 @@ class Agent:
         self.config = config or AgentConfig()
         self.messages: list[Message] = []
         self._system_message: Message | None = None
+        self._use_react: bool | None = None
+
+    @property
+    def use_react(self) -> bool:
+        """Determine whether to use ReAct prompting or native tools."""
+        if self._use_react is not None:
+            return self._use_react
+
+        if self.config.force_react:
+            self._use_react = True
+            return True
+
+        # Check if backend supports native tools
+        if hasattr(self.backend, "supports_native_tools"):
+            self._use_react = not self.backend.supports_native_tools()
+        else:
+            # Default to ReAct for unknown backends
+            self._use_react = True
+
+        return self._use_react
 
     def _get_system_message(self) -> Message:
         """Get the system message with current context."""
         if self._system_message is None:
-            cwd = os.getcwd()
+            tool_schemas = self.registry.get_schemas()
+            content = build_system_prompt(
+                tools=tool_schemas,
+                use_react=self.use_react,
+            )
             self._system_message = Message(
                 role=Role.SYSTEM,
-                content=SYSTEM_PROMPT.format(cwd=cwd),
+                content=content,
             )
         return self._system_message
 
@@ -105,24 +110,50 @@ class Agent:
             # Get completion from LLM
             emit(AgentEvent(type="thinking"))
 
+            # Pass tools only for native tool calling
+            tools = None if self.use_react else self.registry.get_schemas()
+
             response = await self.backend.complete(
                 messages=self._build_messages(),
-                tools=self.registry.get_schemas(),
+                tools=tools,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             )
 
+            # Get tool calls - either native or parsed from text
+            tool_calls: list[ToolCall] = []
+            content = response.content
+
+            if self.use_react:
+                # Parse tool calls from text (ReAct mode)
+                parsed = parse_tool_calls(response.content)
+                tool_calls = parsed.tool_calls
+                content = parsed.content
+
+                # Check if this is a final answer
+                if parsed.is_final_answer and not tool_calls:
+                    final_response = content
+                    self.messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content=response.content,  # Keep original for history
+                    ))
+                    emit(AgentEvent(type="response", content=final_response))
+                    break
+            else:
+                # Use native tool calls
+                tool_calls = response.tool_calls
+
             # If there are tool calls, execute them
-            if response.tool_calls:
+            if tool_calls:
                 # Add assistant message with tool calls
                 self.messages.append(Message(
                     role=Role.ASSISTANT,
                     content=response.content,
-                    tool_calls=response.tool_calls,
+                    tool_calls=tool_calls,
                 ))
 
                 # Execute each tool
-                for tool_call in response.tool_calls:
+                for tool_call in tool_calls:
                     emit(AgentEvent(
                         type="tool_call",
                         tool_name=tool_call.name,
@@ -141,19 +172,24 @@ class Agent:
                     ))
 
                     # Add tool result message
+                    result_text = format_tool_result(
+                        tool_call.name,
+                        result.output,
+                        result.is_error,
+                    )
                     self.messages.append(Message(
                         role=Role.TOOL,
-                        content=f"[{tool_call.name}] {result.output}",
+                        content=result_text,
                     ))
 
                 # Continue the loop to get next response
                 continue
 
             # No tool calls - this is the final response
-            final_response = response.content
+            final_response = content
             self.messages.append(Message(
                 role=Role.ASSISTANT,
-                content=final_response,
+                content=response.content,
             ))
 
             emit(AgentEvent(type="response", content=final_response))
@@ -170,6 +206,7 @@ class Agent:
         self.messages.append(Message(role=Role.USER, content=user_message))
 
         iterations = 0
+        tools = None if self.use_react else self.registry.get_schemas()
 
         while iterations < self.config.max_iterations:
             iterations += 1
@@ -182,7 +219,7 @@ class Agent:
 
             async for chunk in self.backend.stream(
                 messages=self._build_messages(),
-                tools=self.registry.get_schemas(),
+                tools=tools,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             ):
@@ -192,6 +229,18 @@ class Agent:
 
                 if chunk.tool_calls:
                     tool_calls = chunk.tool_calls
+
+            # In ReAct mode, parse tool calls from text
+            if self.use_react:
+                parsed = parse_tool_calls(full_content)
+                tool_calls = parsed.tool_calls
+
+                if parsed.is_final_answer and not tool_calls:
+                    self.messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content=full_content,
+                    ))
+                    break
 
             # If there are tool calls, execute them
             if tool_calls:
@@ -219,9 +268,14 @@ class Agent:
                         tool_name=tool_call.name,
                     )
 
+                    result_text = format_tool_result(
+                        tool_call.name,
+                        result.output,
+                        result.is_error,
+                    )
                     self.messages.append(Message(
                         role=Role.TOOL,
-                        content=f"[{tool_call.name}] {result.output}",
+                        content=result_text,
                     ))
 
                 continue
