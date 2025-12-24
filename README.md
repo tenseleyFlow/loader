@@ -1,80 +1,45 @@
 # Loader
 
-A local-first, open-source agentic coding assistant. Think Claude Code, but running on your own hardware with open-weight LLMs.
+Local agentic coding assistant. Runs on your hardware with local LLMs.
 
-## Vision
+## Install
 
-Loader provides a scaffold for running agentic AI coding assistants with:
-- **Local LLM backends** - Ollama, llama.cpp, vLLM, or any OpenAI-compatible API
-- **Tool system** - File operations, shell commands, code search, and more
-- **Agent loop** - Think → Plan → Act → Observe → Repeat
-- **Streaming CLI** - Real-time responses in your terminal
-
-## Architecture
-
+```bash
+pip install -e .
 ```
-┌─────────────────────────────────────────────────────────┐
-│                         CLI                              │
-│  (Rich terminal UI, streaming, conversation history)    │
-└─────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────┐
-│                      Agent Loop                          │
-│  (Think → Select Tool → Execute → Observe → Repeat)     │
-└─────────────────────────────────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┐
-        ▼                   ▼                   ▼
-┌───────────────┐   ┌───────────────┐   ┌───────────────┐
-│    Tools      │   │  LLM Backend  │   │    Context    │
-│  - Read       │   │  - Ollama     │   │  - Messages   │
-│  - Write      │   │  - llama.cpp  │   │  - Files      │
-│  - Bash       │   │  - vLLM       │   │  - Codebase   │
-│  - Grep       │   │  - OpenAI API │   │  - Memory     │
-│  - Glob       │   └───────────────┘   └───────────────┘
-└───────────────┘
-```
-
-## Features (Planned)
-
-- [ ] Core agent loop with tool use
-- [ ] File operations (read, write, edit)
-- [ ] Shell command execution
-- [ ] Code search (grep, glob, ripgrep)
-- [ ] Ollama backend integration
-- [ ] Streaming responses
-- [ ] Conversation history
-- [ ] Context window management
-- [ ] Multi-file awareness
-- [ ] Git integration
 
 ## Requirements
 
 - Python 3.11+
-- Ollama (or other LLM backend)
-- A capable GPU (recommended: 8GB+ VRAM for 7B models)
+- Ollama running (`ollama serve`)
+- A model pulled (`ollama pull llama3.1:8b`)
 
-## Quick Start
+## Usage
 
 ```bash
-# Install
-pip install -e .
+# Interactive mode
+loader
 
-# Run with Ollama backend
-loader --backend ollama --model llama3.1:8b
+# Single prompt
+loader "Read main.py and explain it"
 
-# Or with a specific task
-loader "Help me refactor this function"
+# Skip confirmation prompts
+loader -y "Create a hello.py file"
+
+# Use different model
+loader -m qwen2.5:7b
 ```
 
-## Supported Models
+**In interactive mode:** type prompts, `clear` to reset, `exit` to quit.
 
-Any model that can do tool/function calling:
-- Llama 3.1 (8B, 70B) - Excellent tool use
-- Qwen 2.5 (7B, 14B, 32B) - Great coding ability
-- Mistral/Mixtral - Good general purpose
-- DeepSeek Coder - Specialized for code
-- CodeLlama - Code-focused
+## Tools
+
+- `read` - read files
+- `write` - write files
+- `edit` - find/replace in files
+- `glob` - find files by pattern
+- `grep` - search file contents
+- `bash` - run shell commands
 
 ## License
 
