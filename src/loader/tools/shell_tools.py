@@ -4,11 +4,20 @@ import asyncio
 import shlex
 from typing import Any
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, ConfirmationRequired
 
 
 class BashTool(Tool):
     """Execute bash commands."""
+
+    # Commands that are generally safe (read-only operations)
+    SAFE_COMMANDS = {
+        "ls", "cat", "head", "tail", "grep", "find", "pwd", "whoami", "date",
+        "wc", "sort", "uniq", "diff", "file", "stat", "du", "df",
+        "git status", "git log", "git diff", "git branch", "git show",
+        "python --version", "node --version", "npm --version",
+        "uv --version", "pip list", "pip show",
+    }
 
     def __init__(self, timeout: float = 120.0, allowed_commands: list[str] | None = None):
         self.timeout = timeout
@@ -39,6 +48,32 @@ class BashTool(Tool):
             },
             "required": ["command"],
         }
+
+    @property
+    def is_destructive(self) -> bool:
+        return True
+
+    def _is_safe_command(self, command: str) -> bool:
+        """Check if command is a known safe (read-only) command."""
+        cmd = command.strip().lower()
+        # Check exact matches and prefix matches
+        for safe in self.SAFE_COMMANDS:
+            if cmd == safe or cmd.startswith(safe + " "):
+                return True
+        return False
+
+    def check_confirmation(self, skip_confirmation: bool = False, **kwargs: Any) -> None:
+        if skip_confirmation:
+            return
+        command = kwargs.get("command", "")
+        # Safe commands don't need confirmation
+        if self._is_safe_command(command):
+            return
+        raise ConfirmationRequired(
+            tool_name=self.name,
+            message=f"Run command: {command[:50]}{'...' if len(command) > 50 else ''}",
+            details=command,
+        )
 
     def _is_command_allowed(self, command: str) -> bool:
         """Check if command is in the allowed list."""

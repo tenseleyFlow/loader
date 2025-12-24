@@ -1,11 +1,10 @@
 """File operation tools."""
 
 import asyncio
-import fnmatch
 from pathlib import Path
 from typing import Any
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, ConfirmationRequired
 
 
 class ReadTool(Tool):
@@ -109,6 +108,21 @@ class WriteTool(Tool):
             "required": ["file_path", "content"],
         }
 
+    @property
+    def is_destructive(self) -> bool:
+        return True
+
+    def check_confirmation(self, skip_confirmation: bool = False, **kwargs: Any) -> None:
+        if skip_confirmation:
+            return
+        file_path = kwargs.get("file_path", "")
+        content = kwargs.get("content", "")
+        raise ConfirmationRequired(
+            tool_name=self.name,
+            message=f"Write to file: {file_path}",
+            details=f"{len(content)} bytes",
+        )
+
     async def execute(
         self,
         file_path: str,
@@ -159,6 +173,20 @@ class EditTool(Tool):
             },
             "required": ["file_path", "old_string", "new_string"],
         }
+
+    @property
+    def is_destructive(self) -> bool:
+        return True
+
+    def check_confirmation(self, skip_confirmation: bool = False, **kwargs: Any) -> None:
+        if skip_confirmation:
+            return
+        file_path = kwargs.get("file_path", "")
+        raise ConfirmationRequired(
+            tool_name=self.name,
+            message=f"Edit file: {file_path}",
+            details="replace text",
+        )
 
     async def execute(
         self,

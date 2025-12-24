@@ -5,6 +5,16 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class ConfirmationRequired(Exception):
+    """Raised when a tool requires user confirmation before execution."""
+
+    def __init__(self, tool_name: str, message: str, details: str = ""):
+        self.tool_name = tool_name
+        self.message = message
+        self.details = details
+        super().__init__(message)
+
+
 @dataclass
 class ToolResult:
     """Result of a tool execution."""
@@ -33,6 +43,26 @@ class Tool(ABC):
         """JSON Schema for tool parameters."""
         ...
 
+    @property
+    def is_destructive(self) -> bool:
+        """Whether this tool can modify files or run commands.
+
+        Override in subclasses for tools that modify state.
+        """
+        return False
+
+    def check_confirmation(self, skip_confirmation: bool = False, **kwargs: Any) -> None:
+        """Check if this operation requires confirmation.
+
+        Args:
+            skip_confirmation: If True, skip the confirmation check
+            **kwargs: Tool arguments for context in confirmation message
+
+        Raises:
+            ConfirmationRequired: If user confirmation is needed
+        """
+        pass  # Default: no confirmation needed
+
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the tool with given parameters."""
@@ -50,8 +80,9 @@ class Tool(ABC):
 class ToolRegistry:
     """Registry of available tools."""
 
-    def __init__(self) -> None:
+    def __init__(self, skip_confirmation: bool = False) -> None:
         self._tools: dict[str, Tool] = {}
+        self.skip_confirmation = skip_confirmation
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
@@ -70,7 +101,18 @@ class ToolRegistry:
         return [tool.to_schema() for tool in self._tools.values()]
 
     async def execute(self, name: str, **kwargs: Any) -> ToolResult:
-        """Execute a tool by name."""
+        """Execute a tool by name.
+
+        Args:
+            name: Tool name to execute
+            **kwargs: Arguments to pass to the tool
+
+        Returns:
+            ToolResult with output
+
+        Raises:
+            ConfirmationRequired: If tool needs confirmation and skip_confirmation is False
+        """
         tool = self.get(name)
         if tool is None:
             return ToolResult(
@@ -78,7 +120,14 @@ class ToolRegistry:
                 is_error=True,
             )
         try:
+            # Check for confirmation (may raise ConfirmationRequired)
+            tool.check_confirmation(
+                skip_confirmation=self.skip_confirmation,
+                **kwargs,
+            )
             return await tool.execute(**kwargs)
+        except ConfirmationRequired:
+            raise  # Re-raise confirmation requests
         except Exception as e:
             return ToolResult(
                 output=f"Tool execution error: {e}",
