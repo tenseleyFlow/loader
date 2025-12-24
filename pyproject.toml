@@ -30,6 +30,7 @@ dependencies = [
     "click>=8.0",          # CLI framework
     "pydantic>=2.0",       # Data validation
     "prompt-toolkit>=3.0", # Interactive input
+    "textual>=0.47.0",     # Full TUI framework
 ]
 
 [project.optional-dependencies]

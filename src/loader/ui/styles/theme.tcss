@@ -1,0 +1,186 @@
+/* Loader TUI Theme */
+
+Screen {
+    background: $surface;
+}
+
+/* Main layout */
+#main-container {
+    layout: grid;
+    grid-size: 1;
+    grid-rows: 1fr 3 1;
+}
+
+#message-area {
+    scrollbar-gutter: stable;
+    scrollbar-size: 1;
+    padding: 1 2;
+    background: $surface;
+}
+
+/* Input area */
+#input-area {
+    height: 3;
+    border-top: solid $primary-darken-2;
+    background: $surface-lighten-1;
+    layout: horizontal;
+}
+
+#input-area .prompt {
+    width: 3;
+    content-align: center middle;
+    color: $primary;
+}
+
+#input-area Input {
+    border: none;
+    background: transparent;
+    width: 1fr;
+}
+
+#input-area Input:focus {
+    border: none;
+}
+
+/* Status line */
+StatusLine {
+    height: 1;
+    background: $surface-darken-1;
+    padding: 0 2;
+    content-align: left middle;
+    color: $text-muted;
+}
+
+/* Tool widgets */
+ToolCallWidget {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    border-left: thick $accent;
+}
+
+ToolCallWidget.pending {
+    border-left: thick $warning;
+}
+
+ToolCallWidget.error {
+    border-left: thick $error;
+}
+
+ToolCallWidget.success {
+    border-left: thick $success;
+}
+
+.tool-header {
+    color: $primary;
+}
+
+.tool-args {
+    color: $text-muted;
+}
+
+.tool-preview {
+    color: $text;
+    padding-left: 2;
+    max-height: 6;
+}
+
+.tool-summary {
+    color: $text-muted;
+    padding-left: 2;
+}
+
+/* Diff widget */
+DiffWidget {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    border-left: thick $accent;
+}
+
+.diff-header {
+    color: $primary;
+}
+
+.diff-stats {
+    color: $text-muted;
+    padding-left: 2;
+}
+
+.diff-content {
+    padding-left: 2;
+}
+
+.diff-added {
+    background: #1a3d1a;
+    color: #4ade80;
+}
+
+.diff-removed {
+    background: #3d1a1a;
+    color: #f87171;
+}
+
+.diff-context {
+    color: $text-muted;
+}
+
+.diff-hunk {
+    color: $secondary;
+}
+
+/* Streaming text */
+StreamingText {
+    padding: 0 1;
+    margin: 0 0 1 0;
+}
+
+StreamingText.streaming {
+    border-left: thick $warning;
+}
+
+/* User message */
+.user-message {
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+.user-label {
+    color: $secondary;
+    text-style: bold;
+}
+
+/* Assistant response */
+.assistant-response {
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+/* Collapsible */
+Collapsible {
+    padding-left: 2;
+    border: none;
+}
+
+CollapsibleTitle {
+    color: $text-muted;
+}
+
+/* Plan widget */
+.plan-container {
+    margin: 0 0 1 0;
+    padding: 1;
+    border: round $primary;
+}
+
+.plan-header {
+    color: $primary;
+    text-style: bold;
+}
+
+.plan-content {
+    padding: 1 0;
+}
+
+.step-progress {
+    color: $warning;
+    text-style: bold;
+}
