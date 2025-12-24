@@ -18,16 +18,27 @@ from .base import (
 class OllamaBackend(LLMBackend):
     """Ollama API backend for local LLM inference."""
 
+    # Models known to support native function calling
+    NATIVE_TOOL_MODELS = {
+        "llama3.1", "llama3.2", "llama3.3",
+        "qwen2.5", "qwen2",
+        "mistral", "mixtral",
+        "command-r",
+    }
+
     def __init__(
         self,
         model: str = "llama3.1:8b",
         base_url: str = "http://localhost:11434",
         timeout: float = 120.0,
+        force_react: bool = False,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.force_react = force_react
         self._client = httpx.AsyncClient(timeout=timeout)
+        self._supports_native_tools: bool | None = None
 
     async def health_check(self) -> bool:
         """Check if Ollama is running and model is available."""
@@ -41,6 +52,28 @@ class OllamaBackend(LLMBackend):
             return any(self.model in m or m in self.model for m in models)
         except Exception:
             return False
+
+    def supports_native_tools(self) -> bool:
+        """Check if current model supports native function calling.
+
+        Returns:
+            True if model likely supports native tool use, False otherwise
+        """
+        if self.force_react:
+            return False
+
+        if self._supports_native_tools is not None:
+            return self._supports_native_tools
+
+        # Check if model name contains any known native tool model
+        model_lower = self.model.lower()
+        for native_model in self.NATIVE_TOOL_MODELS:
+            if native_model in model_lower:
+                self._supports_native_tools = True
+                return True
+
+        self._supports_native_tools = False
+        return False
 
     def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Format messages for Ollama API."""
@@ -81,12 +114,10 @@ class OllamaBackend(LLMBackend):
         tool_calls = []
         content = response_text
 
-        # Try to find JSON tool calls (common format)
-        # Look for patterns like: {"name": "tool_name", "arguments": {...}}
         import re
 
-        # Pattern for tool call JSON blocks
-        json_pattern = r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"arguments"\s*:\s*(\{[^{}]*\})[^{}]*\}'
+        # Pattern for tool call JSON blocks - handle both "arguments" and "parameters"
+        json_pattern = r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"(?:arguments|parameters)"\s*:\s*(\{[^{}]*\})[^{}]*\}'
         matches = re.findall(json_pattern, response_text, re.DOTALL)
 
         for i, (name, args_str) in enumerate(matches):
@@ -97,10 +128,18 @@ class OllamaBackend(LLMBackend):
                     name=name,
                     arguments=args,
                 ))
-                # Remove the tool call from content
-                content = re.sub(json_pattern, "", content, count=1)
             except json.JSONDecodeError:
                 pass
+
+        # Remove tool call JSON from content
+        if tool_calls:
+            content = re.sub(json_pattern, "", content)
+
+        # Also remove any <tool_call> tags
+        content = re.sub(r"</?tool_call>", "", content)
+
+        # Clean up whitespace
+        content = re.sub(r"\n{3,}", "\n\n", content)
 
         return content.strip(), tool_calls
 
