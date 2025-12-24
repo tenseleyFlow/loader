@@ -56,6 +56,7 @@ class Message:
 class StreamChunk:
     """A chunk of streaming response."""
     content: str = ""
+    full_content: str = ""  # Accumulated full content (only set when is_done=True)
     tool_calls: list[ToolCall] = field(default_factory=list)
     is_done: bool = False
 

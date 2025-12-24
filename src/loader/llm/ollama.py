@@ -30,15 +30,34 @@ class OllamaBackend(LLMBackend):
         self,
         model: str = "llama3.1:8b",
         base_url: str = "http://localhost:11434",
-        timeout: float = 120.0,
+        timeout: float | None = None,
         force_react: bool = False,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
+        # Auto-adjust timeout based on model size
+        if timeout is None:
+            timeout = self._estimate_timeout(model)
         self.timeout = timeout
         self.force_react = force_react
         self._client = httpx.AsyncClient(timeout=timeout)
         self._supports_native_tools: bool | None = None
+
+    def _estimate_timeout(self, model: str) -> float:
+        """Estimate appropriate timeout based on model size."""
+        model_lower = model.lower()
+        # Extract size from model name (e.g., "32b", "70b", "7b")
+        import re
+        size_match = re.search(r'(\d+)b', model_lower)
+        if size_match:
+            size = int(size_match.group(1))
+            if size >= 70:
+                return 600.0  # 10 minutes for 70B+
+            elif size >= 30:
+                return 300.0  # 5 minutes for 30B+
+            elif size >= 13:
+                return 180.0  # 3 minutes for 13B+
+        return 120.0  # 2 minutes default
 
     async def health_check(self) -> bool:
         """Check if Ollama is running and model is available."""
@@ -52,6 +71,29 @@ class OllamaBackend(LLMBackend):
             return any(self.model in m or m in self.model for m in models)
         except Exception:
             return False
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """List all available models from Ollama.
+
+        Returns:
+            List of model info dicts with 'name', 'size', 'modified' keys.
+        """
+        try:
+            response = await self._client.get(f"{self.base_url}/api/tags")
+            if response.status_code != 200:
+                return []
+            data = response.json()
+            models = []
+            for m in data.get("models", []):
+                models.append({
+                    "name": m.get("name", ""),
+                    "size": m.get("size", 0),
+                    "modified": m.get("modified_at", ""),
+                    "family": m.get("details", {}).get("family", ""),
+                })
+            return models
+        except Exception:
+            return []
 
     def supports_native_tools(self) -> bool:
         """Check if current model supports native function calling.
@@ -242,10 +284,23 @@ class OllamaBackend(LLMBackend):
                 is_done = data.get("done", False)
 
                 if is_done:
-                    # Parse any tool calls from the full response
-                    _, tool_calls = self._parse_tool_calls(full_content)
+                    tool_calls = []
+                    # Check for native tool calls first
+                    if "tool_calls" in message:
+                        for i, tc in enumerate(message["tool_calls"]):
+                            func = tc.get("function", {})
+                            tool_calls.append(ToolCall(
+                                id=tc.get("id", f"call_{i}"),
+                                name=func.get("name", ""),
+                                arguments=func.get("arguments", {}),
+                            ))
+                    else:
+                        # Try to parse tool calls from text
+                        _, tool_calls = self._parse_tool_calls(full_content)
+
                     yield StreamChunk(
                         content=chunk_content,
+                        full_content=full_content,
                         tool_calls=tool_calls,
                         is_done=True,
                     )
