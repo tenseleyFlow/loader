@@ -180,7 +180,7 @@ class EventAdapter:
 
     def __init__(self, app: "LoaderApp") -> None:  # noqa: F821
         self.app = app
-        self._current_tool_args: dict | None = None
+        self._tool_args_queue: list[tuple[str, dict]] = []  # Queue of (tool_name, args)
 
     def handle_event(self, event: AgentEvent) -> None:
         """Convert AgentEvent to appropriate Textual message and post it."""
@@ -200,8 +200,8 @@ class EventAdapter:
                 self.app.post_message(StepStarted(step_info=event.step_info or ""))
 
             case "tool_call":
-                # Store args for potential diff display
-                self._current_tool_args = event.tool_args
+                # Queue args for matching with result (FIFO)
+                self._tool_args_queue.append((event.tool_name or "", event.tool_args or {}))
                 self.app.post_message(
                     ToolCallStarted(
                         tool_name=event.tool_name or "",
@@ -210,19 +210,29 @@ class EventAdapter:
                 )
 
             case "tool_result":
-                # Check if this was an edit tool for diff display
+                # Get matching args from queue (FIFO)
+                tool_name = event.tool_name or ""
+                tool_args = {}
+                if self._tool_args_queue:
+                    _, tool_args = self._tool_args_queue.pop(0)
+
+                # Extract diff info for edit/write tools
                 old_string = None
                 new_string = None
                 file_path = None
 
-                if event.tool_name == "edit" and self._current_tool_args:
-                    old_string = self._current_tool_args.get("old_string")
-                    new_string = self._current_tool_args.get("new_string")
-                    file_path = self._current_tool_args.get("file_path")
+                if tool_name == "edit" and tool_args:
+                    old_string = tool_args.get("old_string")
+                    new_string = tool_args.get("new_string")
+                    file_path = tool_args.get("file_path")
+                elif tool_name == "write" and tool_args:
+                    # For writes, content is the new file content
+                    new_string = tool_args.get("content")
+                    file_path = tool_args.get("file_path")
 
                 self.app.post_message(
                     ToolCallCompleted(
-                        tool_name=event.tool_name or "",
+                        tool_name=tool_name,
                         content=event.content,
                         is_error=event.is_error,
                         old_string=old_string,
@@ -230,7 +240,6 @@ class EventAdapter:
                         file_path=file_path,
                     )
                 )
-                self._current_tool_args = None
 
             case "recovery":
                 self.app.post_message(

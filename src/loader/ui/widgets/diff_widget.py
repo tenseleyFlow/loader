@@ -1,4 +1,4 @@
-"""Diff widget for file edit operations."""
+"""Diff widget for file edit and write operations."""
 
 import difflib
 from pathlib import Path
@@ -24,32 +24,43 @@ class DiffWidget(Vertical):
         self.old_string = old_string
         self.new_string = new_string
         self.context_lines = context_lines
+        self.is_new_file = not old_string  # True if creating new file
 
     def compose(self) -> ComposeResult:
         # Calculate stats
-        old_lines = self.old_string.splitlines()
+        old_lines = self.old_string.splitlines() if self.old_string else []
         new_lines = self.new_string.splitlines()
-        added = sum(1 for line in new_lines if line not in old_lines)
-        removed = sum(1 for line in old_lines if line not in new_lines)
 
-        # Header
+        # Header - different for new files vs edits
         filename = Path(self.file_path).name
-        yield Static(
-            f"[green]●[/green] [bold cyan]Update[/bold cyan]({filename})",
-            classes="diff-header",
-        )
-
-        # Stats
-        stats_parts = []
-        if added > 0:
-            stats_parts.append(f"[green]+{added}[/green]")
-        if removed > 0:
-            stats_parts.append(f"[red]-{removed}[/red]")
-        if stats_parts:
+        if self.is_new_file:
             yield Static(
-                f"└ {', '.join(stats_parts)} lines",
+                f"[green]●[/green] [bold green]Create[/bold green]({filename})",
+                classes="diff-header",
+            )
+            # Stats for new file
+            yield Static(
+                f"└ [green]+{len(new_lines)}[/green] lines",
                 classes="diff-stats",
             )
+        else:
+            added = sum(1 for line in new_lines if line not in old_lines)
+            removed = sum(1 for line in old_lines if line not in new_lines)
+            yield Static(
+                f"[green]●[/green] [bold cyan]Update[/bold cyan]({filename})",
+                classes="diff-header",
+            )
+            # Stats
+            stats_parts = []
+            if added > 0:
+                stats_parts.append(f"[green]+{added}[/green]")
+            if removed > 0:
+                stats_parts.append(f"[red]-{removed}[/red]")
+            if stats_parts:
+                yield Static(
+                    f"└ {', '.join(stats_parts)} lines",
+                    classes="diff-stats",
+                )
 
         # Diff content
         yield Static(

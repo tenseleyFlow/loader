@@ -65,7 +65,7 @@ class LoaderApp(App):
         self.adapter = EventAdapter(self)
         self._start_time: float = 0.0
         self._current_streaming: StreamingText | None = None
-        self._current_tool_widget: ToolCallWidget | None = None
+        self._tool_widget_queue: list[ToolCallWidget] = []  # Queue of pending tool widgets
         self._timer_handle = None
 
     def compose(self) -> ComposeResult:
@@ -252,18 +252,21 @@ class LoaderApp(App):
         )
         msg_area.mount(widget)
         widget.set_running()  # Must be after mount() so children exist
-        self._current_tool_widget = widget
+        self._tool_widget_queue.append(widget)  # Add to queue
         msg_area.scroll_end(animate=False)
 
     def on_tool_call_completed(self, message: ToolCallCompleted) -> None:
         """Handle tool call completion."""
         msg_area = self.query_one("#message-area", ScrollableContainer)
 
+        # Get the corresponding tool widget from queue (FIFO)
+        tool_widget = self._tool_widget_queue.pop(0) if self._tool_widget_queue else None
+
         # Check if this is an edit tool with diff info
         if message.tool_name == "edit" and message.old_string and message.new_string:
             # Replace tool widget with diff widget
-            if self._current_tool_widget:
-                self._current_tool_widget.remove()
+            if tool_widget:
+                tool_widget.remove()
 
             diff_widget = DiffWidget(
                 file_path=message.file_path or "",
@@ -271,13 +274,23 @@ class LoaderApp(App):
                 new_string=message.new_string,
             )
             msg_area.mount(diff_widget)
-        elif self._current_tool_widget:
+        # Check if this is a write tool - show as diff (new file)
+        elif message.tool_name == "write" and message.new_string:
+            if tool_widget:
+                tool_widget.remove()
+
+            diff_widget = DiffWidget(
+                file_path=message.file_path or "",
+                old_string="",  # Empty = new file
+                new_string=message.new_string,
+            )
+            msg_area.mount(diff_widget)
+        elif tool_widget:
             # Update existing tool widget with result
-            self._current_tool_widget.set_result(
+            tool_widget.set_result(
                 message.content, is_error=message.is_error
             )
 
-        self._current_tool_widget = None
         msg_area.scroll_end(animate=False)
 
     def on_plan_created(self, message: PlanCreated) -> None:

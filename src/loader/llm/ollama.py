@@ -364,7 +364,13 @@ class OllamaBackend(LLMBackend):
 
     async def _stream_response(self, response) -> AsyncIterator[StreamChunk]:
         """Internal helper to stream response chunks."""
+        import re
+
         full_content = ""
+        display_content = ""  # Content to show (filtered)
+        json_buffer = ""  # Buffer for potential tool call JSON
+        in_json_block = False
+
         async for line in response.aiter_lines():
             if not line:
                 continue
@@ -393,16 +399,48 @@ class OllamaBackend(LLMBackend):
                         ))
                 else:
                     # Try to parse tool calls from text
-                    _, tool_calls = self._parse_tool_calls(full_content)
+                    clean_content, tool_calls = self._parse_tool_calls(full_content)
+                    display_content = clean_content
 
                 yield StreamChunk(
-                    content=chunk_content,
-                    full_content=full_content,
+                    content="",  # Don't emit final chunk content (already streamed)
+                    full_content=display_content or full_content,
                     tool_calls=tool_calls,
                     is_done=True,
                 )
             else:
-                yield StreamChunk(content=chunk_content)
+                # Filter out tool call JSON from display
+                # Detect start of JSON tool call
+                if not in_json_block and '{"name"' in chunk_content:
+                    in_json_block = True
+                    # Split at the JSON start
+                    parts = chunk_content.split('{"name"', 1)
+                    if parts[0]:
+                        display_content += parts[0]
+                        yield StreamChunk(content=parts[0])
+                    json_buffer = '{"name"' + parts[1] if len(parts) > 1 else '{"name"'
+                elif in_json_block:
+                    json_buffer += chunk_content
+                    # Check if JSON block closed (simple heuristic)
+                    open_braces = json_buffer.count('{')
+                    close_braces = json_buffer.count('}')
+                    if close_braces >= open_braces and open_braces > 0:
+                        # JSON block complete, don't display it
+                        in_json_block = False
+                        # Check for content after the JSON
+                        try:
+                            # Find where JSON ends
+                            last_brace = json_buffer.rfind('}')
+                            after_json = json_buffer[last_brace + 1:]
+                            if after_json.strip():
+                                display_content += after_json
+                                yield StreamChunk(content=after_json)
+                        except Exception:
+                            pass
+                        json_buffer = ""
+                else:
+                    display_content += chunk_content
+                    yield StreamChunk(content=chunk_content)
 
     async def close(self) -> None:
         """Close the HTTP client."""
