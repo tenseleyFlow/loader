@@ -18,12 +18,38 @@ from .base import (
 class OllamaBackend(LLMBackend):
     """Ollama API backend for local LLM inference."""
 
-    # Models known to support native function calling
+    # Models known to support native function calling in Ollama
+    # Verified working with Ollama's tool calling API
     NATIVE_TOOL_MODELS = {
         "llama3.1", "llama3.2", "llama3.3",
         "qwen2.5", "qwen2",
         "mistral", "mixtral",
         "command-r",
+        "granite",
+        # Note: deepseek-coder, codestral, starcoder do NOT support tools in Ollama
+    }
+
+    # Models that definitely do NOT support native tools (use ReAct)
+    NO_TOOL_MODELS = {
+        "llama2", "llama:latest",  # Base llama without version
+        "phi", "phi3",
+        "gemma", "gemma2",
+        "tinyllama",
+        "orca",
+        "vicuna",
+        "wizard",
+        "neural-chat",
+        "starling",
+        "openchat",
+        "yi",
+        "solar",
+        "dolphin",
+        # Coding models that don't support Ollama tools
+        "codestral",
+        "deepseek-coder",
+        "starcoder",
+        "codegemma",
+        "deepseek-r1",  # Reasoning model, no tools
     }
 
     def __init__(
@@ -32,6 +58,8 @@ class OllamaBackend(LLMBackend):
         base_url: str = "http://localhost:11434",
         timeout: float | None = None,
         force_react: bool = False,
+        num_ctx: int = 8192,  # Reasonable context, not too slow
+        num_gpu: int = -1,  # Use all GPU layers by default (fast)
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -40,8 +68,19 @@ class OllamaBackend(LLMBackend):
             timeout = self._estimate_timeout(model)
         self.timeout = timeout
         self.force_react = force_react
+        self.num_ctx = num_ctx
+        self.num_gpu = num_gpu
         self._client = httpx.AsyncClient(timeout=timeout)
         self._supports_native_tools: bool | None = None
+
+    def _build_options(self, temperature: float, max_tokens: int) -> dict:
+        """Build Ollama options dict with performance settings."""
+        return {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+            "num_ctx": self.num_ctx,
+            "num_gpu": self.num_gpu,
+        }
 
     def _estimate_timeout(self, model: str) -> float:
         """Estimate appropriate timeout based on model size."""
@@ -52,11 +91,13 @@ class OllamaBackend(LLMBackend):
         if size_match:
             size = int(size_match.group(1))
             if size >= 70:
-                return 600.0  # 10 minutes for 70B+
+                return 900.0  # 15 minutes for 70B+
             elif size >= 30:
-                return 300.0  # 5 minutes for 30B+
+                return 600.0  # 10 minutes for 30B+
             elif size >= 13:
-                return 180.0  # 3 minutes for 13B+
+                return 300.0  # 5 minutes for 13B+
+            elif size >= 7:
+                return 180.0  # 3 minutes for 7B+
         return 120.0  # 2 minutes default
 
     async def health_check(self) -> bool:
@@ -107,13 +148,21 @@ class OllamaBackend(LLMBackend):
         if self._supports_native_tools is not None:
             return self._supports_native_tools
 
-        # Check if model name contains any known native tool model
         model_lower = self.model.lower()
+
+        # First check if it's explicitly a NO_TOOL model
+        for no_tool_model in self.NO_TOOL_MODELS:
+            if no_tool_model in model_lower:
+                self._supports_native_tools = False
+                return False
+
+        # Check if model name contains any known native tool model
         for native_model in self.NATIVE_TOOL_MODELS:
             if native_model in model_lower:
                 self._supports_native_tools = True
                 return True
 
+        # Default to False for unknown models (safer - uses ReAct)
         self._supports_native_tools = False
         return False
 
@@ -197,19 +246,35 @@ class OllamaBackend(LLMBackend):
             "model": self.model,
             "messages": self._format_messages(messages),
             "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-            },
+            "options": self._build_options(temperature, max_tokens),
         }
 
-        if tools:
+        # Only include tools if model supports them
+        use_tools = tools and self.supports_native_tools()
+        if use_tools:
             payload["tools"] = self._format_tools(tools)
 
         response = await self._client.post(
             f"{self.base_url}/api/chat",
             json=payload,
         )
+
+        # Handle errors - gracefully fall back if tools not supported
+        if response.status_code == 400:
+            error_data = response.json() if response.content else {}
+            error_msg = error_data.get("error", "Bad request")
+
+            # If tools not supported, retry without them
+            if "does not support tools" in error_msg and use_tools:
+                self._supports_native_tools = False  # Remember for future calls
+                payload.pop("tools", None)
+                response = await self._client.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                )
+            else:
+                raise ValueError(f"Ollama API error (400): {error_msg}")
+
         response.raise_for_status()
         data = response.json()
 
@@ -251,13 +316,12 @@ class OllamaBackend(LLMBackend):
             "model": self.model,
             "messages": self._format_messages(messages),
             "stream": True,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-            },
+            "options": self._build_options(temperature, max_tokens),
         }
 
-        if tools:
+        # Only include tools if model supports them
+        use_tools = tools and self.supports_native_tools()
+        if use_tools:
             payload["tools"] = self._format_tools(tools)
 
         async with self._client.stream(
@@ -265,47 +329,80 @@ class OllamaBackend(LLMBackend):
             f"{self.base_url}/api/chat",
             json=payload,
         ) as response:
-            response.raise_for_status()
-
-            full_content = ""
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-
+            # Check for 400 errors before streaming
+            if response.status_code == 400:
+                content = await response.aread()
                 try:
-                    data = json.loads(line)
+                    error_data = json.loads(content)
+                    error_msg = error_data.get("error", "Bad request")
                 except json.JSONDecodeError:
-                    continue
+                    error_msg = content.decode() if content else "Bad request"
 
-                message = data.get("message", {})
-                chunk_content = message.get("content", "")
-                full_content += chunk_content
-
-                is_done = data.get("done", False)
-
-                if is_done:
-                    tool_calls = []
-                    # Check for native tool calls first
-                    if "tool_calls" in message:
-                        for i, tc in enumerate(message["tool_calls"]):
-                            func = tc.get("function", {})
-                            tool_calls.append(ToolCall(
-                                id=tc.get("id", f"call_{i}"),
-                                name=func.get("name", ""),
-                                arguments=func.get("arguments", {}),
-                            ))
-                    else:
-                        # Try to parse tool calls from text
-                        _, tool_calls = self._parse_tool_calls(full_content)
-
-                    yield StreamChunk(
-                        content=chunk_content,
-                        full_content=full_content,
-                        tool_calls=tool_calls,
-                        is_done=True,
-                    )
+                # If tools not supported, we need to retry without them
+                if "does not support tools" in error_msg and use_tools:
+                    self._supports_native_tools = False  # Remember for future
+                    # Fall through to retry below
                 else:
-                    yield StreamChunk(content=chunk_content)
+                    raise ValueError(f"Ollama API error (400): {error_msg}")
+            else:
+                response.raise_for_status()
+                # Stream the response
+                async for chunk in self._stream_response(response):
+                    yield chunk
+                return
+
+        # Retry without tools if we got here (tools not supported)
+        payload.pop("tools", None)
+        async with self._client.stream(
+            "POST",
+            f"{self.base_url}/api/chat",
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            async for chunk in self._stream_response(response):
+                yield chunk
+
+    async def _stream_response(self, response) -> AsyncIterator[StreamChunk]:
+        """Internal helper to stream response chunks."""
+        full_content = ""
+        async for line in response.aiter_lines():
+            if not line:
+                continue
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            message = data.get("message", {})
+            chunk_content = message.get("content", "")
+            full_content += chunk_content
+
+            is_done = data.get("done", False)
+
+            if is_done:
+                tool_calls = []
+                # Check for native tool calls first
+                if "tool_calls" in message:
+                    for i, tc in enumerate(message["tool_calls"]):
+                        func = tc.get("function", {})
+                        tool_calls.append(ToolCall(
+                            id=tc.get("id", f"call_{i}"),
+                            name=func.get("name", ""),
+                            arguments=func.get("arguments", {}),
+                        ))
+                else:
+                    # Try to parse tool calls from text
+                    _, tool_calls = self._parse_tool_calls(full_content)
+
+                yield StreamChunk(
+                    content=chunk_content,
+                    full_content=full_content,
+                    tool_calls=tool_calls,
+                    is_done=True,
+                )
+            else:
+                yield StreamChunk(content=chunk_content)
 
     async def close(self) -> None:
         """Close the HTTP client."""
