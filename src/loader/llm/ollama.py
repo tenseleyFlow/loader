@@ -370,6 +370,7 @@ class OllamaBackend(LLMBackend):
         display_content = ""  # Content to show (filtered)
         json_buffer = ""  # Buffer for potential tool call JSON
         in_json_block = False
+        in_think_block = False  # For reasoning models like deepseek-r1
 
         async for line in response.aiter_lines():
             if not line:
@@ -409,6 +410,26 @@ class OllamaBackend(LLMBackend):
                     is_done=True,
                 )
             else:
+                # Filter out <think> blocks from reasoning models (deepseek-r1, etc.)
+                if "<think>" in chunk_content:
+                    in_think_block = True
+                    # Keep content before <think>
+                    before = chunk_content.split("<think>")[0]
+                    if before:
+                        display_content += before
+                        yield StreamChunk(content=before)
+                    continue
+                elif in_think_block:
+                    if "</think>" in chunk_content:
+                        in_think_block = False
+                        # Keep content after </think>
+                        after = chunk_content.split("</think>")[-1]
+                        if after:
+                            display_content += after
+                            yield StreamChunk(content=after)
+                    # Skip content inside think block
+                    continue
+
                 # Filter out tool call JSON from display
                 # Detect start of JSON tool call
                 if not in_json_block and '{"name"' in chunk_content:
