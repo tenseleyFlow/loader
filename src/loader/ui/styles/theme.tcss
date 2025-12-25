@@ -285,3 +285,18 @@ CollapsibleTitle:focus {
     border: round $warning;
     background: $surface-lighten-1;
 }
+
+/* Rollback widgets */
+.rollback-tracked {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+.rollback-summary {
+    margin: 0 0 1 0;
+    padding: 1;
+    border: round $secondary;
+    background: $surface-lighten-1;
+    color: $text-muted;
+}

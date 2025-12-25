@@ -23,6 +23,8 @@ from .adapter import (
     EventAdapter,
     PlanCreated,
     ResponseComplete,
+    RollbackSummary,
+    RollbackTracked,
     SteeringReceived,
     StepStarted,
     StreamChunk,
@@ -423,6 +425,30 @@ class LoaderApp(App):
             self._add_message("\n".join(lines), "completion-check")
         else:
             self._add_message(f"[dim]{escape(message.content)}[/dim]")
+
+    def on_rollback_tracked(self, message: RollbackTracked) -> None:
+        """Handle rollback action tracking (verbose mode only)."""
+        action = message.rollback_action
+        if action:
+            self._add_message(
+                f"[dim]↩ Rollback: {action.description}[/dim]",
+                "rollback-tracked"
+            )
+
+    def on_rollback_summary(self, message: RollbackSummary) -> None:
+        """Handle rollback plan summary at task completion."""
+        plan = message.rollback_plan
+        if plan and plan.actions:
+            lines = [f"[dim cyan]↩ Rollback available ({len(plan.actions)} actions)[/dim cyan]"]
+            # Show first few rollback steps
+            steps = plan.get_rollback_steps()[:3]
+            for step in steps:
+                lines.append(f"  [dim]• {step}[/dim]")
+            if len(plan.actions) > 3:
+                lines.append(f"  [dim]... and {len(plan.actions) - 3} more[/dim]")
+            if not plan.can_rollback:
+                lines.append("  [dim yellow]⚠ Some actions cannot be undone[/dim yellow]")
+            self._add_message("\n".join(lines), "rollback-summary")
 
     # Actions
     def action_clear_messages(self) -> None:

@@ -20,6 +20,9 @@ from .reasoning import (
     ActionVerification,
     ConfidenceLevel,
     TaskCompletionCheck,
+    RollbackPlan,
+    RollbackAction,
+    RollbackType,
     DECOMPOSITION_PROMPT,
     SELF_CRITIQUE_PROMPT,
     CONFIDENCE_PROMPT,
@@ -36,6 +39,8 @@ from .reasoning import (
     quick_verify,
     detect_premature_completion,
     get_continuation_prompt,
+    is_destructive_tool,
+    create_rollback_plan_for_action,
 )
 
 
@@ -63,6 +68,10 @@ class ReasoningConfig:
     completion_check: bool = True  # ON by default - prevents "giving up"
     use_quick_completion: bool = True  # Use heuristics before LLM
     max_continuation_prompts: int = 3  # Max times to nudge agent to continue
+
+    # Rollback planning: track how to undo destructive actions
+    rollback: bool = True  # ON by default - track undo capability
+    show_rollback_plan: bool = False  # Show rollback plan in output (verbose)
 
 
 @dataclass
@@ -110,6 +119,8 @@ class AgentEvent:
     confidence: ConfidenceAssessment | None = None  # For confidence events
     verification: ActionVerification | None = None  # For verification events
     completion_check: TaskCompletionCheck | None = None  # For completion events
+    rollback_plan: RollbackPlan | None = None  # For rollback events
+    rollback_action: RollbackAction | None = None  # For individual rollback action
 
 
 class Agent:
@@ -493,6 +504,9 @@ class Agent:
         actions_taken: list[str] = []  # Track what we've done
         continuation_count = 0  # How many times we've nudged to continue
 
+        # Rollback planning
+        rollback_plan = RollbackPlan() if self.config.reasoning.rollback else None
+
         while iterations < self.config.max_iterations:
             iterations += 1
 
@@ -617,6 +631,27 @@ class Agent:
                     # Track this action for completion checking
                     action_desc = f"{tool_call.name}: {str(tool_call.arguments)[:100]}"
                     actions_taken.append(action_desc)
+
+                    # Rollback planning: create rollback action before destructive ops
+                    if rollback_plan and is_destructive_tool(tool_call.name, tool_call.arguments):
+                        async def read_file_for_backup(path: str) -> str:
+                            """Read file contents for backup."""
+                            result = await self.registry.execute("read", file_path=path)
+                            return result.output if not result.is_error else ""
+
+                        rollback_action = await create_rollback_plan_for_action(
+                            tool_call.name,
+                            tool_call.arguments,
+                            read_file_for_backup,
+                        )
+                        if rollback_action:
+                            rollback_plan.actions.append(rollback_action)
+                            if self.config.reasoning.show_rollback_plan:
+                                await emit(AgentEvent(
+                                    type="rollback",
+                                    content=f"Rollback tracked: {rollback_action.description}",
+                                    rollback_action=rollback_action,
+                                ))
 
                     # Try to execute, handling confirmation if needed
                     try:
@@ -886,6 +921,14 @@ class Agent:
                 role=Role.ASSISTANT,
                 content=response_content,
             ))
+
+            # Emit rollback plan summary if we tracked any actions
+            if rollback_plan and rollback_plan.actions:
+                await emit(AgentEvent(
+                    type="rollback_summary",
+                    content=f"Rollback plan: {len(rollback_plan.actions)} action(s) tracked",
+                    rollback_plan=rollback_plan,
+                ))
 
             await emit(AgentEvent(type="response", content=final_response))
             break

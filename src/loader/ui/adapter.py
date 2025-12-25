@@ -15,6 +15,8 @@ if TYPE_CHECKING:
         ConfidenceAssessment,
         ActionVerification,
         TaskCompletionCheck,
+        RollbackPlan,
+        RollbackAction,
     )
 
 
@@ -157,6 +159,22 @@ class CompletionCheckPerformed(Message):
     completion_check: "TaskCompletionCheck | None" = None
 
 
+@dataclass
+class RollbackTracked(Message):
+    """A rollback action was tracked."""
+
+    content: str
+    rollback_action: "RollbackAction | None" = None
+
+
+@dataclass
+class RollbackSummary(Message):
+    """Summary of rollback plan at task completion."""
+
+    content: str
+    rollback_plan: "RollbackPlan | None" = None
+
+
 class EventAdapter:
     """Adapts Agent callback events to Textual messages."""
 
@@ -285,4 +303,18 @@ class EventAdapter:
                 self.app.post_message(CompletionCheckPerformed(
                     content=event.content,
                     completion_check=event.completion_check,
+                ))
+
+            case "rollback":
+                # A rollback action was tracked
+                self.app.post_message(RollbackTracked(
+                    content=event.content,
+                    rollback_action=event.rollback_action,
+                ))
+
+            case "rollback_summary":
+                # Summary of rollback plan
+                self.app.post_message(RollbackSummary(
+                    content=event.content,
+                    rollback_plan=event.rollback_plan,
                 ))
