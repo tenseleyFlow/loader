@@ -3,6 +3,8 @@
 import time
 from pathlib import Path
 
+from rich.markup import escape
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, ScrollableContainer
@@ -13,17 +15,24 @@ from textual.worker import Worker, get_current_worker
 
 from ..agent.loop import Agent, AgentEvent
 from .adapter import (
+    CompletionCheckPerformed,
+    ConfidenceAssessed,
+    CritiquePerformed,
+    DecompositionCreated,
     ErrorOccurred,
     EventAdapter,
     PlanCreated,
     ResponseComplete,
+    SteeringReceived,
     StepStarted,
     StreamChunk,
+    SubtaskStarted,
     ThinkingStarted,
     ToolCallCompleted,
     ToolCallStarted,
+    VerificationPerformed,
 )
-from .widgets import DiffWidget, InputArea, StatusLine, StreamingText, ToolCallWidget
+from .widgets import ConfirmationModal, DiffWidget, InputArea, StatusLine, StreamingText, ToolCallWidget
 
 
 class LoaderApp(App):
@@ -91,12 +100,12 @@ class LoaderApp(App):
 
     def _add_user_message(self, content: str) -> None:
         """Add a user message to the display."""
-        self._add_message(f"[bold blue]You:[/bold blue] {content}", "user-message")
+        self._add_message(f"[bold blue]You:[/bold blue] {escape(content)}", "user-message")
 
     def _start_timer(self) -> None:
         """Start the elapsed time timer."""
         self._start_time = time.time()
-        self._timer_handle = self.set_interval(0.1, self._update_elapsed)
+        self._timer_handle = self.set_interval(0.5, self._update_elapsed)  # Update every 500ms
 
     def _stop_timer(self) -> None:
         """Stop the elapsed time timer."""
@@ -124,35 +133,84 @@ class LoaderApp(App):
             self.action_clear_messages()
             return
 
+        # If agent is running, this is a steering message
+        if self.is_generating and self.agent.is_running:
+            self._add_steering_message(user_input)
+            self.agent.steer(user_input)
+            return
+
         # Add user message to display
         self._add_user_message(user_input)
 
         # Start agent task
         self.run_agent(user_input)
 
-    @work(exclusive=True, thread=True)
-    def run_agent(self, user_input: str) -> str:
-        """Run the agent in a worker thread."""
+    def _add_steering_message(self, content: str) -> None:
+        """Add a steering message to the display."""
+        self._add_message(
+            f"[bold magenta]↪ Steering:[/bold magenta] {escape(content)}",
+            "steering-message"
+        )
+
+    async def _request_confirmation(
+        self,
+        tool_name: str,
+        message: str,
+        details: str,
+    ) -> bool:
+        """Show confirmation modal and wait for user response."""
+        modal = ConfirmationModal(
+            tool_name=tool_name,
+            message=message,
+            details=details,
+        )
+        return await self.push_screen_wait(modal)
+
+    @work(exclusive=True)
+    async def run_agent(self, user_input: str) -> str:
+        """Run the agent asynchronously."""
+        import asyncio
+        import httpx
+
         worker = get_current_worker()
 
-        def on_event(event: AgentEvent) -> None:
+        async def on_event(event: AgentEvent) -> None:
             if not worker.is_cancelled:
                 self.adapter.handle_event(event)
+                # Yield control to let UI update
+                await asyncio.sleep(0)
 
-        # Run synchronously from thread
-        import asyncio
+        async def on_confirmation(tool_name: str, message: str, details: str) -> bool:
+            """Handle confirmation requests from agent."""
+            if worker.is_cancelled:
+                return False
+            return await self._request_confirmation(tool_name, message, details)
 
-        loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(
-                self.agent.run(user_input, on_event=on_event)
+            return await self.agent.run(
+                user_input,
+                on_event=on_event,
+                on_confirmation=on_confirmation,
             )
-        finally:
-            loop.close()
+        except httpx.ReadTimeout:
+            self._add_message(
+                "[bold red]Request timed out.[/bold red] The model is taking too long.\n"
+                "[dim]Try: smaller model, simpler prompt, or increase --ctx[/dim]"
+            )
+            return ""
+        except httpx.ConnectError:
+            self._add_message(
+                "[bold red]Connection error.[/bold red] Cannot reach Ollama.\n"
+                "[dim]Is Ollama running? Try: ollama serve[/dim]"
+            )
+            return ""
+        except Exception as e:
+            self._add_message(f"[bold red]Error:[/bold red] {escape(str(e))}")
+            return ""
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Handle worker state changes."""
-        if event.state.name == "SUCCESS":
+        if event.state.name in ("SUCCESS", "ERROR", "CANCELLED"):
             self.is_generating = False
             self._stop_timer()
             self.query_one(StatusLine).set_generating(False)
@@ -190,8 +248,8 @@ class LoaderApp(App):
             tool_name=message.tool_name,
             tool_args=message.tool_args,
         )
-        widget.set_running()
         msg_area.mount(widget)
+        widget.set_running()  # Must be after mount() so children exist
         self._current_tool_widget = widget
         msg_area.scroll_end(animate=False)
 
@@ -224,7 +282,7 @@ class LoaderApp(App):
         """Handle plan creation."""
         msg_area = self.query_one("#message-area", ScrollableContainer)
         plan_widget = Static(
-            f"[bold blue]Plan[/bold blue]\n{message.content}",
+            f"[bold blue]Plan[/bold blue]\n{escape(message.content)}",
             classes="plan-container",
         )
         msg_area.mount(plan_widget)
@@ -233,17 +291,138 @@ class LoaderApp(App):
     def on_step_started(self, message: StepStarted) -> None:
         """Handle step start."""
         self._add_message(
-            f"[bold yellow]{message.step_info}[/bold yellow]", "step-progress"
+            f"[bold yellow]{escape(message.step_info)}[/bold yellow]", "step-progress"
         )
 
     def on_error_occurred(self, message: ErrorOccurred) -> None:
         """Handle errors."""
-        self._add_message(f"[bold red]Error:[/bold red] {message.content}")
+        self._add_message(f"[bold red]Error:[/bold red] {escape(message.content)}")
 
     def on_response_complete(self, message: ResponseComplete) -> None:
         """Handle response completion."""
         # Response was already streamed, nothing extra needed
         pass
+
+    def on_steering_received(self, message: SteeringReceived) -> None:
+        """Handle steering message being processed by agent."""
+        # The steering message was already displayed when sent,
+        # this confirms it was injected into the agent's context
+        self._add_message(
+            "[dim italic]↪ Steering message injected, agent will incorporate it...[/dim italic]"
+        )
+
+    # Reasoning event handlers
+    def on_decomposition_created(self, message: DecompositionCreated) -> None:
+        """Handle task decomposition."""
+        msg_area = self.query_one("#message-area", ScrollableContainer)
+        decomp = message.decomposition
+        if decomp:
+            lines = [
+                f"[bold cyan]📋 Task Decomposed[/bold cyan] ({len(decomp.subtasks)} subtasks)"
+            ]
+            for i, st in enumerate(decomp.subtasks, 1):
+                status_icon = {
+                    "pending": "○",
+                    "in_progress": "◐",
+                    "completed": "●",
+                    "failed": "✗",
+                }.get(st.status, "?")
+                deps = f" [dim](after: {', '.join(st.dependencies)})[/dim]" if st.dependencies else ""
+                lines.append(f"  {status_icon} {i}. {st.description}{deps}")
+            widget = Static("\n".join(lines), classes="decomposition-container")
+            msg_area.mount(widget)
+        else:
+            self._add_message(f"[cyan]📋 {escape(message.content)}[/cyan]")
+        msg_area.scroll_end(animate=False)
+
+    def on_subtask_started(self, message: SubtaskStarted) -> None:
+        """Handle subtask start."""
+        self._add_message(
+            f"[bold yellow]▸ {escape(message.content)}[/bold yellow]",
+            "subtask-progress"
+        )
+
+    def on_confidence_assessed(self, message: ConfidenceAssessed) -> None:
+        """Handle confidence assessment."""
+        confidence = message.confidence
+        if confidence:
+            level = confidence.level.name
+            score = confidence.score
+            # Color based on confidence level
+            color = {
+                1: "red",      # VERY_LOW
+                2: "orange1",  # LOW
+                3: "yellow",   # MEDIUM
+                4: "green",    # HIGH
+                5: "bright_green",  # VERY_HIGH
+            }.get(score, "white")
+
+            content = f"[{color}]🎯 Confidence: {level} ({score}/5)[/{color}]"
+            if confidence.reasoning:
+                content += f"\n[dim]   {confidence.reasoning}[/dim]"
+            if confidence.risks:
+                content += f"\n[dim red]   Risks: {', '.join(confidence.risks[:2])}[/dim red]"
+            self._add_message(content, "confidence-assessment")
+        else:
+            self._add_message(f"[yellow]🎯 {escape(message.content)}[/yellow]")
+
+    def on_critique_performed(self, message: CritiquePerformed) -> None:
+        """Handle self-critique."""
+        critique = message.critique
+        if critique and critique.issues_found:
+            lines = ["[bold magenta]🔍 Self-Critique[/bold magenta]"]
+            for issue in critique.issues_found[:3]:
+                lines.append(f"  [yellow]⚠[/yellow] {issue}")
+            if critique.suggestions:
+                lines.append("  [dim]Suggestions:[/dim]")
+                for suggestion in critique.suggestions[:2]:
+                    lines.append(f"    → {suggestion}")
+            if critique.should_revise:
+                lines.append("  [italic]Revising response...[/italic]")
+            self._add_message("\n".join(lines), "critique-container")
+        elif critique:
+            self._add_message(
+                "[green]🔍 Self-critique: No issues found[/green]",
+                "critique-container"
+            )
+        else:
+            self._add_message(f"[magenta]🔍 {escape(message.content)}[/magenta]")
+
+    def on_verification_performed(self, message: VerificationPerformed) -> None:
+        """Handle post-action verification."""
+        verification = message.verification
+        if verification:
+            if verification.verified:
+                self._add_message(
+                    f"[green]✓ Verified: {message.tool_name}[/green]",
+                    "verification-success"
+                )
+            else:
+                lines = [f"[red]✗ Verification failed: {message.tool_name}[/red]"]
+                if verification.discrepancies:
+                    for disc in verification.discrepancies[:2]:
+                        lines.append(f"  [dim]{disc}[/dim]")
+                if verification.correction_suggestion:
+                    lines.append(f"  [yellow]→ {verification.correction_suggestion}[/yellow]")
+                self._add_message("\n".join(lines), "verification-failed")
+        else:
+            self._add_message(f"[blue]✓ {escape(message.content)}[/blue]")
+
+    def on_completion_check_performed(self, message: CompletionCheckPerformed) -> None:
+        """Handle task completion check."""
+        check = message.completion_check
+        if check and not check.is_complete:
+            lines = ["[bold yellow]⚡ Task not complete yet![/bold yellow]"]
+            if check.accomplished:
+                lines.append(f"  [green]Done:[/green] {', '.join(check.accomplished[:3])}")
+            if check.suggested_next_steps:
+                lines.append("  [yellow]Next steps:[/yellow]")
+                for step in check.suggested_next_steps[:2]:
+                    lines.append(f"    → {step}")
+            lines.append("  [italic]Continuing...[/italic]")
+            self._add_message("\n".join(lines), "completion-check")
+        else:
+            self._add_message(f"[dim]{escape(message.content)}[/dim]")
 
     # Actions
     def action_clear_messages(self) -> None:

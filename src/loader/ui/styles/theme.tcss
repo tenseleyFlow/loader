@@ -13,7 +13,7 @@ Screen {
 
 #message-area {
     scrollbar-gutter: stable;
-    scrollbar-size: 1;
+    scrollbar-size: 1 1;
     padding: 1 2;
     background: $surface;
 }
@@ -70,23 +70,59 @@ ToolCallWidget.success {
     border-left: thick $success;
 }
 
+ToolCallWidget.running {
+    border-left: thick $warning;
+}
+
 .tool-header {
     color: $primary;
+}
+
+.tool-summary {
+    color: $text;
+    padding-left: 2;
+    margin-top: 0;
 }
 
 .tool-args {
     color: $text-muted;
 }
 
+.tool-toggle {
+    background: transparent;
+    border: none;
+    color: $accent;
+    padding: 0;
+    margin-left: 2;
+    min-width: 0;
+    width: auto;
+    height: 1;
+    text-style: underline;
+}
+
+.tool-toggle:hover {
+    background: transparent;
+    color: $primary;
+    text-style: bold underline;
+}
+
+.tool-toggle:focus {
+    background: transparent;
+    text-style: bold underline;
+}
+
+.tool-full-result {
+    color: $text;
+    padding-left: 2;
+    margin-top: 1;
+    border-left: solid $accent;
+    padding: 0 0 0 1;
+}
+
 .tool-preview {
     color: $text;
     padding-left: 2;
     max-height: 6;
-}
-
-.tool-summary {
-    color: $text-muted;
-    padding-left: 2;
 }
 
 /* Diff widget */
@@ -143,6 +179,13 @@ StreamingText.streaming {
     padding: 0 1;
 }
 
+/* Steering message */
+.steering-message {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    border-left: thick $warning;
+}
+
 .user-label {
     color: $secondary;
     text-style: bold;
@@ -158,10 +201,22 @@ StreamingText.streaming {
 Collapsible {
     padding-left: 2;
     border: none;
+    margin-top: 1;
 }
 
 CollapsibleTitle {
-    color: $text-muted;
+    color: $accent;
+    text-style: underline;
+    padding: 0 1;
+}
+
+CollapsibleTitle:hover {
+    color: $primary;
+    text-style: bold underline;
+}
+
+CollapsibleTitle:focus {
+    color: $primary;
 }
 
 /* Plan widget */
@@ -183,4 +238,50 @@ CollapsibleTitle {
 .step-progress {
     color: $warning;
     text-style: bold;
+}
+
+/* Reasoning widgets */
+.decomposition-container {
+    margin: 0 0 1 0;
+    padding: 1;
+    border: round $secondary;
+    background: $surface-lighten-1;
+}
+
+.subtask-progress {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    color: $warning;
+}
+
+.confidence-assessment {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    border-left: thick $accent;
+}
+
+.critique-container {
+    margin: 0 0 1 0;
+    padding: 1;
+    border-left: thick $warning;
+    background: $surface-lighten-1;
+}
+
+.verification-success {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    color: $success;
+}
+
+.verification-failed {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    border-left: thick $error;
+}
+
+.completion-check {
+    margin: 0 0 1 0;
+    padding: 1;
+    border: round $warning;
+    background: $surface-lighten-1;
 }

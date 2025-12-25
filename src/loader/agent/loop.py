@@ -1,42 +1,115 @@
 """The main agent loop."""
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Awaitable, Callable
 
 from ..llm.base import LLMBackend, Message, Role, ToolCall
-from ..tools.base import ToolRegistry, create_default_registry
+from ..tools.base import ToolRegistry, create_default_registry, ConfirmationRequired
 from ..context.project import ProjectContext, detect_project
 from .prompts import build_system_prompt
 from .parsing import parse_tool_calls, format_tool_result
 from .planner import Plan, parse_plan, should_plan, format_step_prompt, PLANNING_PROMPT, SHOULD_PLAN_PROMPT
 from .recovery import RecoveryContext, format_recovery_prompt, format_failure_message
+from .reasoning import (
+    TaskDecomposition,
+    Subtask,
+    SelfCritique,
+    ConfidenceAssessment,
+    ActionVerification,
+    ConfidenceLevel,
+    TaskCompletionCheck,
+    DECOMPOSITION_PROMPT,
+    SELF_CRITIQUE_PROMPT,
+    CONFIDENCE_PROMPT,
+    VERIFICATION_PROMPT,
+    COMPLETION_CHECK_PROMPT,
+    parse_decomposition,
+    parse_self_critique,
+    parse_confidence,
+    parse_verification,
+    parse_completion_check,
+    should_decompose,
+    should_self_critique,
+    estimate_confidence_quick,
+    quick_verify,
+    detect_premature_completion,
+    get_continuation_prompt,
+)
+
+
+@dataclass
+class ReasoningConfig:
+    """Configuration for reasoning stages."""
+    # Decomposition: break complex tasks into atomic subtasks
+    decomposition: bool = False
+    decomposition_threshold: int = 30  # Word count threshold for auto-decomposition
+
+    # Self-critique: review output before finalizing
+    self_critique: bool = False
+    max_critique_revisions: int = 2
+
+    # Confidence scoring: rate certainty before actions
+    confidence_scoring: bool = False
+    min_confidence_for_action: int = 2  # Minimum ConfidenceLevel value to proceed
+    use_quick_confidence: bool = True  # Use heuristics before LLM
+
+    # Post-action verification: check results after execution
+    verification: bool = False
+    use_quick_verification: bool = True  # Use heuristics before LLM
+
+    # Task completion: prevent premature stopping
+    completion_check: bool = True  # ON by default - prevents "giving up"
+    use_quick_completion: bool = True  # Use heuristics before LLM
+    max_continuation_prompts: int = 3  # Max times to nudge agent to continue
 
 
 @dataclass
 class AgentConfig:
     """Configuration for the agent."""
-    max_iterations: int = 20
-    temperature: float = 0.7
-    max_tokens: int = 4096
+    max_iterations: int = 15  # Reduced from 20
+    temperature: float = 0.5  # Lower = faster, more focused
+    max_tokens: int = 2048  # Reduced from 4096, most responses are shorter
     force_react: bool = False  # Force ReAct even if model supports native tools
     auto_context: bool = True  # Auto-detect project context on startup
-    auto_plan: bool = True  # Auto-plan complex tasks
+    auto_plan: bool = False  # Auto-plan complex tasks (disabled by default - confuses smaller models)
     auto_recover: bool = True  # Auto-recover from tool errors
-    max_recovery_attempts: int = 3  # Max retries per failed tool
+    max_recovery_attempts: int = 2  # Reduced from 3
     stream: bool = True  # Stream LLM responses for real-time output
+
+    # Reasoning stages configuration
+    reasoning: ReasoningConfig = None  # type: ignore
+
+    def __post_init__(self):
+        if self.reasoning is None:
+            self.reasoning = ReasoningConfig()
 
 
 @dataclass
 class AgentEvent:
     """Event emitted during agent execution."""
-    type: str  # "thinking", "tool_call", "tool_result", "response", "error", "plan", "step", "recovery", "stream"
+    # Event types: thinking, tool_call, tool_result, response, error, plan, step,
+    # recovery, stream, confirmation, steering, decomposition, subtask, critique,
+    # confidence, verification
+    type: str
     content: str = ""
     tool_name: str | None = None
     tool_args: dict | None = None
     step_info: str | None = None  # For step progress like "[2/5] Doing X"
     recovery_attempt: int | None = None  # For recovery events
     is_stream_end: bool = False  # For stream events - indicates final chunk
+    confirm_message: str | None = None  # For confirmation events
+    confirm_details: str | None = None  # For confirmation events
+    is_error: bool = False  # For tool_result events
+
+    # Reasoning events
+    decomposition: TaskDecomposition | None = None  # For decomposition events
+    subtask: Subtask | None = None  # For subtask events
+    critique: SelfCritique | None = None  # For critique events
+    confidence: ConfidenceAssessment | None = None  # For confidence events
+    verification: ActionVerification | None = None  # For verification events
+    completion_check: TaskCompletionCheck | None = None  # For completion events
 
 
 class Agent:
@@ -59,10 +132,41 @@ class Agent:
         # Recovery tracking
         self._recovery_context: RecoveryContext | None = None
 
+        # Steering: allow user to send messages during execution
+        self._steering_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._is_running: bool = False
+
         # Load project context if enabled
         self.project_context: ProjectContext | None = None
         if self.config.auto_context:
             self.project_context = detect_project(project_root)
+
+    def steer(self, message: str) -> bool:
+        """Send a steering message to the agent during execution.
+
+        Returns True if the agent is running and the message was queued,
+        False if the agent is not running.
+        """
+        if not self._is_running:
+            return False
+        self._steering_queue.put_nowait(message)
+        return True
+
+    @property
+    def is_running(self) -> bool:
+        """Check if the agent is currently running."""
+        return self._is_running
+
+    def _drain_steering_queue(self) -> list[str]:
+        """Get all pending steering messages without blocking."""
+        messages = []
+        while True:
+            try:
+                msg = self._steering_queue.get_nowait()
+                messages.append(msg)
+            except asyncio.QueueEmpty:
+                break
+        return messages
 
     @property
     def use_react(self) -> bool:
@@ -132,37 +236,224 @@ class Agent:
         )
         return parse_plan(response.content, goal=task)
 
+    # === Reasoning Stage Methods ===
+
+    async def _decompose_task(self, task: str) -> TaskDecomposition:
+        """Decompose a complex task into atomic subtasks."""
+        prompt = DECOMPOSITION_PROMPT.format(task=task)
+        response = await self.backend.complete(
+            messages=[
+                self._get_system_message(),
+                Message(role=Role.USER, content=prompt),
+            ],
+            tools=None,
+            temperature=0.3,  # Lower temp for structured output
+            max_tokens=1000,
+        )
+        return parse_decomposition(response.content, task)
+
+    async def _self_critique(self, response: str, context: str) -> SelfCritique:
+        """Perform self-critique on a response."""
+        prompt = SELF_CRITIQUE_PROMPT.format(response=response, context=context)
+        critique_response = await self.backend.complete(
+            messages=[Message(role=Role.USER, content=prompt)],
+            tools=None,
+            temperature=0.3,
+            max_tokens=500,
+        )
+        return parse_self_critique(critique_response.content, response)
+
+    async def _assess_confidence(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        context: str = "",
+    ) -> ConfidenceAssessment:
+        """Assess confidence in a tool action."""
+        cfg = self.config.reasoning
+
+        # Try quick heuristic first
+        if cfg.use_quick_confidence:
+            quick_level = estimate_confidence_quick(tool_name, tool_args, context)
+            # Only call LLM if quick estimate is low
+            if quick_level.value >= ConfidenceLevel.MEDIUM.value:
+                return ConfidenceAssessment(
+                    action=f"{tool_name} with {tool_args}",
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    level=quick_level,
+                    reasoning="Quick heuristic assessment",
+                )
+
+        # Full LLM assessment
+        action = f"Call {tool_name} with arguments: {tool_args}"
+        prompt = CONFIDENCE_PROMPT.format(
+            action=action,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            context=context[-2000:] if context else "No prior context",
+        )
+        response = await self.backend.complete(
+            messages=[Message(role=Role.USER, content=prompt)],
+            tools=None,
+            temperature=0.3,
+            max_tokens=300,
+        )
+        return parse_confidence(response.content, tool_name, tool_args)
+
+    async def _verify_action(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        """Verify that an action produced the expected result."""
+        cfg = self.config.reasoning
+
+        # Try quick verification first
+        if cfg.use_quick_verification:
+            quick_result = quick_verify(tool_name, tool_args, result)
+            if quick_result:
+                return ActionVerification(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    expected_outcome=expected or "Success",
+                    actual_result=result[:500],
+                    verified=True,
+                    verification_method="quick_heuristic",
+                )
+
+        # Full LLM verification
+        prompt = VERIFICATION_PROMPT.format(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            expected=expected or "The action should complete successfully",
+            result=result[:2000],  # Truncate long results
+        )
+        response = await self.backend.complete(
+            messages=[Message(role=Role.USER, content=prompt)],
+            tools=None,
+            temperature=0.3,
+            max_tokens=300,
+        )
+        return parse_verification(response.content, tool_name, tool_args, expected, result)
+
     async def run(
         self,
         user_message: str,
-        on_event: Callable[[AgentEvent], None] | None = None,
+        on_event: Callable[[AgentEvent], None] | Callable[[AgentEvent], Awaitable[None]] | None = None,
+        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
         use_plan: bool | None = None,
     ) -> str:
         """Run the agent with a user message.
 
         Args:
             user_message: The user's input
-            on_event: Optional callback for streaming events
+            on_event: Optional callback for streaming events (sync or async)
+            on_confirmation: Optional callback for tool confirmation. Takes (tool_name, message, details) and returns True to confirm.
             use_plan: Force planning on/off. None = auto-detect.
 
         Returns:
             The final response text
         """
-        def emit(event: AgentEvent) -> None:
+        import inspect
+
+        async def emit(event: AgentEvent) -> None:
             if on_event:
-                on_event(event)
+                result = on_event(event)
+                # Support both sync and async callbacks
+                if inspect.iscoroutine(result):
+                    await result
+
+        # Mark agent as running (enables steering)
+        self._is_running = True
+        try:
+            return await self._run_with_steering(user_message, emit, on_confirmation, use_plan)
+        finally:
+            self._is_running = False
+
+    async def _run_with_steering(
+        self,
+        user_message: str,
+        emit: Callable[[AgentEvent], Awaitable[None]],
+        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None,
+        use_plan: bool | None,
+    ) -> str:
+        """Internal run method that supports steering."""
+        cfg = self.config.reasoning
+
+        # Check if we should decompose the task (higher priority than planning)
+        if cfg.decomposition and should_decompose(user_message):
+            await emit(AgentEvent(type="thinking", content="Analyzing task complexity..."))
+            decomposition = await self._decompose_task(user_message)
+
+            if len(decomposition.subtasks) > 1:
+                await emit(AgentEvent(
+                    type="decomposition",
+                    content=decomposition.to_prompt(),
+                    decomposition=decomposition,
+                ))
+
+                # Execute each subtask
+                while not decomposition.is_complete() and not decomposition.has_failures():
+                    subtask = decomposition.next_subtask()
+                    if not subtask:
+                        break
+
+                    subtask.status = "in_progress"
+                    await emit(AgentEvent(
+                        type="subtask",
+                        content=f"{decomposition.progress_str()} {subtask.description}",
+                        subtask=subtask,
+                    ))
+
+                    # Run the subtask
+                    self.messages.append(Message(
+                        role=Role.USER,
+                        content=f"Execute this subtask: {subtask.description}\n\n"
+                                f"Verification: {subtask.verification}",
+                    ))
+                    subtask_response = await self._run_inner(
+                        subtask.description, emit, on_confirmation
+                    )
+
+                    # Mark based on result (simple heuristic)
+                    if "error" in subtask_response.lower() or "failed" in subtask_response.lower():
+                        decomposition.mark_failed(subtask.id, subtask_response)
+                        if decomposition.can_retry(subtask.id):
+                            decomposition.reset_for_retry(subtask.id)
+                            await emit(AgentEvent(
+                                type="subtask",
+                                content=f"Retrying subtask: {subtask.description}",
+                                subtask=subtask,
+                            ))
+                    else:
+                        decomposition.mark_completed(subtask.id, subtask_response)
+
+                # Final summary
+                if decomposition.is_complete():
+                    summary_prompt = (
+                        f"All subtasks completed for: {user_message}\n\n"
+                        f"{decomposition.to_prompt()}\n\n"
+                        "Provide a brief summary of what was accomplished."
+                    )
+                    self.messages.append(Message(role=Role.USER, content=summary_prompt))
+                    return await self._run_inner(summary_prompt, emit, on_confirmation)
+                else:
+                    return f"Task partially completed. {decomposition.to_prompt()}"
 
         # Check if we should use planning
         should_use_plan = use_plan
         if should_use_plan is None and self.config.auto_plan:
-            emit(AgentEvent(type="thinking"))
+            await emit(AgentEvent(type="thinking"))
             should_use_plan = await self._should_plan(user_message)
 
         # If planning, create and execute plan
         if should_use_plan:
             plan = await self._create_plan(user_message)
             if plan.steps:
-                emit(AgentEvent(type="plan", content=plan.to_prompt()))
+                await emit(AgentEvent(type="plan", content=plan.to_prompt()))
 
                 # Execute each step
                 while not plan.is_complete():
@@ -170,40 +461,52 @@ class Agent:
                     if not step:
                         break
 
-                    emit(AgentEvent(
+                    await emit(AgentEvent(
                         type="step",
                         step_info=f"{plan.progress_str()} {step.description}",
                     ))
 
                     # Run the step
                     step_prompt = format_step_prompt(plan, step)
-                    step_response = await self._run_inner(step_prompt, emit)
+                    step_response = await self._run_inner(step_prompt, emit, on_confirmation)
 
                     plan.complete_current()
 
                 # Final summary
                 self.messages.append(Message(role=Role.USER, content=user_message))
                 summary_prompt = f"I've completed the plan. Summarize what was done:\n{plan.to_prompt()}"
-                return await self._run_inner(summary_prompt, emit)
+                return await self._run_inner(summary_prompt, emit, on_confirmation)
 
-        # No planning - run directly
+        # No planning or decomposition - run directly
         self.messages.append(Message(role=Role.USER, content=user_message))
-        return await self._run_inner(user_message, emit)
+        return await self._run_inner(user_message, emit, on_confirmation)
 
     async def _run_inner(
         self,
         task: str,
-        emit: Callable[[AgentEvent], None],
+        emit: Callable[[AgentEvent], Awaitable[None]],
+        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
     ) -> str:
         """Inner execution loop without planning."""
         iterations = 0
         final_response = ""
+        actions_taken: list[str] = []  # Track what we've done
+        continuation_count = 0  # How many times we've nudged to continue
 
         while iterations < self.config.max_iterations:
             iterations += 1
 
+            # Check for steering messages from user
+            steering_messages = self._drain_steering_queue()
+            for steer_msg in steering_messages:
+                await emit(AgentEvent(type="steering", content=steer_msg))
+                self.messages.append(Message(
+                    role=Role.USER,
+                    content=f"[USER INTERRUPTION]: {steer_msg}",
+                ))
+
             # Get completion from LLM
-            emit(AgentEvent(type="thinking"))
+            await emit(AgentEvent(type="thinking"))
 
             # Pass tools only for native tool calling
             tools = None if self.use_react else self.registry.get_schemas()
@@ -220,7 +523,7 @@ class Agent:
                     max_tokens=self.config.max_tokens,
                 ):
                     if chunk.content:
-                        emit(AgentEvent(
+                        await emit(AgentEvent(
                             type="stream",
                             content=chunk.content,
                             is_stream_end=chunk.is_done,
@@ -256,7 +559,7 @@ class Agent:
                         role=Role.ASSISTANT,
                         content=response_content,  # Keep original for history
                     ))
-                    emit(AgentEvent(type="response", content=final_response))
+                    await emit(AgentEvent(type="response", content=final_response))
                     break
 
             # If there are tool calls, execute them
@@ -270,16 +573,102 @@ class Agent:
 
                 # Execute each tool (with recovery logic)
                 for tool_call in tool_calls:
-                    emit(AgentEvent(
+                    cfg = self.config.reasoning
+
+                    # Confidence scoring before execution
+                    if cfg.confidence_scoring:
+                        context = "\n".join(
+                            m.content[:500] for m in self.messages[-5:]
+                            if m.content
+                        )
+                        confidence = await self._assess_confidence(
+                            tool_call.name,
+                            tool_call.arguments,
+                            context,
+                        )
+                        await emit(AgentEvent(
+                            type="confidence",
+                            content=f"Confidence: {confidence.level.name} ({confidence.score}/5)",
+                            confidence=confidence,
+                            tool_name=tool_call.name,
+                        ))
+
+                        # If confidence is too low, ask LLM to reconsider
+                        if confidence.score < cfg.min_confidence_for_action:
+                            low_conf_msg = (
+                                f"[LOW CONFIDENCE WARNING] The planned action has low confidence "
+                                f"({confidence.level.name}).\n"
+                                f"Reasoning: {confidence.reasoning}\n"
+                                f"Risks: {', '.join(confidence.risks)}\n"
+                                f"Consider an alternative approach or gather more information first."
+                            )
+                            self.messages.append(Message(
+                                role=Role.USER,
+                                content=low_conf_msg,
+                            ))
+                            continue  # Skip this tool call, let LLM reconsider
+
+                    await emit(AgentEvent(
                         type="tool_call",
                         tool_name=tool_call.name,
                         tool_args=tool_call.arguments,
                     ))
 
-                    result = await self.registry.execute(
-                        tool_call.name,
-                        **tool_call.arguments,
-                    )
+                    # Track this action for completion checking
+                    action_desc = f"{tool_call.name}: {str(tool_call.arguments)[:100]}"
+                    actions_taken.append(action_desc)
+
+                    # Try to execute, handling confirmation if needed
+                    try:
+                        result = await self.registry.execute(
+                            tool_call.name,
+                            **tool_call.arguments,
+                        )
+                    except ConfirmationRequired as conf:
+                        # Emit confirmation event
+                        await emit(AgentEvent(
+                            type="confirmation",
+                            tool_name=conf.tool_name,
+                            confirm_message=conf.message,
+                            confirm_details=conf.details,
+                        ))
+
+                        # If we have a confirmation callback, ask user
+                        if on_confirmation:
+                            confirmed = await on_confirmation(
+                                conf.tool_name,
+                                conf.message,
+                                conf.details,
+                            )
+                            if confirmed:
+                                # Re-execute with skip_confirmation
+                                old_skip = self.registry.skip_confirmation
+                                self.registry.skip_confirmation = True
+                                try:
+                                    result = await self.registry.execute(
+                                        tool_call.name,
+                                        **tool_call.arguments,
+                                    )
+                                finally:
+                                    self.registry.skip_confirmation = old_skip
+                            else:
+                                # User declined - create a skip result
+                                from ..tools.base import ToolResult
+                                result = ToolResult(
+                                    output=f"Tool {tool_call.name} was declined by user",
+                                    is_error=False,
+                                )
+                        else:
+                            # No callback - treat as auto-confirmed (for non-TUI mode)
+                            old_skip = self.registry.skip_confirmation
+                            self.registry.skip_confirmation = True
+                            try:
+                                result = await self.registry.execute(
+                                    tool_call.name,
+                                    **tool_call.arguments,
+                                )
+                            finally:
+                                self.registry.skip_confirmation = old_skip
 
                     # Handle errors with recovery
                     if result.is_error and self.config.auto_recover:
@@ -291,11 +680,11 @@ class Agent:
                                 max_retries=self.config.max_recovery_attempts,
                             )
 
-                        # Check if this exact call was already tried (loop detection)
-                        if self._recovery_context.was_tried(tool_call.name, tool_call.arguments):
-                            emit(AgentEvent(
+                        # Check if this or a similar call was already tried (loop detection)
+                        if self._recovery_context.is_similar_attempt(tool_call.name, tool_call.arguments):
+                            await emit(AgentEvent(
                                 type="error",
-                                content=f"Loop detected: already tried {tool_call.name} with same args",
+                                content=f"Loop detected: already tried a similar command. Try a DIFFERENT approach (e.g., read a config file first).",
                                 tool_name=tool_call.name,
                             ))
                         else:
@@ -309,7 +698,7 @@ class Agent:
                         # Can we retry?
                         if self._recovery_context.can_retry():
                             attempt_num = len(self._recovery_context.attempts)
-                            emit(AgentEvent(
+                            await emit(AgentEvent(
                                 type="recovery",
                                 content=f"Tool failed, attempting recovery ({attempt_num}/{self._recovery_context.max_retries})",
                                 tool_name=tool_call.name,
@@ -333,7 +722,7 @@ class Agent:
                         else:
                             # Max retries exceeded
                             failure_msg = format_failure_message(self._recovery_context)
-                            emit(AgentEvent(
+                            await emit(AgentEvent(
                                 type="error",
                                 content=failure_msg,
                                 tool_name=tool_call.name,
@@ -356,11 +745,40 @@ class Agent:
                         if not result.is_error:
                             self._recovery_context = None
 
-                    emit(AgentEvent(
+                    await emit(AgentEvent(
                         type="tool_result",
                         content=result.output,
                         tool_name=tool_call.name,
+                        is_error=result.is_error,
                     ))
+
+                    # Post-action verification
+                    if cfg.verification and not result.is_error:
+                        verification = await self._verify_action(
+                            tool_call.name,
+                            tool_call.arguments,
+                            result.output,
+                        )
+                        await emit(AgentEvent(
+                            type="verification",
+                            content=f"Verified: {verification.verified}",
+                            verification=verification,
+                            tool_name=tool_call.name,
+                        ))
+
+                        if not verification.verified and verification.needs_correction:
+                            # Add correction suggestion for LLM
+                            correction_msg = (
+                                f"[VERIFICATION FAILED] The action did not produce expected results.\n"
+                                f"Discrepancies: {', '.join(verification.discrepancies)}\n"
+                                f"Suggestion: {verification.correction_suggestion}"
+                            )
+                            self.messages.append(Message(
+                                role=Role.USER,
+                                content=correction_msg,
+                            ))
+                            # Don't add the tool result - let LLM try correction
+                            continue
 
                     # Add tool result message
                     result_text = format_tool_result(
@@ -376,14 +794,100 @@ class Agent:
                 # Continue the loop to get next response
                 continue
 
-            # No tool calls - this is the final response
+            # No tool calls - check if model is describing instead of acting
+            if self._contains_unexecuted_code(content) and iterations < self.config.max_iterations - 1:
+                # Model outputted code blocks without using tools - nudge it
+                self.messages.append(Message(
+                    role=Role.ASSISTANT,
+                    content=response_content,
+                ))
+                self.messages.append(Message(
+                    role=Role.USER,
+                    content="STOP. Do not show me code to copy. USE YOUR TOOLS to execute the actions. "
+                            "Call the bash tool to run commands. Call the write tool to create files. "
+                            "Execute the task NOW using tool calls.",
+                ))
+                continue
+
+            # Self-critique before finalizing (if enabled and response has substance)
+            cfg = self.config.reasoning
+            if cfg.self_critique and len(content) > 100:
+                # Check if we should critique this response
+                is_code_response = "```" in content or any(
+                    keyword in content.lower()
+                    for keyword in ["def ", "function ", "class ", "import "]
+                )
+                if should_self_critique(content, is_code=is_code_response):
+                    context = task
+                    critique = await self._self_critique(content, context)
+
+                    await emit(AgentEvent(
+                        type="critique",
+                        content=f"Self-critique: {len(critique.issues_found)} issues found",
+                        critique=critique,
+                    ))
+
+                    if critique.can_revise():
+                        # Ask for revision
+                        revision_msg = (
+                            f"[SELF-CRITIQUE] Review your response:\n"
+                            f"Issues found: {', '.join(critique.issues_found)}\n"
+                            f"Suggestions: {', '.join(critique.suggestions)}\n\n"
+                            "Please provide an improved response addressing these issues."
+                        )
+                        self.messages.append(Message(
+                            role=Role.ASSISTANT,
+                            content=response_content,
+                        ))
+                        self.messages.append(Message(
+                            role=Role.USER,
+                            content=revision_msg,
+                        ))
+                        critique.revision_count += 1
+                        continue  # Loop to get revised response
+
+            # Task completion check - don't give up too early!
+            if cfg.completion_check and continuation_count < cfg.max_continuation_prompts:
+                # Quick heuristic check first
+                if cfg.use_quick_completion:
+                    is_premature = detect_premature_completion(task, content, actions_taken)
+                else:
+                    is_premature = False
+
+                if is_premature:
+                    continuation_count += 1
+                    continuation_prompt = get_continuation_prompt(task, actions_taken, content)
+
+                    await emit(AgentEvent(
+                        type="completion_check",
+                        content=f"Task may be incomplete ({len(actions_taken)} actions taken)",
+                        completion_check=TaskCompletionCheck(
+                            original_task=task,
+                            is_complete=False,
+                            accomplished=[a.split(":")[0] for a in actions_taken],
+                            continuation_prompt=continuation_prompt,
+                        ),
+                    ))
+
+                    # Add the assistant's response and nudge to continue
+                    self.messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content=response_content,
+                    ))
+                    self.messages.append(Message(
+                        role=Role.USER,
+                        content=continuation_prompt,
+                    ))
+                    continue  # Loop to get continuation
+
+            # This is the final response
             final_response = content
             self.messages.append(Message(
                 role=Role.ASSISTANT,
                 content=response_content,
             ))
 
-            emit(AgentEvent(type="response", content=final_response))
+            await emit(AgentEvent(type="response", content=final_response))
             break
 
         return final_response
@@ -477,6 +981,48 @@ class Agent:
                 content=full_content,
             ))
             break
+
+    def _contains_unexecuted_code(self, content: str) -> bool:
+        """Detect if response contains code blocks that should be tool calls.
+
+        Returns True if the response looks like chatbot-style advice with
+        code blocks, rather than an actual final answer.
+        """
+        import re
+
+        # Look for markdown code blocks
+        code_blocks = re.findall(r'```(\w*)\n(.*?)```', content, re.DOTALL)
+
+        if not code_blocks:
+            return False
+
+        # Check if any code blocks look like commands or file contents
+        action_indicators = [
+            'bash', 'sh', 'shell', 'cmd', 'powershell',  # Shell code
+            'mkdir', 'cd ', 'npm ', 'pip ', 'git ',  # Commands in code
+            'python', 'html', 'css', 'javascript', 'js', 'ts',  # File content
+        ]
+
+        chatbot_phrases = [
+            'you can run', 'you can create', 'you can use',
+            'run this', 'create this', 'save this',
+            'here\'s how', 'here is', 'copy this',
+            'execute this', 'paste this',
+        ]
+
+        content_lower = content.lower()
+
+        # If chatbot phrases present with code blocks, it's describing not doing
+        for phrase in chatbot_phrases:
+            if phrase in content_lower:
+                return True
+
+        # Check code block languages that suggest action needed
+        for lang, _ in code_blocks:
+            if lang.lower() in action_indicators:
+                return True
+
+        return False
 
     def clear_history(self) -> None:
         """Clear conversation history."""

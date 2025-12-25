@@ -134,18 +134,68 @@ def clean_response(text: str) -> str:
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
 @click.option("--react", is_flag=True, help="Force ReAct mode (text-based tool calling)")
 @click.option("--no-context", is_flag=True, help="Skip auto-detecting project context")
-@click.option("--no-plan", is_flag=True, help="Disable auto-planning for complex tasks")
+@click.option("--plan", is_flag=True, help="Enable auto-planning for complex tasks (off by default)")
 @click.option("--no-recover", is_flag=True, help="Disable auto-recovery from tool errors")
 @click.option("--no-tui", is_flag=True, help="Use simple Rich output instead of full TUI")
+@click.option("--ctx", type=int, default=8192, help="Context window size (default: 8192, smaller = faster)")
+@click.option("--gpu", type=int, default=-1, help="GPU layers (default: -1 = all, 0 = CPU only)")
+@click.option("--timeout", type=int, default=None, help="Request timeout in seconds (default: auto based on model size)")
+# Reasoning options
+@click.option("--decompose", is_flag=True, help="Enable task decomposition (break complex tasks into subtasks)")
+@click.option("--critique", is_flag=True, help="Enable self-critique (review responses before finalizing)")
+@click.option("--confidence", is_flag=True, help="Enable confidence scoring (rate certainty before actions)")
+@click.option("--verify", is_flag=True, help="Enable post-action verification (check results)")
+@click.option("--reason", is_flag=True, help="Enable all reasoning stages (decompose + critique + confidence + verify)")
 @click.argument("prompt", required=False)
-def main(model: str | None, select_model: bool, backend: str, yes: bool, react: bool, no_context: bool, no_plan: bool, no_recover: bool, no_tui: bool, prompt: str | None) -> None:
+def main(
+    model: str | None,
+    select_model: bool,
+    backend: str,
+    yes: bool,
+    react: bool,
+    no_context: bool,
+    plan: bool,
+    no_recover: bool,
+    no_tui: bool,
+    ctx: int,
+    gpu: int,
+    timeout: int | None,
+    decompose: bool,
+    critique: bool,
+    confidence: bool,
+    verify: bool,
+    reason: bool,
+    prompt: str | None,
+) -> None:
     """Loader - Local AI coding assistant."""
-    asyncio.run(_main(model, select_model, backend, yes, react, no_context, no_plan, no_recover, no_tui, prompt))
+    asyncio.run(_main(
+        model, select_model, backend, yes, react, no_context, plan, no_recover, no_tui,
+        ctx, gpu, timeout, decompose, critique, confidence, verify, reason, prompt
+    ))
 
 
-async def _main(model: str | None, select_model: bool, backend: str, yes: bool, react: bool, no_context: bool, no_plan: bool, no_recover: bool, no_tui: bool, prompt: str | None) -> None:
+async def _main(
+    model: str | None,
+    select_model: bool,
+    backend: str,
+    yes: bool,
+    react: bool,
+    no_context: bool,
+    plan: bool,
+    no_recover: bool,
+    no_tui: bool,
+    ctx: int | None,
+    gpu: int | None,
+    timeout: float | None,
+    decompose: bool,
+    critique: bool,
+    confidence: bool,
+    verify: bool,
+    reason: bool,
+    prompt: str | None,
+) -> None:
     from ..llm.ollama import OllamaBackend
-    from ..agent.loop import Agent, AgentConfig
+    from ..agent.loop import Agent, AgentConfig, ReasoningConfig
     from ..tools.base import create_default_registry
     from ..config import get_default_model, set_last_model, get_last_model
 
@@ -165,8 +215,14 @@ async def _main(model: str | None, select_model: bool, backend: str, yes: bool, 
 
     mode_str = "ReAct" if react else "Native"
 
-    # Initialize backend
-    llm = OllamaBackend(model=model, force_react=react)
+    # Initialize backend with performance options
+    llm = OllamaBackend(
+        model=model,
+        force_react=react,
+        num_ctx=ctx,
+        num_gpu=gpu,
+        timeout=timeout,
+    )
 
     # Check health
     if not await llm.health_check():
@@ -184,13 +240,36 @@ async def _main(model: str | None, select_model: bool, backend: str, yes: bool, 
     registry = create_default_registry()
     registry.skip_confirmation = yes
 
+    # Configure reasoning stages
+    # --reason enables all, otherwise use individual flags
+    reasoning_config = ReasoningConfig(
+        decomposition=reason or decompose,
+        self_critique=reason or critique,
+        confidence_scoring=reason or confidence,
+        verification=reason or verify,
+    )
+
     config = AgentConfig(
         force_react=react,
         auto_context=not no_context,
-        auto_plan=not no_plan,
+        auto_plan=plan,  # Off by default, enable with --plan
         auto_recover=not no_recover,
+        reasoning=reasoning_config,
     )
     agent = Agent(backend=llm, registry=registry, config=config)
+
+    # Show reasoning status if enabled
+    reasoning_active = []
+    if reasoning_config.decomposition:
+        reasoning_active.append("decompose")
+    if reasoning_config.self_critique:
+        reasoning_active.append("critique")
+    if reasoning_config.confidence_scoring:
+        reasoning_active.append("confidence")
+    if reasoning_config.verification:
+        reasoning_active.append("verify")
+    if reasoning_active:
+        console.print(f"[dim]Reasoning: {', '.join(reasoning_active)}[/dim]")
 
     # Single prompt mode always uses simple output
     if prompt:
