@@ -41,6 +41,9 @@ from .reasoning import (
     get_continuation_prompt,
     is_destructive_tool,
     create_rollback_plan_for_action,
+    is_conversational,
+    estimate_complexity,
+    get_token_budget,
 )
 
 
@@ -350,6 +353,53 @@ class Agent:
         )
         return parse_verification(response.content, tool_name, tool_args, expected, result)
 
+    async def _handle_conversational(
+        self,
+        user_message: str,
+        emit: Callable[[AgentEvent], Awaitable[None]],
+    ) -> str:
+        """Fast path for conversational messages - no tools, quick response."""
+        await emit(AgentEvent(type="thinking"))
+
+        # Add to history
+        self.messages.append(Message(role=Role.USER, content=user_message))
+
+        # Simple system prompt for chat (no tools)
+        chat_system = Message(
+            role=Role.SYSTEM,
+            content=(
+                "You are Loader, a friendly local coding assistant. "
+                "Respond naturally and briefly to conversational messages. "
+                "If the user wants to do a coding task, tell them to describe it. "
+                "Keep responses short (1-3 sentences)."
+            ),
+        )
+
+        # Use only recent context for speed
+        recent_messages = self.messages[-4:] if len(self.messages) > 4 else self.messages
+
+        # Stream the response
+        full_content = ""
+        async for chunk in self.backend.stream(
+            messages=[chat_system] + recent_messages,
+            tools=None,  # No tools for chat
+            temperature=0.7,  # More natural
+            max_tokens=256,  # Short response
+        ):
+            if chunk.content:
+                await emit(AgentEvent(
+                    type="stream",
+                    content=chunk.content,
+                    is_stream_end=chunk.is_done,
+                ))
+                full_content += chunk.content
+
+        # Add to history
+        self.messages.append(Message(role=Role.ASSISTANT, content=full_content))
+
+        await emit(AgentEvent(type="response", content=full_content))
+        return full_content
+
     async def run(
         self,
         user_message: str,
@@ -393,6 +443,10 @@ class Agent:
     ) -> str:
         """Internal run method that supports steering."""
         cfg = self.config.reasoning
+
+        # Fast path: conversational messages don't need tools
+        if is_conversational(user_message):
+            return await self._handle_conversational(user_message, emit)
 
         # Check if we should decompose the task (higher priority than planning)
         if cfg.decomposition and should_decompose(user_message):
@@ -504,6 +558,12 @@ class Agent:
         actions_taken: list[str] = []  # Track what we've done
         continuation_count = 0  # How many times we've nudged to continue
 
+        # Adaptive token budgeting based on task complexity
+        complexity = estimate_complexity(task)
+        max_tokens, _ = get_token_budget(complexity)
+        # Use configured max_tokens as ceiling, complexity as floor
+        effective_max_tokens = min(self.config.max_tokens, max(max_tokens, 512))
+
         # Rollback planning
         rollback_plan = RollbackPlan() if self.config.reasoning.rollback else None
 
@@ -534,7 +594,7 @@ class Agent:
                     messages=self._build_messages(),
                     tools=tools,
                     temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
+                    max_tokens=effective_max_tokens,
                 ):
                     if chunk.content:
                         await emit(AgentEvent(
@@ -553,7 +613,7 @@ class Agent:
                     messages=self._build_messages(),
                     tools=tools,
                     temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
+                    max_tokens=effective_max_tokens,
                 )
                 content = response.content
                 response_content = response.content

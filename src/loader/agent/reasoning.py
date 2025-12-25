@@ -9,9 +9,118 @@ enabled to improve the agent's decision-making:
 4. Post-Action Verification (Low) - Check if actions produced expected results
 """
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
+
+
+# === Query Classification ===
+
+def is_conversational(message: str) -> bool:
+    """Detect if a message is conversational rather than a task.
+
+    Returns True for greetings, casual chat, simple questions about the agent.
+    These don't need tool calling - just a quick response.
+    """
+    msg = message.lower().strip()
+
+    # Very short messages are usually conversational
+    if len(msg) < 15:
+        # Greetings
+        greetings = [
+            "hi", "hello", "hey", "yo", "sup", "hiya", "howdy",
+            "ello", "hallo", "greetings", "good morning", "good afternoon",
+            "good evening", "morning", "evening", "afternoon",
+            "what's up", "whats up", "wassup", "how are you",
+            "how's it going", "hows it going",
+        ]
+        if any(msg.startswith(g) or msg == g for g in greetings):
+            return True
+
+    # Questions about the agent itself
+    agent_questions = [
+        "who are you", "what are you", "what can you do",
+        "how do you work", "what is loader", "what's loader",
+        "help", "what is this", "how does this work",
+    ]
+    if any(q in msg for q in agent_questions):
+        return True
+
+    # Casual/social messages
+    casual = [
+        "thanks", "thank you", "thx", "ty",
+        "cool", "nice", "great", "awesome", "ok", "okay",
+        "bye", "goodbye", "see you", "later", "cya",
+        "lol", "haha", "hehe", "lmao",
+        "please", "sorry", "oops",
+    ]
+    if msg in casual or any(msg == c for c in casual):
+        return True
+
+    # Messages that are clearly NOT conversational (tasks)
+    task_indicators = [
+        "create", "make", "build", "write", "edit", "delete", "remove",
+        "run", "execute", "install", "fix", "debug", "test", "check",
+        "find", "search", "show", "list", "read", "open", "close",
+        "add", "update", "change", "modify", "refactor", "implement",
+        "file", "folder", "directory", "code", "function", "class",
+        "git", "npm", "pip", "python", "node", "bash", "command",
+    ]
+    if any(ind in msg for ind in task_indicators):
+        return False
+
+    # Short messages without task indicators are likely conversational
+    if len(msg) < 30 and not any(c in msg for c in [".", "/", "\\", "`"]):
+        return True
+
+    return False
+
+
+def estimate_complexity(message: str) -> str:
+    """Estimate query complexity for token budgeting.
+
+    Returns: "trivial", "simple", "moderate", or "complex"
+    """
+    msg = message.lower()
+    word_count = len(message.split())
+
+    # Trivial: greetings, thanks, very short
+    if is_conversational(message) or word_count < 5:
+        return "trivial"
+
+    # Complex indicators
+    complex_indicators = [
+        "project", "application", "website", "api", "database",
+        "refactor", "migrate", "upgrade", "implement", "design",
+        "multiple", "several", "all", "entire", "whole",
+        "and then", "after that", "also", "as well",
+    ]
+    complex_count = sum(1 for ind in complex_indicators if ind in msg)
+
+    if complex_count >= 2 or word_count > 50:
+        return "complex"
+
+    # Simple indicators
+    simple_indicators = [
+        "what is", "how do", "show me", "list", "read",
+        "single", "one", "just", "only", "quick",
+    ]
+    if any(ind in msg for ind in simple_indicators) and word_count < 20:
+        return "simple"
+
+    return "moderate"
+
+
+def get_token_budget(complexity: str) -> tuple[int, int]:
+    """Get (max_tokens, context_tokens) for a complexity level."""
+    budgets = {
+        "trivial": (256, 2048),    # Quick response, minimal context
+        "simple": (512, 4096),     # Short response, some context
+        "moderate": (1024, 8192),  # Normal response
+        "complex": (2048, 16384),  # Full response, full context
+    }
+    return budgets.get(complexity, (1024, 8192))
 
 
 class ConfidenceLevel(Enum):
