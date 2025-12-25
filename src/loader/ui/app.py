@@ -144,6 +144,11 @@ class LoaderApp(App):
         # Add user message to display
         self._add_user_message(user_input)
 
+        # Show generating status immediately (before async work starts)
+        self.is_generating = True
+        self._start_timer()
+        self.query_one(StatusLine).set_generating(True)
+
         # Start agent task
         self.run_agent(user_input)
 
@@ -207,7 +212,13 @@ class LoaderApp(App):
             )
             return ""
         except Exception as e:
-            self._add_message(f"[bold red]Error:[/bold red] {escape(str(e))}")
+            import traceback
+            error_msg = f"[bold red]Error:[/bold red] {escape(str(e))}"
+            # Show traceback in debug scenarios
+            tb = traceback.format_exc()
+            if "Traceback" in tb:
+                error_msg += f"\n[dim]{escape(tb[-500:])}[/dim]"
+            self._add_message(error_msg)
             return ""
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -219,10 +230,12 @@ class LoaderApp(App):
 
     # Message handlers from adapter
     def on_thinking_started(self, message: ThinkingStarted) -> None:
-        """Handle thinking started."""
-        self.is_generating = True
-        self._start_timer()
-        self.query_one(StatusLine).set_generating(True)
+        """Handle thinking started (may be called multiple times per task)."""
+        # Status is already set in on_input_area_submitted, but ensure it stays on
+        if not self.is_generating:
+            self.is_generating = True
+            self._start_timer()
+            self.query_one(StatusLine).set_generating(True)
 
     def on_stream_chunk(self, message: StreamChunk) -> None:
         """Handle streaming content."""

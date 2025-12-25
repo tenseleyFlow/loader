@@ -213,8 +213,6 @@ async def _main(
         if saved:
             console.print(f"[dim]Using saved model: {model}[/dim]")
 
-    mode_str = "ReAct" if react else "Native"
-
     # Initialize backend with performance options
     llm = OllamaBackend(
         model=model,
@@ -223,6 +221,9 @@ async def _main(
         num_gpu=gpu,
         timeout=timeout,
     )
+
+    # Determine actual mode based on model capabilities (not just CLI flag)
+    mode_str = "ReAct" if react or not llm.supports_native_tools() else "Native"
 
     # Check health
     if not await llm.health_check():
