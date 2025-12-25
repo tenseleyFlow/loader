@@ -67,7 +67,7 @@ class ReasoningConfig:
     # Task completion: prevent premature stopping
     completion_check: bool = True  # ON by default - prevents "giving up"
     use_quick_completion: bool = True  # Use heuristics before LLM
-    max_continuation_prompts: int = 3  # Max times to nudge agent to continue
+    max_continuation_prompts: int = 5  # Max times to nudge agent to continue
 
     # Rollback planning: track how to undo destructive actions
     rollback: bool = True  # ON by default - track undo capability
@@ -843,6 +843,28 @@ class Agent:
                             "Execute the task NOW using tool calls.",
                 ))
                 continue
+
+            # No tool calls and early in the task - likely giving up too soon
+            # This catches native mode models that stop without using tools
+            if not self.use_react and len(actions_taken) < 5 and iterations < self.config.max_iterations - 2:
+                # Check if response looks like a stopping point but we haven't done much
+                stopping_phrases = [
+                    "let me know", "feel free", "hope this", "happy to help",
+                    "anything else", "is there", "that's", "all done", "complete",
+                ]
+                looks_like_stopping = any(p in content.lower() for p in stopping_phrases)
+
+                if looks_like_stopping or len(content) < 150:
+                    self.messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content=response_content,
+                    ))
+                    self.messages.append(Message(
+                        role=Role.USER,
+                        content="You stopped without completing the task. Continue executing - "
+                                "use your tools to finish the job. Don't describe what to do, DO IT.",
+                    ))
+                    continue
 
             # Self-critique before finalizing (if enabled and response has substance)
             cfg = self.config.reasoning

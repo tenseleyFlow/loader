@@ -622,20 +622,23 @@ def detect_premature_completion(task: str, response: str, actions_taken: list[st
         "create a", "build a", "make a", "set up", "setup",
         "initialize", "scaffold", "generate", "implement",
         "project", "application", "app", "website", "api",
+        "add", "write", "develop", "design", "help me",
     ]
 
     # Keywords that suggest testing/verification should happen
     verification_indicators = [
         "test", "run", "start", "launch", "verify", "check",
-        "demo", "show", "demonstrate",
+        "demo", "show", "demonstrate", "work", "function",
     ]
 
     # Keywords in response that suggest premature completion
     premature_phrases = [
         "i've created", "i created", "file has been created",
-        "here's the", "i've set up the basic",
-        "you can now", "you should now",
-        "that's it", "all done", "complete",
+        "here's the", "i've set up the basic", "i've written",
+        "you can now", "you should now", "you can run",
+        "that's it", "all done", "complete", "finished",
+        "let me know", "feel free to", "hope this helps",
+        "is there anything else",
     ]
 
     # Check if this looks like a multi-step task
@@ -647,27 +650,53 @@ def detect_premature_completion(task: str, response: str, actions_taken: list[st
     # Check for premature completion phrases
     has_premature_phrase = any(phrase in response_lower for phrase in premature_phrases)
 
-    # Few actions taken for a multi-step task
+    # Action count thresholds
     few_actions = len(actions_taken) < 3
+    very_few_actions = len(actions_taken) < 2
 
-    # Heuristic: if it's a multi-step task with few actions and premature phrases
-    if is_multi_step and few_actions and has_premature_phrase:
+    # Categorize what actions were taken
+    action_types = set()
+    for action in actions_taken:
+        action_lower = action.lower()
+        if "write" in action_lower:
+            action_types.add("write")
+        elif "edit" in action_lower:
+            action_types.add("edit")
+        elif "bash" in action_lower:
+            action_types.add("bash")
+        elif "read" in action_lower:
+            action_types.add("read")
+        elif "glob" in action_lower or "grep" in action_lower:
+            action_types.add("search")
+
+    # More aggressive detection:
+
+    # 1. Multi-step task with premature phrases and few actions
+    if is_multi_step and has_premature_phrase and few_actions:
         return True
 
-    # If verification was expected but only file creation happened
-    if expects_verification and few_actions:
-        action_types = set()
-        for action in actions_taken:
-            if "write" in action or "create" in action:
-                action_types.add("write")
-            elif "bash" in action or "run" in action:
-                action_types.add("run")
-            elif "read" in action:
-                action_types.add("read")
+    # 2. Multi-step task with very few actions (regardless of phrases)
+    if is_multi_step and very_few_actions:
+        return True
 
-        # Only wrote files, never ran anything
-        if action_types == {"write"} or action_types == {"write", "read"}:
+    # 3. Only wrote/edited files but never ran/tested anything
+    if action_types and action_types <= {"write", "edit", "read"} and few_actions:
+        # Wrote files but never executed bash to test
+        if "write" in action_types or "edit" in action_types:
             return True
+
+    # 4. Verification expected but no bash commands run
+    if expects_verification and "bash" not in action_types:
+        return True
+
+    # 5. Response has chatbot-style "let me know" phrases
+    chatbot_phrases = ["let me know", "feel free", "hope this", "happy to help"]
+    if any(phrase in response_lower for phrase in chatbot_phrases):
+        return True
+
+    # 6. Response is very short but task seems substantial
+    if len(response) < 200 and is_multi_step and len(actions_taken) > 0:
+        return True
 
     return False
 
@@ -678,6 +707,7 @@ def get_continuation_prompt(task: str, actions_taken: list[str], response: str) 
     Returns a prompt that nudges the agent to follow through.
     """
     task_lower = task.lower()
+    actions_str = ", ".join(a.split(":")[0] for a in actions_taken[-5:]) if actions_taken else "none"
 
     # Determine what type of follow-up is needed
     follow_ups = []
@@ -712,17 +742,21 @@ def get_continuation_prompt(task: str, actions_taken: list[str], response: str) 
     if follow_ups:
         steps = "\n".join(f"- {step}" for step in follow_ups[:3])
         return (
-            f"WAIT - You haven't finished yet. The task was: \"{task}\"\n\n"
-            f"You only completed {len(actions_taken)} action(s). You should also:\n{steps}\n\n"
-            f"Continue executing the remaining steps. Don't just describe what to do - USE YOUR TOOLS to do it."
+            f"STOP - You are NOT done. The task was: \"{task}\"\n\n"
+            f"Actions so far: {actions_str}\n"
+            f"You MUST also:\n{steps}\n\n"
+            f"DO NOT respond with text. USE YOUR TOOLS NOW to complete these steps."
         )
 
-    # Generic continuation
+    # Generic continuation - be forceful
     return (
-        f"The task \"{task}\" may not be fully complete. "
-        f"You've taken {len(actions_taken)} action(s). "
-        f"Consider: Did you verify the result works? Did you test it? "
-        f"If there's more to do, continue. If truly complete, explain what was accomplished."
+        f"INCOMPLETE. Task: \"{task}\"\n"
+        f"Actions taken: {actions_str} ({len(actions_taken)} total)\n\n"
+        f"You stopped too early. What about:\n"
+        f"- Testing/verifying the result?\n"
+        f"- Running what you created?\n"
+        f"- Installing dependencies?\n\n"
+        f"USE YOUR TOOLS to continue. Do not just describe - EXECUTE."
     )
 
 
