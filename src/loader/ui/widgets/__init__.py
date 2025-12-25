@@ -5,6 +5,7 @@ from .status_line import StatusLine
 from .tool_widget import ToolCallWidget
 from .diff_widget import DiffWidget
 from .streaming import StreamingText
+from .confirmation import ConfirmationModal
 
 __all__ = [
     "InputArea",
@@ -12,4 +13,5 @@ __all__ = [
     "ToolCallWidget",
     "DiffWidget",
     "StreamingText",
+    "ConfirmationModal",
 ]

@@ -1,13 +1,15 @@
 """Tool call widget with collapsible result preview."""
 
+from rich.markup import escape
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.reactive import reactive
-from textual.widgets import Collapsible, Static
+from textual.widgets import Static, Button
 
 
 class ToolCallWidget(Vertical):
-    """Collapsible widget for tool calls with result preview."""
+    """Widget for tool calls with expandable result preview."""
 
     TOOL_BULLETS = {
         "pending": "[yellow]○[/yellow]",
@@ -32,6 +34,8 @@ class ToolCallWidget(Vertical):
         self.preview_lines = preview_lines
         self._result: str = ""
         self._is_error: bool = False
+        self._full_result: str = ""
+        self._has_more: bool = False
 
     def compose(self) -> ComposeResult:
         # Format args for display
@@ -43,12 +47,20 @@ class ToolCallWidget(Vertical):
             classes="tool-header",
         )
         yield Static("", id="tool-summary", classes="tool-summary")
-        yield Collapsible(
-            Static("", id="tool-full-result"),
-            title="Show full output",
-            collapsed=True,
-            id="tool-collapsible",
-        )
+
+        # Toggle button for expand/collapse
+        yield Button("▶ Show full output", id="tool-toggle", classes="tool-toggle", variant="default")
+
+        yield Static("", id="tool-full-result", classes="tool-full-result")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle toggle button press."""
+        if event.button.id == "tool-toggle":
+            if self.expanded:
+                self.action_collapse()
+            else:
+                self.action_expand()
+            event.stop()
 
     def _format_args(self) -> str:
         """Format tool arguments for display."""
@@ -83,19 +95,61 @@ class ToolCallWidget(Vertical):
         # Update header
         self._update_header()
 
-        # Update summary
-        lines = result.splitlines()
-        if len(lines) <= self.preview_lines:
-            # Show all content in summary, hide collapsible
-            summary = result
-            self.query_one("#tool-collapsible", Collapsible).display = False
+        # Build status prefix
+        if is_error:
+            status_line = "[bold red]✗ Failed[/bold red]\n"
         else:
-            # Show preview with expand hint
+            status_line = "[bold green]✓ Success[/bold green]\n"
+
+        # Update summary - escape to prevent markup interpretation
+        escaped_result = escape(result)
+        lines = escaped_result.splitlines()
+
+        toggle_widget = self.query_one("#tool-toggle", Button)
+        full_result_widget = self.query_one("#tool-full-result", Static)
+
+        if len(lines) <= self.preview_lines:
+            # Show all content in summary, hide toggle
+            summary = status_line + escaped_result
+            toggle_widget.display = False
+            full_result_widget.display = False
+            self._has_more = False
+        else:
+            # Show preview with expand toggle
             preview = "\n".join(lines[: self.preview_lines])
-            summary = f"{preview}\n[dim]... ({len(lines) - self.preview_lines} more lines)[/dim]"
-            self.query_one("#tool-full-result", Static).update(result)
+            remaining = len(lines) - self.preview_lines
+            summary = f"{status_line}{preview}\n[dim]... ({remaining} more lines)[/dim]"
+
+            # Store full result and show toggle
+            self._full_result = escaped_result
+            self._has_more = True
+            self._update_toggle()
+            toggle_widget.display = True
+            full_result_widget.display = False  # Hidden until expanded
 
         self.query_one("#tool-summary", Static).update(summary)
+
+    def _update_toggle(self) -> None:
+        """Update the expand/collapse toggle button label."""
+        toggle = self.query_one("#tool-toggle", Button)
+        if self.expanded:
+            toggle.label = "▼ Hide full output"
+        else:
+            toggle.label = "▶ Show full output"
+
+    def action_expand(self) -> None:
+        """Expand to show full output."""
+        self.expanded = True
+        self._update_toggle()
+        full_result = self.query_one("#tool-full-result", Static)
+        full_result.update(self._full_result)
+        full_result.display = True
+
+    def action_collapse(self) -> None:
+        """Collapse to hide full output."""
+        self.expanded = False
+        self._update_toggle()
+        self.query_one("#tool-full-result", Static).display = False
 
     def _update_header(self) -> None:
         """Update the header with current state."""
