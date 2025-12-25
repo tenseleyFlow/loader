@@ -213,8 +213,18 @@ class EventAdapter:
                 # Get matching args from queue (FIFO)
                 tool_name = event.tool_name or ""
                 tool_args = {}
+
+                # Find matching tool_call in queue (should be FIFO but handle mismatch)
                 if self._tool_args_queue:
-                    _, tool_args = self._tool_args_queue.pop(0)
+                    # Try to find matching tool by name, fallback to FIFO
+                    for i, (queued_name, queued_args) in enumerate(self._tool_args_queue):
+                        if queued_name == tool_name:
+                            tool_args = queued_args
+                            self._tool_args_queue.pop(i)
+                            break
+                    else:
+                        # No match found, use FIFO
+                        _, tool_args = self._tool_args_queue.pop(0)
 
                 # Extract diff info for edit/write tools
                 old_string = None
