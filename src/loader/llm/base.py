@@ -59,6 +59,9 @@ class StreamChunk:
     full_content: str = ""  # Accumulated full content (only set when is_done=True)
     tool_calls: list[ToolCall] = field(default_factory=list)
     is_done: bool = False
+    # Pending tool call detected during streaming (ReAct mode)
+    # This allows showing tool widgets as they're detected, before streaming ends
+    pending_tool_call: ToolCall | None = None
 
 
 @dataclass

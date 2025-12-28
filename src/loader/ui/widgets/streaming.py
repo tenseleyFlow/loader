@@ -19,10 +19,24 @@ class StreamingText(Static):
     def render(self) -> Text:
         """Render the content with optional cursor."""
         # Use Text object to avoid markup interpretation of LLM output
-        text = Text(self._content_buffer)
+        # Clean any tool_call tags that slipped through filtering
+        content = self._clean_tool_tags(self._content_buffer)
+        text = Text(content)
         if self.is_streaming:
             text.append("|", style="dim")  # Cursor indicator
         return text
+
+    def _clean_tool_tags(self, content: str) -> str:
+        """Remove any tool_call/think tags that weren't filtered during streaming."""
+        import re
+        # Remove <tool_call>...</tool_call> blocks
+        content = re.sub(r'<tool_call>.*?</tool_call>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        # Remove orphaned tags
+        content = re.sub(r'</?tool_call>', '', content, flags=re.IGNORECASE)
+        content = re.sub(r'</?think>', '', content, flags=re.IGNORECASE)
+        # Clean up excess newlines from removed blocks
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        return content
 
     def append(self, chunk: str) -> None:
         """Append a chunk to the content."""

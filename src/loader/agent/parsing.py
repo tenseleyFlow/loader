@@ -26,6 +26,38 @@ def _extract_arguments(data: dict) -> dict:
     return {}
 
 
+def _parse_bracket_args(args_str: str) -> dict:
+    """Parse arguments from bracketed tool call format.
+
+    Handles formats like:
+        file_path=/tmp/test.txt, content="hello world"
+        command="ls -la"
+        file_path="test.py", old_string="foo", new_string="bar"
+
+    Args:
+        args_str: The arguments string (everything after "tool with:" or "tool:")
+
+    Returns:
+        Dictionary of parsed arguments
+    """
+    args = {}
+
+    # Pattern to match key=value pairs where value can be:
+    # - quoted string (single or double quotes)
+    # - unquoted value (until comma or end)
+    pattern = r'(\w+)\s*=\s*(?:"([^"]*?)"|\'([^\']*?)\'|([^,\]]+?))\s*(?:,|$)'
+
+    for match in re.finditer(pattern, args_str):
+        key = match.group(1)
+        # Value is in one of the capture groups (2=double quoted, 3=single quoted, 4=unquoted)
+        value = match.group(2) or match.group(3) or match.group(4)
+        if value is not None:
+            value = value.strip()
+            args[key] = value
+
+    return args
+
+
 def parse_tool_calls(text: str) -> ParsedResponse:
     """Parse tool calls from LLM text output.
 
@@ -95,6 +127,24 @@ def parse_tool_calls(text: str) -> ParsedResponse:
         # Remove bare JSON tool calls from content
         if tool_calls:
             content = re.sub(bare_json_pattern, "", content)
+
+    # Pattern 3: Bracketed format [calls/USE tool with/: key=value, ...]
+    # Examples:
+    #   [calls write tool with: file_path=/tmp/test.txt, content="hello"]
+    #   [USE bash tool: command="ls -la"]
+    if not tool_calls:
+        bracket_pattern = r'\[(?:calls|USE)\s+(\w+)\s+tool(?:\s+with)?[:\s]+([^\]]+)\]'
+        for i, (name, args_str) in enumerate(re.findall(bracket_pattern, text, re.IGNORECASE)):
+            args = _parse_bracket_args(args_str)
+            if args:
+                tool_calls.append(ToolCall(
+                    id=f"call_{i}",
+                    name=name.lower(),
+                    arguments=args,
+                ))
+        # Remove bracketed tool calls from content
+        if tool_calls:
+            content = re.sub(bracket_pattern, "", content, flags=re.IGNORECASE)
 
     # Clean up content
     content = content.strip()

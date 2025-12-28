@@ -102,6 +102,37 @@ Action: <tool_call>
         assert "<tool_call>" not in result.content
         assert "</tool_call>" not in result.content
 
+    def test_parse_bracketed_calls_format(self):
+        """Test parsing [calls tool with: key=value] format."""
+        text = '''I'll create the file now.
+[calls write tool with: file_path=/tmp/test.txt, content="hello world"]
+Created the file.'''
+        result = parse_tool_calls(text)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "write"
+        assert result.tool_calls[0].arguments["file_path"] == "/tmp/test.txt"
+        assert result.tool_calls[0].arguments["content"] == "hello world"
+        # Bracketed call should be removed from content
+        assert "[calls" not in result.content
+
+    def test_parse_bracketed_use_format(self):
+        """Test parsing [USE tool: key=value] format."""
+        text = '[USE bash tool: command="ls -la"]'
+        result = parse_tool_calls(text)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "bash"
+        assert result.tool_calls[0].arguments["command"] == "ls -la"
+
+    def test_parse_bracketed_edit_format(self):
+        """Test parsing bracketed format with edit tool."""
+        text = '[calls edit tool with: file_path="test.py", old_string="foo", new_string="bar"]'
+        result = parse_tool_calls(text)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "edit"
+        assert result.tool_calls[0].arguments["file_path"] == "test.py"
+        assert result.tool_calls[0].arguments["old_string"] == "foo"
+        assert result.tool_calls[0].arguments["new_string"] == "bar"
+
 
 class TestFormatToolResult:
     """Tests for format_tool_result function."""

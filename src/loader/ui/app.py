@@ -68,6 +68,14 @@ class LoaderApp(App):
         self._tool_widget_queue: list[ToolCallWidget] = []  # Queue of pending tool widgets
         self._timer_handle = None
 
+    def _debug_log(self, message: str) -> None:
+        """Write debug message to log file."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"{message}\n")
+        except Exception:
+            pass
+
     def compose(self) -> ComposeResult:
         yield Container(
             ScrollableContainer(id="message-area"),
@@ -137,6 +145,10 @@ class LoaderApp(App):
 
         # If agent is running, this is a steering message
         if self.is_generating and self.agent.is_running:
+            # Finalize current streaming so new content appears below user's message
+            if self._current_streaming is not None:
+                self._current_streaming.stop_streaming()
+                self._current_streaming = None
             self._add_steering_message(user_input)
             self.agent.steer(user_input)
             return
@@ -258,6 +270,11 @@ class LoaderApp(App):
         """Handle tool call start."""
         msg_area = self.query_one("#message-area", ScrollableContainer)
 
+        # Finalize any ongoing streaming - tool calls interrupt thinking
+        if self._current_streaming is not None:
+            self._current_streaming.stop_streaming()
+            self._current_streaming = None
+
         # Create tool widget
         widget = ToolCallWidget(
             tool_name=message.tool_name,
@@ -272,12 +289,20 @@ class LoaderApp(App):
         """Handle tool call completion."""
         msg_area = self.query_one("#message-area", ScrollableContainer)
 
+        # Debug: log what we received
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"on_tool_call_completed: tool={message.tool_name}, new_string={bool(message.new_string)}, old_string={bool(message.old_string)}, file_path={message.file_path}\n")
+        except Exception:
+            pass
+
         # Get the corresponding tool widget from queue (FIFO)
         tool_widget = self._tool_widget_queue.pop(0) if self._tool_widget_queue else None
 
         # Check if this is an edit tool with diff info
         if message.tool_name == "edit" and message.old_string and message.new_string:
             # Replace tool widget with diff widget
+            self._debug_log("  -> showing EDIT diff widget")
             if tool_widget:
                 tool_widget.remove()
 
@@ -289,6 +314,7 @@ class LoaderApp(App):
             msg_area.mount(diff_widget)
         # Check if this is a write tool - show as diff (new file)
         elif message.tool_name == "write" and message.new_string:
+            self._debug_log("  -> showing WRITE diff widget")
             if tool_widget:
                 tool_widget.remove()
 
@@ -300,6 +326,7 @@ class LoaderApp(App):
             msg_area.mount(diff_widget)
         elif tool_widget:
             # Update existing tool widget with result
+            self._debug_log("  -> showing regular tool widget result")
             tool_widget.set_result(
                 message.content, is_error=message.is_error
             )

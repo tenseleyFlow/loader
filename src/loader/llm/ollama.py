@@ -286,10 +286,17 @@ class OllamaBackend(LLMBackend):
         if "tool_calls" in message:
             for i, tc in enumerate(message["tool_calls"]):
                 func = tc.get("function", {})
+                # Arguments may be a JSON string or dict
+                args = func.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
                 tool_calls.append(ToolCall(
                     id=tc.get("id", f"call_{i}"),
                     name=func.get("name", ""),
-                    arguments=func.get("arguments", {}),
+                    arguments=args,
                 ))
         else:
             # Try to parse tool calls from text
@@ -362,6 +369,14 @@ class OllamaBackend(LLMBackend):
             async for chunk in self._stream_response(response):
                 yield chunk
 
+    def _debug_log(self, message: str) -> None:
+        """Write debug message to log file."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[ollama] {message}\n")
+        except Exception:
+            pass
+
     async def _stream_response(self, response) -> AsyncIterator[StreamChunk]:
         """Internal helper to stream response chunks."""
         import re
@@ -369,9 +384,12 @@ class OllamaBackend(LLMBackend):
         full_content = ""
         display_content = ""  # Content to show (filtered)
         json_buffer = ""  # Buffer for potential tool call JSON
+        tool_call_buffer = ""  # Buffer for <tool_call> block content
         in_json_block = False
         in_think_block = False  # For reasoning models like deepseek-r1
         in_tool_call_block = False  # For ReAct <tool_call> tags
+        detected_tool_calls: list[ToolCall] = []  # Track tool calls found during streaming
+        tool_call_counter = 0
 
         async for line in response.aiter_lines():
             if not line:
@@ -392,18 +410,34 @@ class OllamaBackend(LLMBackend):
                 tool_calls = []
                 # Check for native tool calls first
                 if "tool_calls" in message:
+                    self._debug_log(f"is_done: found native tool_calls in message: {len(message['tool_calls'])}")
                     for i, tc in enumerate(message["tool_calls"]):
                         func = tc.get("function", {})
+                        # Arguments may be a JSON string or dict
+                        args = func.get("arguments", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
                         tool_calls.append(ToolCall(
                             id=tc.get("id", f"call_{i}"),
                             name=func.get("name", ""),
-                            arguments=func.get("arguments", {}),
+                            arguments=args,
                         ))
                 else:
-                    # Try to parse tool calls from text
-                    clean_content, tool_calls = self._parse_tool_calls(full_content)
-                    display_content = clean_content
+                    # Use detected tool calls from streaming, or parse from text
+                    if detected_tool_calls:
+                        self._debug_log(f"is_done: using {len(detected_tool_calls)} detected_tool_calls from streaming")
+                        tool_calls = detected_tool_calls
+                    else:
+                        self._debug_log(f"is_done: parsing tool calls from text (len={len(full_content)})")
+                        self._debug_log(f"is_done: full_content = {repr(full_content[:500])}")
+                        clean_content, tool_calls = self._parse_tool_calls(full_content)
+                        self._debug_log(f"is_done: parsed {len(tool_calls)} tool calls")
+                        display_content = clean_content
 
+                self._debug_log(f"is_done: yielding final chunk with {len(tool_calls)} tool_calls")
                 yield StreamChunk(
                     content="",  # Don't emit final chunk content (already streamed)
                     full_content=display_content or full_content,
@@ -431,27 +465,69 @@ class OllamaBackend(LLMBackend):
                     # Skip content inside think block
                     continue
 
-                # Filter out <tool_call> blocks from ReAct mode
+                # Filter out <tool_call> blocks from ReAct mode - but parse them!
                 if "<tool_call>" in chunk_content:
                     in_tool_call_block = True
+                    tool_call_buffer = ""  # Reset buffer
                     # Keep content before <tool_call>
                     before = chunk_content.split("<tool_call>")[0]
                     if before:
                         display_content += before
                         yield StreamChunk(content=before)
+                    # Start buffering the tool call content
+                    after_tag = chunk_content.split("<tool_call>", 1)[-1]
+                    if "</tool_call>" in after_tag:
+                        # Complete tool call in same chunk
+                        tool_json = after_tag.split("</tool_call>")[0]
+                        after_close = after_tag.split("</tool_call>", 1)[-1]
+                        in_tool_call_block = False
+                        # Parse and yield the tool call
+                        try:
+                            tc_data = json.loads(tool_json.strip())
+                            tc = ToolCall(
+                                id=f"call_{tool_call_counter}",
+                                name=tc_data.get("name", ""),
+                                arguments=tc_data.get("arguments", tc_data.get("parameters", {})),
+                            )
+                            tool_call_counter += 1
+                            detected_tool_calls.append(tc)
+                            yield StreamChunk(content="", pending_tool_call=tc)
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+                        if after_close.strip():
+                            display_content += after_close
+                            yield StreamChunk(content=after_close)
+                    else:
+                        tool_call_buffer = after_tag
                     continue
                 elif in_tool_call_block:
                     if "</tool_call>" in chunk_content:
                         in_tool_call_block = False
-                        # Keep content after </tool_call>
-                        after = chunk_content.split("</tool_call>")[-1]
-                        if after:
-                            display_content += after
-                            yield StreamChunk(content=after)
-                    # Skip content inside tool_call block
+                        # Complete the tool call buffer
+                        tool_json = tool_call_buffer + chunk_content.split("</tool_call>")[0]
+                        after_close = chunk_content.split("</tool_call>", 1)[-1]
+                        # Parse and yield the tool call
+                        try:
+                            tc_data = json.loads(tool_json.strip())
+                            tc = ToolCall(
+                                id=f"call_{tool_call_counter}",
+                                name=tc_data.get("name", ""),
+                                arguments=tc_data.get("arguments", tc_data.get("parameters", {})),
+                            )
+                            tool_call_counter += 1
+                            detected_tool_calls.append(tc)
+                            yield StreamChunk(content="", pending_tool_call=tc)
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+                        if after_close.strip():
+                            display_content += after_close
+                            yield StreamChunk(content=after_close)
+                    else:
+                        # Still accumulating tool call content
+                        tool_call_buffer += chunk_content
                     continue
 
-                # Filter out tool call JSON from display
+                # Filter out tool call JSON from display (bare JSON without tags)
                 # Detect start of JSON tool call
                 if not in_json_block and '{"name"' in chunk_content:
                     in_json_block = True
@@ -467,17 +543,29 @@ class OllamaBackend(LLMBackend):
                     open_braces = json_buffer.count('{')
                     close_braces = json_buffer.count('}')
                     if close_braces >= open_braces and open_braces > 0:
-                        # JSON block complete, don't display it
+                        # JSON block complete, try to parse it
                         in_json_block = False
-                        # Check for content after the JSON
                         try:
                             # Find where JSON ends
                             last_brace = json_buffer.rfind('}')
+                            json_str = json_buffer[:last_brace + 1]
                             after_json = json_buffer[last_brace + 1:]
+                            # Try to parse as tool call
+                            tc_data = json.loads(json_str)
+                            if "name" in tc_data:
+                                tc = ToolCall(
+                                    id=f"call_{tool_call_counter}",
+                                    name=tc_data.get("name", ""),
+                                    arguments=tc_data.get("arguments", tc_data.get("parameters", {})),
+                                )
+                                tool_call_counter += 1
+                                detected_tool_calls.append(tc)
+                                yield StreamChunk(content="", pending_tool_call=tc)
                             if after_json.strip():
                                 display_content += after_json
                                 yield StreamChunk(content=after_json)
-                        except Exception:
+                        except (json.JSONDecodeError, KeyError):
+                            # Not valid JSON, just discard
                             pass
                         json_buffer = ""
                 else:

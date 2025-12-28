@@ -194,7 +194,14 @@ class Agent:
 
         # Check if backend supports native tools
         if hasattr(self.backend, "supports_native_tools"):
-            self._use_react = not self.backend.supports_native_tools()
+            supports_native = self.backend.supports_native_tools()
+            self._use_react = not supports_native
+            # Debug log
+            try:
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(f"[loop] use_react: supports_native={supports_native}, use_react={self._use_react}\n")
+            except Exception:
+                pass
         else:
             # Default to ReAct for unknown backends
             self._use_react = True
@@ -586,6 +593,7 @@ class Agent:
             tools = None if self.use_react else self.registry.get_schemas()
 
             # Use streaming or regular completion
+            pending_tool_calls_seen: set[str] = set()  # Track IDs of pending tool calls shown
             if self.config.stream:
                 full_content = ""
                 tool_calls: list[ToolCall] = []
@@ -596,15 +604,30 @@ class Agent:
                     temperature=self.config.temperature,
                     max_tokens=effective_max_tokens,
                 ):
-                    if chunk.content:
+                    # Emit stream events for content OR for final chunk (to signal end)
+                    if chunk.content or chunk.is_done:
                         await emit(AgentEvent(
                             type="stream",
                             content=chunk.content,
                             is_stream_end=chunk.is_done,
                         ))
+                    # Show pending tool calls as they're detected (ReAct mode interleaving)
+                    if chunk.pending_tool_call and chunk.pending_tool_call.id not in pending_tool_calls_seen:
+                        pending_tool_calls_seen.add(chunk.pending_tool_call.id)
+                        await emit(AgentEvent(
+                            type="tool_call",
+                            tool_name=chunk.pending_tool_call.name,
+                            tool_args=chunk.pending_tool_call.arguments,
+                        ))
                     if chunk.is_done:
                         full_content = chunk.full_content or full_content
                         tool_calls = chunk.tool_calls
+                        # Debug log
+                        try:
+                            with open("/tmp/loader_debug.log", "a") as f:
+                                f.write(f"[loop] chunk.is_done: got {len(tool_calls)} tool_calls\n")
+                        except Exception:
+                            pass
 
                 content = full_content
                 response_content = full_content
@@ -638,6 +661,15 @@ class Agent:
 
             # If there are tool calls, execute them
             if tool_calls:
+                # Debug log
+                try:
+                    with open("/tmp/loader_debug.log", "a") as f:
+                        f.write(f"[loop] executing {len(tool_calls)} tool_calls\n")
+                        for tc in tool_calls:
+                            f.write(f"[loop]   - {tc.name}: id={tc.id}, args_keys={list(tc.arguments.keys())}\n")
+                except Exception:
+                    pass
+
                 # Add assistant message with tool calls
                 self.messages.append(Message(
                     role=Role.ASSISTANT,
@@ -682,11 +714,24 @@ class Agent:
                             ))
                             continue  # Skip this tool call, let LLM reconsider
 
-                    await emit(AgentEvent(
-                        type="tool_call",
-                        tool_name=tool_call.name,
-                        tool_args=tool_call.arguments,
-                    ))
+                    # Only emit tool_call if not already shown during streaming
+                    if tool_call.id not in pending_tool_calls_seen:
+                        try:
+                            with open("/tmp/loader_debug.log", "a") as f:
+                                f.write(f"[loop] emitting tool_call event for {tool_call.name}\n")
+                        except Exception:
+                            pass
+                        await emit(AgentEvent(
+                            type="tool_call",
+                            tool_name=tool_call.name,
+                            tool_args=tool_call.arguments,
+                        ))
+                    else:
+                        try:
+                            with open("/tmp/loader_debug.log", "a") as f:
+                                f.write(f"[loop] SKIPPING tool_call event for {tool_call.name} (already in pending_seen)\n")
+                        except Exception:
+                            pass
 
                     # Track this action for completion checking
                     action_desc = f"{tool_call.name}: {str(tool_call.arguments)[:100]}"
@@ -904,25 +949,21 @@ class Agent:
                 ))
                 continue
 
-            # No tool calls and early in the task - likely giving up too soon
-            # This catches native mode models that stop without using tools
-            if not self.use_react and len(actions_taken) < 5 and iterations < self.config.max_iterations - 2:
-                # Check if response looks like a stopping point but we haven't done much
-                stopping_phrases = [
-                    "let me know", "feel free", "hope this", "happy to help",
-                    "anything else", "is there", "that's", "all done", "complete",
-                ]
-                looks_like_stopping = any(p in content.lower() for p in stopping_phrases)
+            # No tool calls and early in the task - MAY be giving up too soon
+            # But only intervene if we haven't done ANY work yet
+            if not self.use_react and len(actions_taken) == 0 and iterations < self.config.max_iterations - 2:
+                # Check if response looks like deflection without having done anything
+                deflection_phrases = ["you can", "you should", "you could", "try running"]
+                looks_like_deflection = any(p in content.lower() for p in deflection_phrases)
 
-                if looks_like_stopping or len(content) < 150:
+                if looks_like_deflection:
                     self.messages.append(Message(
                         role=Role.ASSISTANT,
                         content=response_content,
                     ))
                     self.messages.append(Message(
                         role=Role.USER,
-                        content="You stopped without completing the task. Continue executing - "
-                                "use your tools to finish the job. Don't describe what to do, DO IT.",
+                        content="Please use your tools to execute the task rather than telling me what to do.",
                     ))
                     continue
 

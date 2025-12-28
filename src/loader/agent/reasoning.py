@@ -722,46 +722,52 @@ def detect_premature_completion(task: str, response: str, actions_taken: list[st
     """Quick heuristic to detect if agent is stopping too early.
 
     Returns True if the agent might be giving up prematurely.
+    This should be CONSERVATIVE - only trigger when really needed,
+    not for simple tasks that are genuinely complete.
     """
     task_lower = task.lower()
     response_lower = response.lower()
 
-    # Keywords that suggest the task should involve multiple steps
-    multi_step_indicators = [
-        "create a", "build a", "make a", "set up", "setup",
-        "initialize", "scaffold", "generate", "implement",
-        "project", "application", "app", "website", "api",
-        "add", "write", "develop", "design", "help me",
+    # If no actions taken at all and task requires action, that's premature
+    if not actions_taken:
+        # But only if this looks like an actionable task
+        action_verbs = ["create", "write", "make", "edit", "fix", "add", "delete", "run"]
+        if any(verb in task_lower for verb in action_verbs):
+            return True
+        return False  # Informational/conversational tasks don't need actions
+
+    # If we took actions and got successful results, trust that we're done
+    # Check for success indicators in response
+    success_indicators = [
+        "successfully", "created", "written", "done", "completed",
+        "file now contains", "has been updated", "installed",
     ]
+    if any(ind in response_lower for ind in success_indicators) and len(actions_taken) >= 1:
+        return False  # Likely actually done
 
-    # Keywords that suggest testing/verification should happen
-    verification_indicators = [
-        "test", "run", "start", "launch", "verify", "check",
-        "demo", "show", "demonstrate", "work", "function",
+    # Keywords that suggest COMPLEX multi-step tasks (not simple ones)
+    complex_indicators = [
+        "set up a project", "create a project", "build a complete",
+        "scaffold", "initialize a new", "create a full",
+        "implement a full", "develop a complete",
     ]
+    is_complex = any(ind in task_lower for ind in complex_indicators)
 
-    # Keywords in response that suggest premature completion
-    premature_phrases = [
-        "i've created", "i created", "file has been created",
-        "here's the", "i've set up the basic", "i've written",
-        "you can now", "you should now", "you can run",
-        "that's it", "all done", "complete", "finished",
-        "let me know", "feel free to", "hope this helps",
-        "is there anything else",
+    # Simple creation tasks don't need follow-up
+    simple_creation = [
+        "create a file", "write a file", "make a file",
+        "add a function", "edit the", "fix the", "update the",
+        "read the", "show me", "list",
     ]
+    is_simple = any(ind in task_lower for ind in simple_creation)
 
-    # Check if this looks like a multi-step task
-    is_multi_step = any(ind in task_lower for ind in multi_step_indicators)
+    # If it's a simple task with at least one action, it's probably done
+    if is_simple and len(actions_taken) >= 1:
+        return False
 
-    # Check if verification was expected but not done
-    expects_verification = any(ind in task_lower for ind in verification_indicators)
-
-    # Check for premature completion phrases
-    has_premature_phrase = any(phrase in response_lower for phrase in premature_phrases)
-
-    # Action count thresholds
-    few_actions = len(actions_taken) < 3
-    very_few_actions = len(actions_taken) < 2
+    # Explicit verification requests need bash
+    explicit_verification = ["and test", "and run", "and verify", "make sure it works"]
+    needs_verification = any(ind in task_lower for ind in explicit_verification)
 
     # Categorize what actions were taken
     action_types = set()
@@ -778,33 +784,19 @@ def detect_premature_completion(task: str, response: str, actions_taken: list[st
         elif "glob" in action_lower or "grep" in action_lower:
             action_types.add("search")
 
-    # More aggressive detection:
+    # Detection rules (more conservative):
 
-    # 1. Multi-step task with premature phrases and few actions
-    if is_multi_step and has_premature_phrase and few_actions:
+    # 1. Complex project tasks with very few actions
+    if is_complex and len(actions_taken) < 3:
         return True
 
-    # 2. Multi-step task with very few actions (regardless of phrases)
-    if is_multi_step and very_few_actions:
+    # 2. Explicitly requested verification but no bash run
+    if needs_verification and "bash" not in action_types:
         return True
 
-    # 3. Only wrote/edited files but never ran/tested anything
-    if action_types and action_types <= {"write", "edit", "read"} and few_actions:
-        # Wrote files but never executed bash to test
-        if "write" in action_types or "edit" in action_types:
-            return True
-
-    # 4. Verification expected but no bash commands run
-    if expects_verification and "bash" not in action_types:
-        return True
-
-    # 5. Response has chatbot-style "let me know" phrases
-    chatbot_phrases = ["let me know", "feel free", "hope this", "happy to help"]
-    if any(phrase in response_lower for phrase in chatbot_phrases):
-        return True
-
-    # 6. Response is very short but task seems substantial
-    if len(response) < 200 and is_multi_step and len(actions_taken) > 0:
+    # 3. Chatbot-style deflection with no real work done
+    deflection_phrases = ["you can now", "you should", "you can run", "you can use"]
+    if any(phrase in response_lower for phrase in deflection_phrases) and len(actions_taken) < 2:
         return True
 
     return False
@@ -814,6 +806,7 @@ def get_continuation_prompt(task: str, actions_taken: list[str], response: str) 
     """Generate a prompt to encourage the agent to continue.
 
     Returns a prompt that nudges the agent to follow through.
+    Should be helpful, not aggressive.
     """
     task_lower = task.lower()
     actions_str = ", ".join(a.split(":")[0] for a in actions_taken[-5:]) if actions_taken else "none"
@@ -821,51 +814,37 @@ def get_continuation_prompt(task: str, actions_taken: list[str], response: str) 
     # Determine what type of follow-up is needed
     follow_ups = []
 
-    # Project setup tasks should initialize
-    if any(kw in task_lower for kw in ["node", "npm", "javascript", "react", "vue", "next"]):
-        if not any("npm" in a for a in actions_taken):
-            follow_ups.append("Run `npm install` to install dependencies")
-            follow_ups.append("Start the development server to verify it works")
+    # Only suggest package install if explicitly mentioned in task
+    if any(kw in task_lower for kw in ["install", "dependencies", "set up project"]):
+        if "node" in task_lower or "npm" in task_lower:
+            if not any("npm" in a for a in actions_taken):
+                follow_ups.append("Run `npm install` to install dependencies")
+        if "python" in task_lower or "pip" in task_lower:
+            if not any("pip" in a or "uv" in a for a in actions_taken):
+                follow_ups.append("Install dependencies")
 
-    if any(kw in task_lower for kw in ["python", "pip", "django", "flask", "fastapi"]):
-        if not any("pip" in a or "uv" in a for a in actions_taken):
-            follow_ups.append("Install dependencies with pip/uv")
-            follow_ups.append("Run the application to verify it works")
-
-    # Test tasks should run tests
-    if "test" in task_lower:
+    # Only suggest running tests if "test" is explicitly in task
+    if "test" in task_lower and "run" in task_lower:
         if not any("test" in a or "pytest" in a or "jest" in a for a in actions_taken):
-            follow_ups.append("Run the tests to verify they pass")
+            follow_ups.append("Run the tests")
 
-    # Build tasks should verify build
-    if "build" in task_lower or "compile" in task_lower:
-        if not any("build" in a or "compile" in a for a in actions_taken):
-            follow_ups.append("Run the build to verify it succeeds")
-
-    # Generic follow-ups for creation tasks
-    if any(kw in task_lower for kw in ["create", "make", "build", "set up"]):
-        if len(actions_taken) < 3:
-            follow_ups.append("Verify the creation was successful")
-            follow_ups.append("Demonstrate that it works as expected")
+    # If task explicitly asks to run/verify, remind to do so
+    if any(kw in task_lower for kw in ["and run", "and test", "and verify", "make sure it works"]):
+        follow_ups.append("Execute what was created to verify it works")
 
     if follow_ups:
-        steps = "\n".join(f"- {step}" for step in follow_ups[:3])
+        steps = "\n".join(f"- {step}" for step in follow_ups[:2])
         return (
-            f"STOP - You are NOT done. The task was: \"{task}\"\n\n"
-            f"Actions so far: {actions_str}\n"
-            f"You MUST also:\n{steps}\n\n"
-            f"DO NOT respond with text. USE YOUR TOOLS NOW to complete these steps."
+            f"The task was: \"{task}\"\n\n"
+            f"You may need to also:\n{steps}\n\n"
+            f"If the task is actually complete, just confirm what was done."
         )
 
-    # Generic continuation - be forceful
+    # Generic - be gentle
     return (
-        f"INCOMPLETE. Task: \"{task}\"\n"
-        f"Actions taken: {actions_str} ({len(actions_taken)} total)\n\n"
-        f"You stopped too early. What about:\n"
-        f"- Testing/verifying the result?\n"
-        f"- Running what you created?\n"
-        f"- Installing dependencies?\n\n"
-        f"USE YOUR TOOLS to continue. Do not just describe - EXECUTE."
+        f"Task: \"{task}\"\n"
+        f"You took {len(actions_taken)} action(s). "
+        f"If there's more to do, continue. Otherwise, confirm completion."
     )
 
 

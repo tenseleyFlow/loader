@@ -1,0 +1,30 @@
+{
+  "dependencies": {
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-parallax-tilt": "^1.7.315"
+  },
+  "name": "loader",
+  "version": "1.0.0",
+  "description": "Local agentic coding assistant. Runs on your hardware with local LLMs.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tenseleyFlow/loader.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/tenseleyFlow/loader/issues"
+  },
+  "homepage": "https://github.com/tenseleyFlow/loader#readme"
+}

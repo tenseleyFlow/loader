@@ -178,12 +178,29 @@ class RollbackSummary(Message):
 class EventAdapter:
     """Adapts Agent callback events to Textual messages."""
 
+    DEBUG_LOG_FILE = "/tmp/loader_debug.log"
+
     def __init__(self, app: "LoaderApp") -> None:  # noqa: F821
         self.app = app
         self._tool_args_queue: list[tuple[str, dict]] = []  # Queue of (tool_name, args)
+        # Clear debug log on start
+        try:
+            with open(self.DEBUG_LOG_FILE, "w") as f:
+                f.write("=== Loader Debug Log ===\n")
+        except Exception:
+            pass
+
+    def _debug_log(self, message: str) -> None:
+        """Write debug message to log file."""
+        try:
+            with open(self.DEBUG_LOG_FILE, "a") as f:
+                f.write(f"{message}\n")
+        except Exception:
+            pass
 
     def handle_event(self, event: AgentEvent) -> None:
         """Convert AgentEvent to appropriate Textual message and post it."""
+        self._debug_log(f"handle_event: type={event.type}")
         match event.type:
             case "thinking":
                 self.app.post_message(ThinkingStarted())
@@ -201,11 +218,22 @@ class EventAdapter:
 
             case "tool_call":
                 # Queue args for matching with result (FIFO)
-                self._tool_args_queue.append((event.tool_name or "", event.tool_args or {}))
+                tool_name = event.tool_name or ""
+                tool_args = event.tool_args or {}
+                self._tool_args_queue.append((tool_name, tool_args))
+
+                # Debug: log tool args for edit/write (helps diagnose diff view issues)
+                self._debug_log(f"tool_call '{tool_name}': queued, keys={list(tool_args.keys())}")
+                if tool_name == "write":
+                    content = tool_args.get("content", "")
+                    self._debug_log(f"  write content: {len(content) if content else 0} chars")
+                elif tool_name == "edit":
+                    self._debug_log(f"  edit old_string: {bool(tool_args.get('old_string'))}, new_string: {bool(tool_args.get('new_string'))}")
+
                 self.app.post_message(
                     ToolCallStarted(
-                        tool_name=event.tool_name or "",
-                        tool_args=event.tool_args or {},
+                        tool_name=tool_name,
+                        tool_args=tool_args,
                     )
                 )
 
@@ -221,24 +249,63 @@ class EventAdapter:
                         if queued_name == tool_name:
                             tool_args = queued_args
                             self._tool_args_queue.pop(i)
+                            self._debug_log(f"tool_result '{tool_name}': matched in queue, keys={list(tool_args.keys())}")
                             break
                     else:
                         # No match found, use FIFO
-                        _, tool_args = self._tool_args_queue.pop(0)
+                        popped_name, tool_args = self._tool_args_queue.pop(0)
+                        self._debug_log(f"tool_result '{tool_name}': no match, used FIFO (got '{popped_name}'), keys={list(tool_args.keys())}")
+                else:
+                    self._debug_log(f"tool_result '{tool_name}': queue was EMPTY!")
 
                 # Extract diff info for edit/write tools
                 old_string = None
                 new_string = None
                 file_path = None
 
-                if tool_name == "edit" and tool_args:
-                    old_string = tool_args.get("old_string")
-                    new_string = tool_args.get("new_string")
-                    file_path = tool_args.get("file_path")
-                elif tool_name == "write" and tool_args:
+                if tool_name == "edit":
+                    if tool_args:
+                        # Try multiple key names that models might use
+                        old_string = (
+                            tool_args.get("old_string")
+                            or tool_args.get("old")
+                            or tool_args.get("original")
+                            or tool_args.get("search")
+                            or tool_args.get("find")
+                        )
+                        new_string = (
+                            tool_args.get("new_string")
+                            or tool_args.get("new")
+                            or tool_args.get("replacement")
+                            or tool_args.get("replace")
+                        )
+                        file_path = (
+                            tool_args.get("file_path")
+                            or tool_args.get("path")
+                            or tool_args.get("filename")
+                            or tool_args.get("file")
+                        )
+                        self._debug_log(f"  edit extracted: old={bool(old_string)} ({len(old_string) if old_string else 0} chars), new={bool(new_string)} ({len(new_string) if new_string else 0} chars), path={file_path}")
+                    else:
+                        self._debug_log(f"  edit: tool_args was empty!")
+                elif tool_name == "write":
                     # For writes, content is the new file content
-                    new_string = tool_args.get("content")
-                    file_path = tool_args.get("file_path")
+                    # Try multiple key names that models might use
+                    if tool_args:
+                        new_string = (
+                            tool_args.get("content")
+                            or tool_args.get("contents")
+                            or tool_args.get("text")
+                            or tool_args.get("data")
+                        )
+                        file_path = (
+                            tool_args.get("file_path")
+                            or tool_args.get("path")
+                            or tool_args.get("filename")
+                        )
+                        self._debug_log(f"  write extracted: new={bool(new_string)} ({len(new_string) if new_string else 0} chars), path={file_path}")
+                    else:
+                        self._debug_log(f"  write: tool_args was empty!")
 
                 self.app.post_message(
                     ToolCallCompleted(
