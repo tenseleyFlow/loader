@@ -54,3 +54,4 @@ Thumbs.db
 # Local docs
 docs/
 .fackr/
+node_modules/
