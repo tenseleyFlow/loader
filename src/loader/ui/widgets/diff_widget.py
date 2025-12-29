@@ -27,6 +27,8 @@ class DiffWidget(Vertical):
         self.is_new_file = not old_string  # True if creating new file
 
     def compose(self) -> ComposeResult:
+        from rich.markup import escape
+
         # Calculate stats
         old_lines = self.old_string.splitlines() if self.old_string else []
         new_lines = self.new_string.splitlines()
@@ -42,6 +44,14 @@ class DiffWidget(Vertical):
             yield Static(
                 f"└ [green]+{len(new_lines)}[/green] lines",
                 classes="diff-stats",
+            )
+            # Show preview of content being written
+            preview = self.new_string[:100].replace('\n', ' ')
+            if len(self.new_string) > 100:
+                preview += "..."
+            yield Static(
+                f"  [dim]{escape(preview)}[/dim]",
+                classes="diff-preview",
             )
         else:
             added = sum(1 for line in new_lines if line not in old_lines)
@@ -61,6 +71,21 @@ class DiffWidget(Vertical):
                     f"└ {', '.join(stats_parts)} lines",
                     classes="diff-stats",
                 )
+            # Show what's being replaced
+            old_preview = self.old_string[:50].replace('\n', ' ')
+            new_preview = self.new_string[:50].replace('\n', ' ')
+            if len(self.old_string) > 50:
+                old_preview += "..."
+            if len(self.new_string) > 50:
+                new_preview += "..."
+            yield Static(
+                f"  [red]-[/red] [dim]{escape(old_preview)}[/dim]",
+                classes="diff-preview-old",
+            )
+            yield Static(
+                f"  [green]+[/green] [dim]{escape(new_preview)}[/dim]",
+                classes="diff-preview-new",
+            )
 
         # Diff content
         yield Static(
