@@ -1041,16 +1041,37 @@ class Agent:
                         result_text = result.output
                         is_error = result.is_error
                     except ConfirmationRequired as e:
+                        # Emit confirmation event
+                        await emit(AgentEvent(
+                            type="confirmation",
+                            tool_name=e.tool_name,
+                            confirm_message=e.message,
+                            confirm_details=e.details,
+                        ))
                         if on_confirmation:
                             confirmed = await on_confirmation(tc.name, e.message, e.details)
                             if confirmed:
-                                result = await self.registry.execute(tc.name, **tc.arguments, confirmed=True)
-                                result_text = result.output
-                                is_error = result.is_error
+                                # Re-execute with skip_confirmation
+                                old_skip = self.registry.skip_confirmation
+                                self.registry.skip_confirmation = True
+                                try:
+                                    result = await self.registry.execute(tc.name, **tc.arguments)
+                                    result_text = result.output
+                                    is_error = result.is_error
+                                finally:
+                                    self.registry.skip_confirmation = old_skip
                             else:
                                 result_text = "Tool execution cancelled by user."
                         else:
-                            result_text = f"Tool requires confirmation: {e.message}"
+                            # No callback - auto-confirm for extracted tool calls
+                            old_skip = self.registry.skip_confirmation
+                            self.registry.skip_confirmation = True
+                            try:
+                                result = await self.registry.execute(tc.name, **tc.arguments)
+                                result_text = result.output
+                                is_error = result.is_error
+                            finally:
+                                self.registry.skip_confirmation = old_skip
                     except Exception as e:
                         result_text = f"Error: {e}"
                         is_error = True
