@@ -102,6 +102,9 @@ class LoaderApp(App):
             "[dim]Type a message to get started. "
             "Press Ctrl+C to quit, Ctrl+L to clear.[/dim]"
         )
+        self._add_message(
+            "[dim]Commands: /help, /model, /clear, /exit[/dim]"
+        )
 
     def _add_message(self, content: str, classes: str = "") -> None:
         """Add a message to the message area."""
@@ -136,8 +139,13 @@ class LoaderApp(App):
         """Handle user input submission."""
         user_input = message.value
 
-        # Handle special commands
-        if user_input.lower() == "exit":
+        # Handle slash commands
+        if user_input.startswith("/"):
+            self._handle_command(user_input)
+            return
+
+        # Handle legacy commands (without slash) for backwards compat
+        if user_input.lower() in ("exit", "quit"):
             self.exit()
             return
 
@@ -172,6 +180,99 @@ class LoaderApp(App):
             f"[bold magenta]↪ Steering:[/bold magenta] {escape(content)}",
             "steering-message"
         )
+
+    def _handle_command(self, command: str) -> None:
+        """Handle slash commands."""
+        parts = command[1:].split(maxsplit=1)  # Remove leading /
+        cmd = parts[0].lower() if parts else ""
+        args = parts[1] if len(parts) > 1 else ""
+
+        if cmd in ("exit", "quit", "q"):
+            self._add_message("[dim]Goodbye![/dim]")
+            self.exit()
+
+        elif cmd in ("clear", "c"):
+            self.action_clear_messages()
+
+        elif cmd in ("help", "h", "?"):
+            self._show_help()
+
+        elif cmd in ("model", "m"):
+            self._handle_model_command(args)
+
+        elif cmd == "models":
+            self._handle_model_command("")  # List models
+
+        else:
+            self._add_message(f"[red]Unknown command: /{cmd}[/red]\nType /help for available commands.")
+
+    def _show_help(self) -> None:
+        """Show help message with available commands."""
+        help_text = """[bold]Available Commands:[/bold]
+
+[cyan]/help[/cyan], [cyan]/h[/cyan]        Show this help message
+[cyan]/exit[/cyan], [cyan]/q[/cyan]        Exit the application
+[cyan]/clear[/cyan], [cyan]/c[/cyan]       Clear the conversation
+[cyan]/model[/cyan] [dim]<name>[/dim]   Switch to a different model
+[cyan]/models[/cyan]         List available models
+
+[bold]Shortcuts:[/bold]
+[dim]Ctrl+C[/dim]          Exit
+[dim]Ctrl+L[/dim]          Clear conversation"""
+        self._add_message(help_text)
+
+    def _handle_model_command(self, args: str) -> None:
+        """Handle /model command - switch or list models."""
+        if not args:
+            # List available models
+            self._list_models()
+        else:
+            # Switch to specified model
+            self._switch_model(args.strip())
+
+    def _list_models(self) -> None:
+        """List available Ollama models."""
+        import asyncio
+
+        async def fetch_models():
+            if hasattr(self.agent.backend, "list_models"):
+                return await self.agent.backend.list_models()
+            return []
+
+        try:
+            models = asyncio.get_event_loop().run_until_complete(fetch_models())
+            if models:
+                lines = ["[bold]Available Models:[/bold]", ""]
+                current = self.agent.backend.model if hasattr(self.agent.backend, "model") else ""
+                for m in models:
+                    name = m.get("name", "")
+                    size_mb = m.get("size", 0) / (1024 * 1024)
+                    marker = "[green]●[/green]" if name == current else "[dim]○[/dim]"
+                    lines.append(f"  {marker} [cyan]{name}[/cyan] [dim]({size_mb:.0f}MB)[/dim]")
+                lines.append("")
+                lines.append("[dim]Use /model <name> to switch[/dim]")
+                self._add_message("\n".join(lines))
+            else:
+                self._add_message("[yellow]No models found. Is Ollama running?[/yellow]")
+        except Exception as e:
+            self._add_message(f"[red]Error listing models: {e}[/red]")
+
+    def _switch_model(self, model_name: str) -> None:
+        """Switch to a different model."""
+        if hasattr(self.agent.backend, "model"):
+            old_model = self.agent.backend.model
+            self.agent.backend.model = model_name
+            self.model_name = model_name
+            # Update status line
+            self.query_one(StatusLine).model = model_name
+            # Update mode based on new model's capabilities
+            if hasattr(self.agent.backend, "supports_native_tools"):
+                supports_native = self.agent.backend.supports_native_tools()
+                self.mode = "Native" if supports_native else "ReAct"
+                self.query_one(StatusLine).mode = self.mode
+            self._add_message(f"[green]Switched model:[/green] {old_model} → [bold]{model_name}[/bold]")
+        else:
+            self._add_message("[red]Model switching not supported for this backend[/red]")
 
     async def _request_confirmation(
         self,
