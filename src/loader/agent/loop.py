@@ -1053,8 +1053,9 @@ class Agent:
 
                     await emit(AgentEvent(
                         type="tool_result",
+                        content=result_text,
                         tool_name=tc.name,
-                        tool_result=result_text,
+                        is_error="Error:" in result_text,
                     ))
 
                     self.messages.append(Message(
