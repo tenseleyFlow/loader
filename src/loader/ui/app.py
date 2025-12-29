@@ -322,9 +322,10 @@ class LoaderApp(App):
         tool_widget = self._tool_widget_queue.pop(0) if self._tool_widget_queue else None
 
         # Check if this is an edit tool with diff info
-        if message.tool_name == "edit" and message.old_string and message.new_string:
+        # Note: old_string can be empty string (inserting), so check `is not None`
+        if message.tool_name == "edit" and message.new_string and message.old_string is not None:
             # Replace tool widget with diff widget
-            self._debug_log("  -> showing EDIT diff widget")
+            self._debug_log(f"  -> showing EDIT diff widget (old={len(message.old_string)} chars, new={len(message.new_string)} chars)")
             if tool_widget:
                 tool_widget.remove()
 
@@ -336,7 +337,7 @@ class LoaderApp(App):
             msg_area.mount(diff_widget)
         # Check if this is a write tool - show as diff (new file)
         elif message.tool_name == "write" and message.new_string:
-            self._debug_log("  -> showing WRITE diff widget")
+            self._debug_log(f"  -> showing WRITE diff widget ({len(message.new_string)} chars)")
             if tool_widget:
                 tool_widget.remove()
 
