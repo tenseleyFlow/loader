@@ -1021,7 +1021,10 @@ class Agent:
                     pass
                 # This duplicates the tool execution logic above, but that's intentional
                 # to handle the case where raw JSON tool calls are extracted
-                for tc in tool_calls:
+                for i, tc in enumerate(tool_calls):
+                    # Small delay between tool executions for better UX
+                    if i > 0:
+                        await asyncio.sleep(0.4)
                     try:
                         with open("/tmp/loader_debug.log", "a") as f:
                             f.write(f"[loop] executing extracted tool: {tc.name} args={tc.arguments}\n")
