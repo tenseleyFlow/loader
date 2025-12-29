@@ -1441,10 +1441,13 @@ class Agent:
 
         # First, try to extract bracket format: [calls bash tool with: ...]
         # or [USE bash tool: ...] or similar variations
+        # Note: Using (.+?) with re.DOTALL to capture content that may span patterns
+        # The ] at end acts as anchor, but we need to handle ] inside content
         bracket_patterns = [
+            r'\[calls?\s+(\w+)\s+tool\s+with:\s*(.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error))',
+            r'\[USE\s+(\w+)\s+tool:\s*(.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error))',
             r'\[calls?\s+(\w+)\s+tool\s+with:\s*([^\]]+)\]',
             r'\[USE\s+(\w+)\s+tool:\s*([^\]]+)\]',
-            r'\[(\w+)\s+tool:\s*([^\]]+)\]',
         ]
 
         for pattern in bracket_patterns:
@@ -1469,15 +1472,38 @@ class Agent:
                         ))
                     elif tool_name == "write":
                         # write tool: file_path=..., content="..."
-                        file_path_match = re.search(r'file_path[=:]\s*([^,\s]+)', args_str)
-                        content_match = re.search(r'content[=:]\s*["\'](.+)["\']', args_str, re.DOTALL)
-                        if not content_match:
-                            # Try without quotes
-                            content_match = re.search(r'content[=:]\s*(.+)', args_str, re.DOTALL)
+                        # Handle quoted file paths
+                        file_path_match = re.search(r'file_path[=:]\s*["\']?([^"\'`,]+)["\']?', args_str)
+
+                        # For content, find the content= part and extract everything after it
+                        # Handle both quoted and unquoted content
+                        content_start = re.search(r'content[=:]\s*', args_str)
+                        file_content = ""
+                        if content_start:
+                            rest = args_str[content_start.end():]
+                            # Check if content starts with a quote
+                            if rest.startswith('"'):
+                                # Find matching end quote (handle escaped quotes)
+                                end_idx = len(rest) - 1
+                                # Walk backward to find the last quote
+                                while end_idx > 0 and rest[end_idx] != '"':
+                                    end_idx -= 1
+                                if end_idx > 0:
+                                    file_content = rest[1:end_idx]
+                            elif rest.startswith("'"):
+                                end_idx = len(rest) - 1
+                                while end_idx > 0 and rest[end_idx] != "'":
+                                    end_idx -= 1
+                                if end_idx > 0:
+                                    file_content = rest[1:end_idx]
+                            else:
+                                # No quotes - take everything
+                                file_content = rest.strip()
+
+                        debug(f"  write: file_path={file_path_match.group(1) if file_path_match else None}, content_len={len(file_content)}")
 
                         if file_path_match:
                             file_path = file_path_match.group(1).strip('"\'')
-                            file_content = content_match.group(1) if content_match else ""
                             tool_calls.append(ToolCall(
                                 id=f"bracket_{tool_name}_{len(tool_calls)}",
                                 name=tool_name,
