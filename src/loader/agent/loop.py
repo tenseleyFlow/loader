@@ -1021,12 +1021,12 @@ class Agent:
 
                 # Check if we've exceeded extraction limits
                 if extracted_iterations > MAX_EXTRACTED_ITERATIONS:
-                    # Model keeps outputting bracket-format calls - stop and report
+                    # Model keeps outputting bracket-format calls - stop and let user continue
                     final_response = content
                     self.messages.append(Message(role=Role.ASSISTANT, content=response_content))
                     await emit(AgentEvent(
                         type="response",
-                        content=final_response + "\n\n(Stopping here - task appears complete.)"
+                        content=final_response + "\n\nLet me know if you'd like me to continue or make changes."
                     ))
                     break
 
@@ -1126,7 +1126,7 @@ class Agent:
                 # Stop if: all tools in batch failed, or we have many consecutive errors
                 if batch_errors == len(tool_calls) or consecutive_errors >= 3:
                     # All failed or too many consecutive errors - stop trying
-                    final_response = "I've completed what I can. Some operations encountered errors."
+                    final_response = "I ran into some issues. Let me know if you'd like me to try a different approach."
                     await emit(AgentEvent(type="response", content=final_response))
                     break
 
