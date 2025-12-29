@@ -232,15 +232,16 @@ class LoaderApp(App):
 
     def _list_models(self) -> None:
         """List available Ollama models."""
-        import asyncio
+        # Use Textual's worker to run async code
+        self.run_worker(self._fetch_and_display_models())
 
-        async def fetch_models():
-            if hasattr(self.agent.backend, "list_models"):
-                return await self.agent.backend.list_models()
-            return []
-
+    async def _fetch_and_display_models(self) -> None:
+        """Fetch and display available models (async worker)."""
         try:
-            models = asyncio.get_event_loop().run_until_complete(fetch_models())
+            models = []
+            if hasattr(self.agent.backend, "list_models"):
+                models = await self.agent.backend.list_models()
+
             if models:
                 lines = ["[bold]Available Models:[/bold]", ""]
                 current = self.agent.backend.model if hasattr(self.agent.backend, "model") else ""
