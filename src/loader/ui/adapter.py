@@ -110,6 +110,13 @@ class SteeringReceived(Message):
 
 
 @dataclass
+class ClearStream(Message):
+    """Clear the current streaming content (used when raw tool calls are detected)."""
+
+    pass
+
+
+@dataclass
 class DecompositionCreated(Message):
     """Task was decomposed into subtasks."""
 
@@ -209,6 +216,9 @@ class EventAdapter:
                 self.app.post_message(
                     StreamChunk(content=event.content, is_end=event.is_stream_end)
                 )
+
+            case "clear_stream":
+                self.app.post_message(ClearStream())
 
             case "plan":
                 self.app.post_message(PlanCreated(content=event.content))

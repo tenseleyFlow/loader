@@ -15,6 +15,7 @@ from textual.worker import Worker, get_current_worker
 
 from ..agent.loop import Agent, AgentEvent
 from .adapter import (
+    ClearStream,
     CompletionCheckPerformed,
     ConfidenceAssessed,
     CritiquePerformed,
@@ -65,6 +66,7 @@ class LoaderApp(App):
         self.adapter = EventAdapter(self)
         self._start_time: float = 0.0
         self._current_streaming: StreamingText | None = None
+        self._streamed_content: bool = False  # Track if any content was streamed
         self._tool_widget_queue: list[ToolCallWidget] = []  # Queue of pending tool widgets
         self._timer_handle = None
 
@@ -243,6 +245,14 @@ class LoaderApp(App):
     # Message handlers from adapter
     def on_thinking_started(self, message: ThinkingStarted) -> None:
         """Handle thinking started (may be called multiple times per task)."""
+        # Finalize any previous streaming widget to prevent appending to old content
+        if self._current_streaming is not None:
+            self._current_streaming.stop_streaming()
+            self._current_streaming = None
+
+        # Reset streamed content flag for this response iteration
+        self._streamed_content = False
+
         # Status is already set in on_input_area_submitted, but ensure it stays on
         if not self.is_generating:
             self.is_generating = True
@@ -262,9 +272,21 @@ class LoaderApp(App):
         self._current_streaming.append(message.content)
         msg_area.scroll_end(animate=False)
 
+        # Track that we've shown actual content
+        if message.content.strip():
+            self._streamed_content = True
+
         if message.is_end:
             self._current_streaming.stop_streaming()
             self._current_streaming = None
+
+    def on_clear_stream(self, message: ClearStream) -> None:
+        """Clear/remove the current streaming content (used when raw tool calls are detected)."""
+        if self._current_streaming is not None:
+            # Remove the streaming widget entirely - it contained raw JSON tool calls
+            self._current_streaming.remove()
+            self._current_streaming = None
+            self._streamed_content = False
 
     def on_tool_call_started(self, message: ToolCallStarted) -> None:
         """Handle tool call start."""
@@ -355,8 +377,10 @@ class LoaderApp(App):
 
     def on_response_complete(self, message: ResponseComplete) -> None:
         """Handle response completion."""
-        # Response was already streamed, nothing extra needed
-        pass
+        # If no content was streamed but we have a response, display it
+        # This handles cases like empty LLM responses with fallback messages
+        if not self._streamed_content and message.content.strip():
+            self._add_message(message.content)
 
     def on_steering_received(self, message: SteeringReceived) -> None:
         """Handle steering message being processed by agent."""
