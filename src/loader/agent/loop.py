@@ -1035,27 +1035,31 @@ class Agent:
                     ))
 
                     # Execute the tool
+                    is_error = False
                     try:
-                        result = await self.registry.execute(tc.name, tc.arguments)
-                        result_text = str(result)
+                        result = await self.registry.execute(tc.name, **tc.arguments)
+                        result_text = result.output
+                        is_error = result.is_error
                     except ConfirmationRequired as e:
                         if on_confirmation:
                             confirmed = await on_confirmation(tc.name, e.message, e.details)
                             if confirmed:
-                                result = await self.registry.execute(tc.name, tc.arguments, confirmed=True)
-                                result_text = str(result)
+                                result = await self.registry.execute(tc.name, **tc.arguments, confirmed=True)
+                                result_text = result.output
+                                is_error = result.is_error
                             else:
                                 result_text = "Tool execution cancelled by user."
                         else:
                             result_text = f"Tool requires confirmation: {e.message}"
                     except Exception as e:
                         result_text = f"Error: {e}"
+                        is_error = True
 
                     await emit(AgentEvent(
                         type="tool_result",
                         content=result_text,
                         tool_name=tc.name,
-                        is_error="Error:" in result_text,
+                        is_error=is_error,
                     ))
 
                     self.messages.append(Message(
