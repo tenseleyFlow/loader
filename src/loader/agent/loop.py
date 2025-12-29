@@ -588,6 +588,9 @@ class Agent:
         continuation_count = 0  # How many times we've nudged to continue
         empty_retry_count = 0  # How many times we've retried on empty response
         MAX_EMPTY_RETRIES = 5  # More retries before giving up - small models need patience
+        extracted_iterations = 0  # How many times we've extracted bracket-format tool calls
+        MAX_EXTRACTED_ITERATIONS = 3  # Limit extracted tool call loops
+        consecutive_errors = 0  # Track consecutive tool errors
 
         # Adaptive token budgeting based on task complexity
         complexity = estimate_complexity(task)
@@ -1014,11 +1017,28 @@ class Agent:
 
             # If we now have tool calls (from raw JSON extraction), execute them
             if tool_calls:
+                extracted_iterations += 1
+
+                # Check if we've exceeded extraction limits
+                if extracted_iterations > MAX_EXTRACTED_ITERATIONS:
+                    # Model keeps outputting bracket-format calls - stop and report
+                    final_response = content
+                    self.messages.append(Message(role=Role.ASSISTANT, content=response_content))
+                    await emit(AgentEvent(
+                        type="response",
+                        content=final_response + "\n\n(Stopping here - task appears complete.)"
+                    ))
+                    break
+
                 try:
                     with open("/tmp/loader_debug.log", "a") as f:
-                        f.write(f"[loop] executing {len(tool_calls)} extracted tool calls\n")
+                        f.write(f"[loop] executing {len(tool_calls)} extracted tool calls (iteration {extracted_iterations})\n")
                 except Exception:
                     pass
+
+                # Track errors in this batch
+                batch_errors = 0
+
                 # This duplicates the tool execution logic above, but that's intentional
                 # to handle the case where raw JSON tool calls are extracted
                 for i, tc in enumerate(tool_calls):
@@ -1079,6 +1099,13 @@ class Agent:
                         result_text = f"Error: {e}"
                         is_error = True
 
+                    # Track errors
+                    if is_error:
+                        batch_errors += 1
+                        consecutive_errors += 1
+                    else:
+                        consecutive_errors = 0  # Reset on success
+
                     await emit(AgentEvent(
                         type="tool_result",
                         content=result_text,
@@ -1094,6 +1121,14 @@ class Agent:
                         role=Role.TOOL,
                         content=result_text,
                     ))
+
+                # After executing batch, check if we should stop
+                # Stop if: all tools in batch failed, or we have many consecutive errors
+                if batch_errors == len(tool_calls) or consecutive_errors >= 3:
+                    # All failed or too many consecutive errors - stop trying
+                    final_response = "I've completed what I can. Some operations encountered errors."
+                    await emit(AgentEvent(type="response", content=final_response))
+                    break
 
                 continue
 
