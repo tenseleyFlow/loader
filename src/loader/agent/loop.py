@@ -993,7 +993,19 @@ class Agent:
             # No tool calls - check if model outputted raw JSON tool calls as text
             # Some small models do this instead of using the proper API
             if not tool_calls:
+                try:
+                    with open("/tmp/loader_debug.log", "a") as f:
+                        f.write(f"[loop] no tool_calls, checking for raw JSON/bracket format in content (len={len(content)})\n")
+                except Exception:
+                    pass
                 raw_tool_calls = self._extract_raw_json_tool_calls(content)
+                try:
+                    with open("/tmp/loader_debug.log", "a") as f:
+                        f.write(f"[loop] _extract_raw_json_tool_calls returned {len(raw_tool_calls)} calls\n")
+                        for tc in raw_tool_calls:
+                            f.write(f"[loop]   - {tc.name}: {list(tc.arguments.keys())}\n")
+                except Exception:
+                    pass
                 if raw_tool_calls:
                     # Successfully extracted tool calls from raw JSON - use them
                     tool_calls = raw_tool_calls
@@ -1002,9 +1014,19 @@ class Agent:
 
             # If we now have tool calls (from raw JSON extraction), execute them
             if tool_calls:
+                try:
+                    with open("/tmp/loader_debug.log", "a") as f:
+                        f.write(f"[loop] executing {len(tool_calls)} extracted tool calls\n")
+                except Exception:
+                    pass
                 # This duplicates the tool execution logic above, but that's intentional
                 # to handle the case where raw JSON tool calls are extracted
                 for tc in tool_calls:
+                    try:
+                        with open("/tmp/loader_debug.log", "a") as f:
+                            f.write(f"[loop] executing extracted tool: {tc.name} args={tc.arguments}\n")
+                    except Exception:
+                        pass
                     actions_taken.append(f"{tc.name}: {str(tc.arguments)[:50]}...")
                     await emit(AgentEvent(
                         type="tool_call",
@@ -1343,6 +1365,16 @@ class Agent:
         tool_calls = []
         tool_names = ["write", "read", "edit", "bash", "glob", "grep"]
 
+        # Debug log
+        def debug(msg):
+            try:
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(f"[extract] {msg}\n")
+            except Exception:
+                pass
+
+        debug(f"checking content len={len(content)}")
+
         # First, try to extract bracket format: [calls bash tool with: ...]
         # or [USE bash tool: ...] or similar variations
         bracket_patterns = [
@@ -1352,11 +1384,14 @@ class Agent:
         ]
 
         for pattern in bracket_patterns:
+            debug(f"trying pattern: {pattern}")
             for match in re.finditer(pattern, content, re.IGNORECASE):
                 tool_name = match.group(1).lower()
                 args_str = match.group(2).strip()
+                debug(f"  matched: tool={tool_name}, args={args_str[:50]}...")
 
                 if tool_name not in tool_names:
+                    debug(f"  skipping - tool_name '{tool_name}' not in tool_names")
                     continue
 
                 try:
