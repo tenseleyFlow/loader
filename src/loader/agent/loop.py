@@ -1425,6 +1425,7 @@ class Agent:
         """
         import re
         import json
+        import os
 
         tool_calls = []
         tool_names = ["write", "read", "edit", "bash", "glob", "grep"]
@@ -1461,14 +1462,31 @@ class Agent:
                     debug(f"  skipping - tool_name '{tool_name}' not in tool_names")
                     continue
 
+                # Skip if we already have a tool call at this position (avoid duplicates)
+                match_start = match.start()
+                if any(tc.id.endswith(f"_pos{match_start}") for tc in tool_calls):
+                    debug(f"  skipping - already extracted at position {match_start}")
+                    continue
+
                 try:
                     # Parse the arguments based on tool type
                     if tool_name == "bash":
-                        # bash tool: command is the whole string
+                        # bash tool: extract command, handling various formats
+                        # Model might output: "mkdir -p /foo" or "command='mkdir -p /foo'"
+                        cmd = args_str
+                        # If it has command= prefix, extract just the command value
+                        cmd_match = re.search(r'command\s*[=:]\s*["\']?([^"\']+)["\']?', args_str)
+                        if cmd_match:
+                            cmd = cmd_match.group(1).strip()
+                        # Also handle case where model outputs "cmd, command='cmd'" - take first part
+                        elif ',' in args_str and 'command=' in args_str:
+                            cmd = args_str.split(',')[0].strip()
+                        # Expand ~ in command
+                        cmd = os.path.expanduser(cmd)
                         tool_calls.append(ToolCall(
-                            id=f"bracket_{tool_name}_{len(tool_calls)}",
+                            id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
                             name=tool_name,
-                            arguments={"command": args_str},
+                            arguments={"command": cmd},
                         ))
                     elif tool_name == "write":
                         # write tool: file_path=..., content="..."
@@ -1504,41 +1522,47 @@ class Agent:
 
                         if file_path_match:
                             file_path = file_path_match.group(1).strip('"\'')
+                            file_path = os.path.expanduser(file_path)  # Expand ~
                             tool_calls.append(ToolCall(
-                                id=f"bracket_{tool_name}_{len(tool_calls)}",
+                                id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
                                 name=tool_name,
                                 arguments={"file_path": file_path, "content": file_content},
                             ))
                     elif tool_name == "read":
                         # read tool: file_path
                         file_path = args_str.split(',')[0].split('=')[-1].strip().strip('"\'')
+                        file_path = os.path.expanduser(file_path)
                         tool_calls.append(ToolCall(
-                            id=f"bracket_{tool_name}_{len(tool_calls)}",
+                            id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
                             name=tool_name,
                             arguments={"file_path": file_path},
                         ))
                     elif tool_name == "edit":
                         # edit tool: file_path=..., old_string="...", new_string="..."
-                        file_path_match = re.search(r'file_path[=:]\s*([^,\s]+)', args_str)
+                        file_path_match = re.search(r'file_path[=:]\s*["\']?([^"\'`,]+)["\']?', args_str)
                         old_match = re.search(r'old_string[=:]\s*["\'](.+?)["\']', args_str)
                         new_match = re.search(r'new_string[=:]\s*["\'](.+?)["\']', args_str)
 
                         if file_path_match and old_match and new_match:
+                            file_path = os.path.expanduser(file_path_match.group(1).strip('"\''))
                             tool_calls.append(ToolCall(
-                                id=f"bracket_{tool_name}_{len(tool_calls)}",
+                                id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
                                 name=tool_name,
                                 arguments={
-                                    "file_path": file_path_match.group(1).strip('"\''),
+                                    "file_path": file_path,
                                     "old_string": old_match.group(1),
                                     "new_string": new_match.group(1),
                                 },
                             ))
                     elif tool_name in ("glob", "grep"):
-                        # glob/grep: pattern
+                        # glob/grep: pattern - expand ~ if it looks like a path
+                        pattern = args_str
+                        if '~' in pattern:
+                            pattern = os.path.expanduser(pattern)
                         tool_calls.append(ToolCall(
-                            id=f"bracket_{tool_name}_{len(tool_calls)}",
+                            id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
                             name=tool_name,
-                            arguments={"pattern": args_str},
+                            arguments={"pattern": pattern},
                         ))
                 except Exception:
                     continue
