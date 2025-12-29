@@ -150,6 +150,9 @@ class Agent:
         self._steering_queue: asyncio.Queue[str] = asyncio.Queue()
         self._is_running: bool = False
 
+        # Track original task for multi-turn conversations
+        self._current_task: str | None = None
+
         # Load project context if enabled
         self.project_context: ProjectContext | None = None
         if self.config.auto_context:
@@ -455,6 +458,11 @@ class Agent:
         if is_conversational(user_message):
             return await self._handle_conversational(user_message, emit)
 
+        # Track original task for multi-turn conversations
+        # Only set on first non-conversational message
+        if self._current_task is None:
+            self._current_task = user_message
+
         # Check if we should decompose the task (higher priority than planning)
         if cfg.decomposition and should_decompose(user_message):
             await emit(AgentEvent(type="thinking", content="Analyzing task complexity..."))
@@ -487,7 +495,8 @@ class Agent:
                                 f"Verification: {subtask.verification}",
                     ))
                     subtask_response = await self._run_inner(
-                        subtask.description, emit, on_confirmation
+                        subtask.description, emit, on_confirmation,
+                        original_task=self._current_task,
                     )
 
                     # Mark based on result (simple heuristic)
@@ -511,7 +520,10 @@ class Agent:
                         "Provide a brief summary of what was accomplished."
                     )
                     self.messages.append(Message(role=Role.USER, content=summary_prompt))
-                    return await self._run_inner(summary_prompt, emit, on_confirmation)
+                    return await self._run_inner(
+                        summary_prompt, emit, on_confirmation,
+                        original_task=self._current_task,
+                    )
                 else:
                     return f"Task partially completed. {decomposition.to_prompt()}"
 
@@ -540,30 +552,42 @@ class Agent:
 
                     # Run the step
                     step_prompt = format_step_prompt(plan, step)
-                    step_response = await self._run_inner(step_prompt, emit, on_confirmation)
+                    step_response = await self._run_inner(
+                        step_prompt, emit, on_confirmation,
+                        original_task=self._current_task,
+                    )
 
                     plan.complete_current()
 
                 # Final summary
                 self.messages.append(Message(role=Role.USER, content=user_message))
                 summary_prompt = f"I've completed the plan. Summarize what was done:\n{plan.to_prompt()}"
-                return await self._run_inner(summary_prompt, emit, on_confirmation)
+                return await self._run_inner(
+                    summary_prompt, emit, on_confirmation,
+                    original_task=self._current_task,
+                )
 
         # No planning or decomposition - run directly
         self.messages.append(Message(role=Role.USER, content=user_message))
-        return await self._run_inner(user_message, emit, on_confirmation)
+        return await self._run_inner(
+            user_message, emit, on_confirmation,
+            original_task=self._current_task,
+        )
 
     async def _run_inner(
         self,
         task: str,
         emit: Callable[[AgentEvent], Awaitable[None]],
         on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        original_task: str | None = None,
     ) -> str:
         """Inner execution loop without planning."""
         iterations = 0
         final_response = ""
         actions_taken: list[str] = []  # Track what we've done
         continuation_count = 0  # How many times we've nudged to continue
+        empty_retry_count = 0  # How many times we've retried on empty response
+        MAX_EMPTY_RETRIES = 5  # More retries before giving up - small models need patience
 
         # Adaptive token budgeting based on task complexity
         complexity = estimate_complexity(task)
@@ -641,6 +665,38 @@ class Agent:
                 content = response.content
                 response_content = response.content
                 tool_calls = response.tool_calls if not self.use_react else []
+
+            # Handle empty responses (common with small models after clarifications)
+            if not content.strip():
+                empty_retry_count += 1
+                if empty_retry_count <= MAX_EMPTY_RETRIES:
+                    # Use progressively more direct prompts
+                    task_context = original_task or task
+                    retry_prompts = [
+                        # Retry 1: Gentle nudge with action focus
+                        f"Great! Now let me proceed with the task. I'll start by using my tools.",
+                        # Retry 2: More explicit about what to do
+                        f"I understand. Let me create that now using my tools (write, bash, etc.).",
+                        # Retry 3: Very direct instruction
+                        f"Proceeding with: {task_context[:80]}. I'll use the write tool to create the files.",
+                        # Retry 4: Action-first prompt
+                        f"Starting now. First step: create the necessary files and directories.",
+                        # Retry 5: Last attempt with full context
+                        f"Let me complete this task step by step. The goal is: {task_context[:100]}",
+                    ]
+                    prompt = retry_prompts[min(empty_retry_count - 1, len(retry_prompts) - 1)]
+                    self.messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content=prompt,  # Add as assistant message to give model a "running start"
+                    ))
+                    continue
+                else:
+                    # Give up after max retries - but make the message less alarming
+                    await emit(AgentEvent(
+                        type="response",
+                        content="I need a bit more direction. What specifically would you like me to create or do?",
+                    ))
+                    break
 
             # Get tool calls - either native or parsed from text
             if self.use_react:
@@ -934,6 +990,62 @@ class Agent:
                 # Continue the loop to get next response
                 continue
 
+            # No tool calls - check if model outputted raw JSON tool calls as text
+            # Some small models do this instead of using the proper API
+            if not tool_calls:
+                raw_tool_calls = self._extract_raw_json_tool_calls(content)
+                if raw_tool_calls:
+                    # Successfully extracted tool calls from raw JSON - use them
+                    tool_calls = raw_tool_calls
+                    # Clear the streamed content (it was raw JSON, looks ugly)
+                    await emit(AgentEvent(type="clear_stream"))
+
+            # If we now have tool calls (from raw JSON extraction), execute them
+            if tool_calls:
+                # This duplicates the tool execution logic above, but that's intentional
+                # to handle the case where raw JSON tool calls are extracted
+                for tc in tool_calls:
+                    actions_taken.append(f"{tc.name}: {str(tc.arguments)[:50]}...")
+                    await emit(AgentEvent(
+                        type="tool_call",
+                        tool_name=tc.name,
+                        tool_args=tc.arguments,
+                    ))
+
+                    # Execute the tool
+                    try:
+                        result = await self.registry.execute(tc.name, tc.arguments)
+                        result_text = str(result)
+                    except ConfirmationRequired as e:
+                        if on_confirmation:
+                            confirmed = await on_confirmation(tc.name, e.message, e.details)
+                            if confirmed:
+                                result = await self.registry.execute(tc.name, tc.arguments, confirmed=True)
+                                result_text = str(result)
+                            else:
+                                result_text = "Tool execution cancelled by user."
+                        else:
+                            result_text = f"Tool requires confirmation: {e.message}"
+                    except Exception as e:
+                        result_text = f"Error: {e}"
+
+                    await emit(AgentEvent(
+                        type="tool_result",
+                        tool_name=tc.name,
+                        tool_result=result_text,
+                    ))
+
+                    self.messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content=response_content,
+                    ))
+                    self.messages.append(Message(
+                        role=Role.TOOL,
+                        content=result_text,
+                    ))
+
+                continue
+
             # No tool calls - check if model is describing instead of acting
             if self._contains_unexecuted_code(content) and iterations < self.config.max_iterations - 1:
                 # Model outputted code blocks without using tools - nudge it
@@ -1005,22 +1117,24 @@ class Agent:
                         continue  # Loop to get revised response
 
             # Task completion check - don't give up too early!
+            # Use original_task if available (for multi-turn conversations)
+            effective_task = original_task or task
             if cfg.completion_check and continuation_count < cfg.max_continuation_prompts:
                 # Quick heuristic check first
                 if cfg.use_quick_completion:
-                    is_premature = detect_premature_completion(task, content, actions_taken)
+                    is_premature = detect_premature_completion(effective_task, content, actions_taken)
                 else:
                     is_premature = False
 
                 if is_premature:
                     continuation_count += 1
-                    continuation_prompt = get_continuation_prompt(task, actions_taken, content)
+                    continuation_prompt = get_continuation_prompt(effective_task, actions_taken, content)
 
                     await emit(AgentEvent(
                         type="completion_check",
                         content=f"Task may be incomplete ({len(actions_taken)} actions taken)",
                         completion_check=TaskCompletionCheck(
-                            original_task=task,
+                            original_task=effective_task,
                             is_complete=False,
                             accomplished=[a.split(":")[0] for a in actions_taken],
                             continuation_prompt=continuation_prompt,
@@ -1040,6 +1154,13 @@ class Agent:
 
             # This is the final response
             final_response = content
+
+            # If we completed actions, add follow-up question to encourage continued conversation
+            if actions_taken and final_response.strip():
+                # Only add if the response doesn't already end with a question
+                if not final_response.rstrip().endswith('?'):
+                    final_response = final_response.rstrip() + "\n\nWould you like me to make any changes or additions?"
+
             self.messages.append(Message(
                 role=Role.ASSISTANT,
                 content=response_content,
@@ -1156,6 +1277,25 @@ class Agent:
         """
         import re
 
+        # Check for raw JSON tool call attempts (model outputting tool calls as text)
+        # This happens when small models try to call tools but output JSON instead
+        json_tool_patterns = [
+            r'\{"name"\s*:\s*"(write|read|edit|bash|glob|grep)"',  # Tool call JSON
+            r'"name"\s*:\s*"(write|read|edit|bash|glob|grep)".*"parameters"',
+        ]
+        for pattern in json_tool_patterns:
+            if re.search(pattern, content):
+                return True
+
+        # Check for bracket format: [calls bash tool with: ...] or [USE write tool: ...]
+        bracket_patterns = [
+            r'\[calls?\s+\w+\s+tool\s+with:',
+            r'\[USE\s+\w+\s+tool:',
+        ]
+        for pattern in bracket_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                return True
+
         # Look for markdown code blocks
         code_blocks = re.findall(r'```(\w*)\n(.*?)```', content, re.DOTALL)
 
@@ -1190,7 +1330,166 @@ class Agent:
 
         return False
 
+    def _extract_raw_json_tool_calls(self, content: str) -> list[ToolCall]:
+        """Try to extract tool calls from raw JSON or bracket format in content.
+
+        Some small models output tool calls as raw JSON text or bracket format
+        instead of using the proper tool calling API. This method tries to
+        parse and recover them.
+        """
+        import re
+        import json
+
+        tool_calls = []
+        tool_names = ["write", "read", "edit", "bash", "glob", "grep"]
+
+        # First, try to extract bracket format: [calls bash tool with: ...]
+        # or [USE bash tool: ...] or similar variations
+        bracket_patterns = [
+            r'\[calls?\s+(\w+)\s+tool\s+with:\s*([^\]]+)\]',
+            r'\[USE\s+(\w+)\s+tool:\s*([^\]]+)\]',
+            r'\[(\w+)\s+tool:\s*([^\]]+)\]',
+        ]
+
+        for pattern in bracket_patterns:
+            for match in re.finditer(pattern, content, re.IGNORECASE):
+                tool_name = match.group(1).lower()
+                args_str = match.group(2).strip()
+
+                if tool_name not in tool_names:
+                    continue
+
+                try:
+                    # Parse the arguments based on tool type
+                    if tool_name == "bash":
+                        # bash tool: command is the whole string
+                        tool_calls.append(ToolCall(
+                            id=f"bracket_{tool_name}_{len(tool_calls)}",
+                            name=tool_name,
+                            arguments={"command": args_str},
+                        ))
+                    elif tool_name == "write":
+                        # write tool: file_path=..., content="..."
+                        file_path_match = re.search(r'file_path[=:]\s*([^,\s]+)', args_str)
+                        content_match = re.search(r'content[=:]\s*["\'](.+)["\']', args_str, re.DOTALL)
+                        if not content_match:
+                            # Try without quotes
+                            content_match = re.search(r'content[=:]\s*(.+)', args_str, re.DOTALL)
+
+                        if file_path_match:
+                            file_path = file_path_match.group(1).strip('"\'')
+                            file_content = content_match.group(1) if content_match else ""
+                            tool_calls.append(ToolCall(
+                                id=f"bracket_{tool_name}_{len(tool_calls)}",
+                                name=tool_name,
+                                arguments={"file_path": file_path, "content": file_content},
+                            ))
+                    elif tool_name == "read":
+                        # read tool: file_path
+                        file_path = args_str.split(',')[0].split('=')[-1].strip().strip('"\'')
+                        tool_calls.append(ToolCall(
+                            id=f"bracket_{tool_name}_{len(tool_calls)}",
+                            name=tool_name,
+                            arguments={"file_path": file_path},
+                        ))
+                    elif tool_name == "edit":
+                        # edit tool: file_path=..., old_string="...", new_string="..."
+                        file_path_match = re.search(r'file_path[=:]\s*([^,\s]+)', args_str)
+                        old_match = re.search(r'old_string[=:]\s*["\'](.+?)["\']', args_str)
+                        new_match = re.search(r'new_string[=:]\s*["\'](.+?)["\']', args_str)
+
+                        if file_path_match and old_match and new_match:
+                            tool_calls.append(ToolCall(
+                                id=f"bracket_{tool_name}_{len(tool_calls)}",
+                                name=tool_name,
+                                arguments={
+                                    "file_path": file_path_match.group(1).strip('"\''),
+                                    "old_string": old_match.group(1),
+                                    "new_string": new_match.group(1),
+                                },
+                            ))
+                    elif tool_name in ("glob", "grep"):
+                        # glob/grep: pattern
+                        tool_calls.append(ToolCall(
+                            id=f"bracket_{tool_name}_{len(tool_calls)}",
+                            name=tool_name,
+                            arguments={"pattern": args_str},
+                        ))
+                except Exception:
+                    continue
+
+        # If we found bracket-format calls, return them
+        if tool_calls:
+            return tool_calls
+
+        # Otherwise, try to find JSON objects starting with {"name": "tool_name"
+        # This is tricky because the content field may contain arbitrary text
+
+        for tool_name in tool_names:
+            # Look for the start of a tool call JSON
+            pattern = rf'\{{\s*"name"\s*:\s*"{tool_name}"\s*,\s*"parameters"\s*:\s*\{{'
+            for match in re.finditer(pattern, content):
+                start = match.start()
+
+                # Try to find the matching closing braces by parsing
+                # Start from the beginning of the JSON object
+                try:
+                    # Find the complete JSON by tracking brace depth
+                    brace_count = 0
+                    in_string = False
+                    escape_next = False
+                    end = start
+
+                    for i, char in enumerate(content[start:], start):
+                        if escape_next:
+                            escape_next = False
+                            continue
+
+                        if char == '\\' and in_string:
+                            escape_next = True
+                            continue
+
+                        if char == '"' and not escape_next:
+                            in_string = not in_string
+                            continue
+
+                        if not in_string:
+                            if char == '{':
+                                brace_count += 1
+                            elif char == '}':
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    end = i + 1
+                                    break
+
+                    if brace_count == 0 and end > start:
+                        json_str = content[start:end]
+                        try:
+                            # Try to parse as-is first
+                            data = json.loads(json_str)
+                        except json.JSONDecodeError:
+                            # Model may have output literal newlines in strings
+                            # Escape them so JSON parser accepts it
+                            try:
+                                fixed = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                                data = json.loads(fixed)
+                            except json.JSONDecodeError:
+                                continue
+
+                        if "name" in data and "parameters" in data:
+                            tool_calls.append(ToolCall(
+                                id=f"raw_{data['name']}_{len(tool_calls)}",
+                                name=data["name"],
+                                arguments=data["parameters"],
+                            ))
+
+                except Exception:
+                    continue
+
+        return tool_calls
+
     def clear_history(self) -> None:
         """Clear conversation history."""
         self.messages = []
         self._recovery_context = None
+        self._current_task = None
