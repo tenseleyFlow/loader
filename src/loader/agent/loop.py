@@ -1039,9 +1039,38 @@ class Agent:
                 # Track errors in this batch
                 batch_errors = 0
 
+                # Track executed commands to avoid repetition
+                if not hasattr(self, '_executed_commands'):
+                    self._executed_commands: set[str] = set()
+
                 # This duplicates the tool execution logic above, but that's intentional
                 # to handle the case where raw JSON tool calls are extracted
                 for i, tc in enumerate(tool_calls):
+                    # Create a signature for this command
+                    cmd_sig = f"{tc.name}:{str(tc.arguments)}"
+
+                    # Skip browser/display commands that don't work in terminal
+                    if tc.name == "bash":
+                        cmd = tc.arguments.get("command", "")
+                        if any(x in cmd for x in ["xdg-open", "open ", "firefox", "chrome", "browser"]):
+                            try:
+                                with open("/tmp/loader_debug.log", "a") as f:
+                                    f.write(f"[loop] skipping browser command: {cmd[:50]}\n")
+                            except Exception:
+                                pass
+                            continue
+
+                    # Skip if we've already executed this exact command
+                    if cmd_sig in self._executed_commands:
+                        try:
+                            with open("/tmp/loader_debug.log", "a") as f:
+                                f.write(f"[loop] skipping duplicate command: {cmd_sig[:50]}\n")
+                        except Exception:
+                            pass
+                        continue
+
+                    self._executed_commands.add(cmd_sig)
+
                     # Small delay between tool executions for better UX
                     if i > 0:
                         await asyncio.sleep(0.4)
@@ -1642,3 +1671,4 @@ class Agent:
         self.messages = []
         self._recovery_context = None
         self._current_task = None
+        self._executed_commands = set()  # Clear command dedup tracking
