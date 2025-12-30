@@ -45,6 +45,7 @@ from .reasoning import (
     estimate_complexity,
     get_token_budget,
 )
+from .safeguards import RuntimeSafeguards, ValidationResult
 
 
 @dataclass
@@ -152,6 +153,9 @@ class Agent:
 
         # Track original task for multi-turn conversations
         self._current_task: str | None = None
+
+        # Runtime safeguards for filtering, steering, and deduplication
+        self.safeguards = RuntimeSafeguards()
 
         # Load project context if enabled
         self.project_context: ProjectContext | None = None
@@ -616,6 +620,9 @@ class Agent:
             # Get completion from LLM
             await emit(AgentEvent(type="thinking"))
 
+            # Reset code block filter state for this LLM call
+            self.safeguards.code_filter.reset()
+
             # Pass tools only for native tool calling
             tools = None if self.use_react else self.registry.get_schemas()
 
@@ -623,6 +630,7 @@ class Agent:
             pending_tool_calls_seen: set[str] = set()  # Track IDs of pending tool calls shown
             if self.config.stream:
                 full_content = ""
+                full_content_unfiltered = ""  # Keep original for history
                 tool_calls: list[ToolCall] = []
 
                 async for chunk in self.backend.stream(
@@ -631,13 +639,27 @@ class Agent:
                     temperature=self.config.temperature,
                     max_tokens=effective_max_tokens,
                 ):
-                    # Emit stream events for content OR for final chunk (to signal end)
-                    if chunk.content or chunk.is_done:
+                    # Filter content through safeguards (removes code blocks)
+                    filtered_content = ""
+                    if chunk.content:
+                        filtered_content = self.safeguards.filter_stream_chunk(chunk.content)
+                        full_content_unfiltered += chunk.content
+
+                    # Emit stream events for filtered content OR for final chunk (to signal end)
+                    if filtered_content or chunk.is_done:
                         await emit(AgentEvent(
                             type="stream",
-                            content=chunk.content,
+                            content=filtered_content,
                             is_stream_end=chunk.is_done,
                         ))
+
+                    # Check if we should inject steering (bad patterns detected)
+                    if self.safeguards.should_steer():
+                        steering_msg = self.safeguards.get_steering_message()
+                        if steering_msg:
+                            # Queue steering for next iteration
+                            self._steering_queue.put_nowait(steering_msg)
+
                     # Show pending tool calls as they're detected (ReAct mode interleaving)
                     if chunk.pending_tool_call and chunk.pending_tool_call.id not in pending_tool_calls_seen:
                         pending_tool_calls_seen.add(chunk.pending_tool_call.id)
@@ -647,7 +669,7 @@ class Agent:
                             tool_args=chunk.pending_tool_call.arguments,
                         ))
                     if chunk.is_done:
-                        full_content = chunk.full_content or full_content
+                        full_content = chunk.full_content or full_content_unfiltered
                         tool_calls = chunk.tool_calls
                         # Debug log
                         try:
@@ -665,9 +687,16 @@ class Agent:
                     temperature=self.config.temperature,
                     max_tokens=effective_max_tokens,
                 )
-                content = response.content
-                response_content = response.content
+                # Filter content through safeguards (removes code blocks)
+                response_content = response.content  # Keep original for history
+                content = self.safeguards.filter_complete_content(response.content)
                 tool_calls = response.tool_calls if not self.use_react else []
+
+                # Check if we should inject steering (bad patterns detected)
+                if self.safeguards.should_steer():
+                    steering_msg = self.safeguards.get_steering_message()
+                    if steering_msg:
+                        self._steering_queue.put_nowait(steering_msg)
 
             # Handle empty responses (common with small models after clarifications)
             if not content.strip():
@@ -795,6 +824,51 @@ class Agent:
                     # Track this action for completion checking
                     action_desc = f"{tool_call.name}: {str(tool_call.arguments)[:100]}"
                     actions_taken.append(action_desc)
+
+                    # Check for duplicate actions using safeguards
+                    is_dup, dup_reason = self.safeguards.check_duplicate(
+                        tool_call.name, tool_call.arguments
+                    )
+                    if is_dup:
+                        try:
+                            with open("/tmp/loader_debug.log", "a") as f:
+                                f.write(f"[loop] SKIPPING duplicate: {dup_reason}\n")
+                        except Exception:
+                            pass
+                        # Add a tool result indicating skip
+                        self.messages.append(Message(
+                            role=Role.TOOL,
+                            content=f"[Skipped - duplicate action: {dup_reason}]",
+                            tool_call_id=tool_call.id,
+                        ))
+                        continue  # Skip to next tool call
+
+                    # Pre-action validation
+                    validation = self.safeguards.validate_action(
+                        tool_call.name, tool_call.arguments
+                    )
+                    if not validation.valid:
+                        try:
+                            with open("/tmp/loader_debug.log", "a") as f:
+                                f.write(f"[loop] BLOCKED by validation: {validation.reason}\n")
+                        except Exception:
+                            pass
+                        # Add a tool result with the validation error
+                        error_msg = f"[Blocked - {validation.reason}]"
+                        if validation.suggestion:
+                            error_msg += f" Suggestion: {validation.suggestion}"
+                        self.messages.append(Message(
+                            role=Role.TOOL,
+                            content=error_msg,
+                            tool_call_id=tool_call.id,
+                        ))
+                        await emit(AgentEvent(
+                            type="tool_result",
+                            content=error_msg,
+                            tool_name=tool_call.name,
+                            is_error=True,
+                        ))
+                        continue  # Skip to next tool call
 
                     # Rollback planning: create rollback action before destructive ops
                     if rollback_plan and is_destructive_tool(tool_call.name, tool_call.arguments):
@@ -943,6 +1017,23 @@ class Agent:
                         # Success or no auto-recover - clear recovery context
                         if not result.is_error:
                             self._recovery_context = None
+                            # Record successful action to prevent duplicates
+                            self.safeguards.record_action(tool_call.name, tool_call.arguments)
+
+                            # Check for repetitive loop pattern
+                            is_loop, loop_desc = self.safeguards.detect_loop()
+                            if is_loop:
+                                await emit(AgentEvent(
+                                    type="error",
+                                    content=f"Loop detected: {loop_desc}. Stopping to prevent repetitive behavior.",
+                                ))
+                                final_response = "I noticed I was repeating the same actions. Let me know what you'd like me to do differently."
+                                self.messages.append(Message(
+                                    role=Role.ASSISTANT,
+                                    content=final_response,
+                                ))
+                                await emit(AgentEvent(type="response", content=final_response))
+                                return final_response
 
                     await emit(AgentEvent(
                         type="tool_result",
@@ -1039,16 +1130,9 @@ class Agent:
                 # Track errors in this batch
                 batch_errors = 0
 
-                # Track executed commands to avoid repetition
-                if not hasattr(self, '_executed_commands'):
-                    self._executed_commands: set[str] = set()
-
                 # This duplicates the tool execution logic above, but that's intentional
                 # to handle the case where raw JSON tool calls are extracted
                 for i, tc in enumerate(tool_calls):
-                    # Create a signature for this command
-                    cmd_sig = f"{tc.name}:{str(tc.arguments)}"
-
                     # Skip browser/display commands that don't work in terminal
                     if tc.name == "bash":
                         cmd = tc.arguments.get("command", "")
@@ -1060,16 +1144,39 @@ class Agent:
                                 pass
                             continue
 
-                    # Skip if we've already executed this exact command
-                    if cmd_sig in self._executed_commands:
+                    # Use safeguards for duplicate checking
+                    is_dup, dup_reason = self.safeguards.check_duplicate(tc.name, tc.arguments)
+                    if is_dup:
                         try:
                             with open("/tmp/loader_debug.log", "a") as f:
-                                f.write(f"[loop] skipping duplicate command: {cmd_sig[:50]}\n")
+                                f.write(f"[loop] skipping duplicate: {dup_reason}\n")
                         except Exception:
                             pass
                         continue
 
-                    self._executed_commands.add(cmd_sig)
+                    # Pre-action validation
+                    validation = self.safeguards.validate_action(tc.name, tc.arguments)
+                    if not validation.valid:
+                        try:
+                            with open("/tmp/loader_debug.log", "a") as f:
+                                f.write(f"[loop] BLOCKED by validation: {validation.reason}\n")
+                        except Exception:
+                            pass
+                        error_msg = f"[Blocked - {validation.reason}]"
+                        if validation.suggestion:
+                            error_msg += f" Suggestion: {validation.suggestion}"
+                        await emit(AgentEvent(
+                            type="tool_result",
+                            content=error_msg,
+                            tool_name=tc.name,
+                            is_error=True,
+                        ))
+                        self.messages.append(Message(
+                            role=Role.TOOL,
+                            content=error_msg,
+                        ))
+                        batch_errors += 1
+                        continue
 
                     # Small delay between tool executions for better UX
                     if i > 0:
@@ -1134,6 +1241,23 @@ class Agent:
                         consecutive_errors += 1
                     else:
                         consecutive_errors = 0  # Reset on success
+                        # Record successful action to prevent duplicates
+                        self.safeguards.record_action(tc.name, tc.arguments)
+
+                        # Check for repetitive loop pattern
+                        is_loop, loop_desc = self.safeguards.detect_loop()
+                        if is_loop:
+                            await emit(AgentEvent(
+                                type="error",
+                                content=f"Loop detected: {loop_desc}. Stopping to prevent repetitive behavior.",
+                            ))
+                            final_response = "I noticed I was repeating the same actions. Let me know what you'd like me to do differently."
+                            self.messages.append(Message(
+                                role=Role.ASSISTANT,
+                                content=final_response,
+                            ))
+                            await emit(AgentEvent(type="response", content=final_response))
+                            return final_response
 
                     await emit(AgentEvent(
                         type="tool_result",
@@ -1230,6 +1354,24 @@ class Agent:
                         ))
                         critique.revision_count += 1
                         continue  # Loop to get revised response
+
+            # Check for text loop (agent repeating the same response)
+            is_text_loop, text_loop_desc = self.safeguards.detect_text_loop(content)
+            if is_text_loop:
+                await emit(AgentEvent(
+                    type="error",
+                    content=f"Text loop detected: {text_loop_desc}. Stopping.",
+                ))
+                final_response = "I seem to be repeating myself. Let me know if you'd like me to try a different approach."
+                self.messages.append(Message(
+                    role=Role.ASSISTANT,
+                    content=final_response,
+                ))
+                await emit(AgentEvent(type="response", content=final_response))
+                return final_response
+
+            # Record response for future loop detection
+            self.safeguards.record_response(content)
 
             # Task completion check - don't give up too early!
             # Use original_task if available (for multi-turn conversations)
@@ -1396,7 +1538,7 @@ class Agent:
         # This happens when small models try to call tools but output JSON instead
         json_tool_patterns = [
             r'\{"name"\s*:\s*"(write|read|edit|bash|glob|grep)"',  # Tool call JSON
-            r'"name"\s*:\s*"(write|read|edit|bash|glob|grep)".*"parameters"',
+            r'"name"\s*:\s*"(write|read|edit|bash|glob|grep)".*"(?:parameters|arguments)"',
         ]
         for pattern in json_tool_patterns:
             if re.search(pattern, content):
@@ -1473,11 +1615,18 @@ class Agent:
         # or [USE bash tool: ...] or similar variations
         # Note: Using (.+?) with re.DOTALL to capture content that may span patterns
         # The ] at end acts as anchor, but we need to handle ] inside content
+        # Also handle formats without colon: [calls bash tool with command="..."]
         bracket_patterns = [
+            # With colon after "with"
             r'\[calls?\s+(\w+)\s+tool\s+with:\s*(.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error))',
             r'\[USE\s+(\w+)\s+tool:\s*(.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error))',
             r'\[calls?\s+(\w+)\s+tool\s+with:\s*([^\]]+)\]',
             r'\[USE\s+(\w+)\s+tool:\s*([^\]]+)\]',
+            # Without colon - direct key=value format: [calls bash tool with command="..."]
+            r'\[calls?\s+(\w+)\s+tool\s+with\s+(\w+\s*=.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error|Directly))',
+            r'\[calls?\s+(\w+)\s+tool\s+with\s+([^\]]+)\]',
+            # Inline format: [calls write tool with file_path="..." and inline content "..."]
+            r'\[calls?\s+(\w+)\s+tool\s+with\s+(.+?)\](?=\s*(?:\n|$|Directly|Done))',
         ]
 
         for pattern in bracket_patterns:
@@ -1520,11 +1669,16 @@ class Agent:
                     elif tool_name == "write":
                         # write tool: file_path=..., content="..."
                         # Handle quoted file paths
-                        file_path_match = re.search(r'file_path[=:]\s*["\']?([^"\'`,]+)["\']?', args_str)
+                        file_path_match = re.search(r'file_path[=:]\s*["\']?([^"\'`,\s]+)["\']?', args_str)
 
                         # For content, find the content= part and extract everything after it
                         # Handle both quoted and unquoted content
-                        content_start = re.search(r'content[=:]\s*', args_str)
+                        # Also handle "inline content" format: and inline content "..."
+                        content_start = re.search(r'(?:inline\s+)?content[=:]\s*', args_str, re.IGNORECASE)
+                        if not content_start:
+                            # Also try: and inline content "..."
+                            content_start = re.search(r'and\s+inline\s+content\s+', args_str, re.IGNORECASE)
+
                         file_content = ""
                         if content_start:
                             rest = args_str[content_start.end():]
@@ -1605,7 +1759,7 @@ class Agent:
 
         for tool_name in tool_names:
             # Look for the start of a tool call JSON
-            pattern = rf'\{{\s*"name"\s*:\s*"{tool_name}"\s*,\s*"parameters"\s*:\s*\{{'
+            pattern = rf'\{{\s*"name"\s*:\s*"{tool_name}"\s*,\s*"(?:parameters|arguments)"\s*:\s*\{{'
             for match in re.finditer(pattern, content):
                 start = match.start()
 
@@ -1654,11 +1808,12 @@ class Agent:
                             except json.JSONDecodeError:
                                 continue
 
-                        if "name" in data and "parameters" in data:
+                        if "name" in data and ("parameters" in data or "arguments" in data):
+                            args = data.get("arguments") or data.get("parameters", {})
                             tool_calls.append(ToolCall(
                                 id=f"raw_{data['name']}_{len(tool_calls)}",
                                 name=data["name"],
-                                arguments=data["parameters"],
+                                arguments=args,
                             ))
 
                 except Exception:
@@ -1672,3 +1827,4 @@ class Agent:
         self._recovery_context = None
         self._current_task = None
         self._executed_commands = set()  # Clear command dedup tracking
+        self.safeguards.reset()  # Reset all runtime safeguards

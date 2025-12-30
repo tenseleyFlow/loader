@@ -758,8 +758,17 @@ def detect_premature_completion(task: str, response: str, actions_taken: list[st
         "create a file", "write a file", "make a file",
         "add a function", "edit the", "fix the", "update the",
         "read the", "show me", "list",
+        # Web page / design tasks are also typically simple
+        "design a webpage", "create a webpage", "make a webpage",
+        "create a page", "design a page", "create an html",
+        "make an html", "write an html", "help me design",
+        "create a simple", "make a simple", "write a simple",
     ]
     is_simple = any(ind in task_lower for ind in simple_creation)
+
+    # If we already created/wrote files, the task is probably done
+    if "write" in str(actions_taken).lower() and len(actions_taken) >= 1:
+        return False  # File was written, trust it's done
 
     # If it's a simple task with at least one action, it's probably done
     if is_simple and len(actions_taken) >= 1:
