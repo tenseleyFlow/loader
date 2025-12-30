@@ -48,10 +48,14 @@ class ToolCallWidget(Vertical):
         )
         yield Static("", id="tool-summary", classes="tool-summary")
 
-        # Toggle button for expand/collapse
-        yield Button("▶ Show full output", id="tool-toggle", classes="tool-toggle", variant="default")
+        # Toggle button for expand/collapse (hidden by default until result has more lines)
+        toggle = Button("▶ Show full output", id="tool-toggle", classes="tool-toggle", variant="default")
+        toggle.display = False
+        yield toggle
 
-        yield Static("", id="tool-full-result", classes="tool-full-result")
+        full_result = Static("", id="tool-full-result", classes="tool-full-result")
+        full_result.display = False
+        yield full_result
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle toggle button press."""

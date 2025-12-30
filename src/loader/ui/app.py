@@ -1,5 +1,6 @@
 """Main Textual application for Loader TUI."""
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, ScrollableContainer
 from textual.reactive import reactive
-from textual.widgets import Footer, Static
+from textual.widgets import Footer, Input, Static
 from textual import work
 from textual.worker import Worker, get_current_worker
 
@@ -35,7 +36,7 @@ from .adapter import (
     ToolCallStarted,
     VerificationPerformed,
 )
-from .widgets import ConfirmationModal, DiffWidget, InputArea, StatusLine, StreamingText, ToolCallWidget
+from .widgets import ApprovalBar, ConfirmationModal, DiffWidget, InputArea, StatusLine, StreamingText, ToolCallWidget
 
 
 class LoaderApp(App):
@@ -69,6 +70,9 @@ class LoaderApp(App):
         self._streamed_content: bool = False  # Track if any content was streamed
         self._tool_widget_queue: list[ToolCallWidget] = []  # Queue of pending tool widgets
         self._timer_handle = None
+        # Approval bar state
+        self._pending_confirmation: asyncio.Future | None = None
+        self._pending_command: str = ""
 
     def _debug_log(self, message: str) -> None:
         """Write debug message to log file."""
@@ -81,6 +85,7 @@ class LoaderApp(App):
     def compose(self) -> ComposeResult:
         yield Container(
             ScrollableContainer(id="message-area"),
+            ApprovalBar(id="approval-bar"),
             InputArea(id="input-area"),
             StatusLine(id="status-line"),
             id="main-container",
@@ -210,49 +215,51 @@ class LoaderApp(App):
         """Show help message with available commands."""
         help_text = """[bold]Available Commands:[/bold]
 
-[cyan]/help[/cyan], [cyan]/h[/cyan]        Show this help message
-[cyan]/exit[/cyan], [cyan]/q[/cyan]        Exit the application
-[cyan]/clear[/cyan], [cyan]/c[/cyan]       Clear the conversation
-[cyan]/model[/cyan] [dim]<name>[/dim]   Switch to a different model
-[cyan]/models[/cyan]         List available models
+[cyan]/help[/cyan], [cyan]/h[/cyan]          Show this help message
+[cyan]/exit[/cyan], [cyan]/q[/cyan]          Exit the application
+[cyan]/clear[/cyan], [cyan]/c[/cyan]         Clear the conversation
+[cyan]/model[/cyan], [cyan]/models[/cyan]    Open model selector (fzf-style)
+[cyan]/model[/cyan] [dim]<name>[/dim]     Switch to a specific model
 
 [bold]Shortcuts:[/bold]
-[dim]Ctrl+C[/dim]          Exit
-[dim]Ctrl+L[/dim]          Clear conversation"""
+[dim]Ctrl+C[/dim]            Exit
+[dim]Ctrl+L[/dim]            Clear conversation"""
         self._add_message(help_text)
 
     def _handle_model_command(self, args: str) -> None:
-        """Handle /model command - switch or list models."""
+        """Handle /model command - switch or show selector."""
         if not args:
-            # List available models
-            self._list_models()
+            # Show interactive model selector
+            self._show_model_selector()
         else:
-            # Switch to specified model
+            # Switch to specified model directly
             self._switch_model(args.strip())
 
-    def _list_models(self) -> None:
-        """List available Ollama models."""
-        # Use Textual's worker to run async code
-        self.run_worker(self._fetch_and_display_models())
+    def _show_model_selector(self) -> None:
+        """Show interactive model selection modal."""
+        # Use Textual's worker to fetch models then show modal
+        self.run_worker(self._fetch_and_show_selector())
 
-    async def _fetch_and_display_models(self) -> None:
-        """Fetch and display available models (async worker)."""
+    async def _fetch_and_show_selector(self) -> None:
+        """Fetch models and show the selection modal."""
+        from .widgets import ModelSelectModal
+
         try:
             models = []
             if hasattr(self.agent.backend, "list_models"):
                 models = await self.agent.backend.list_models()
 
             if models:
-                lines = ["[bold]Available Models:[/bold]", ""]
                 current = self.agent.backend.model if hasattr(self.agent.backend, "model") else ""
-                for m in models:
-                    name = m.get("name", "")
-                    size_mb = m.get("size", 0) / (1024 * 1024)
-                    marker = "[green]●[/green]" if name == current else "[dim]○[/dim]"
-                    lines.append(f"  {marker} [cyan]{name}[/cyan] [dim]({size_mb:.0f}MB)[/dim]")
-                lines.append("")
-                lines.append("[dim]Use /model <name> to switch[/dim]")
-                self._add_message("\n".join(lines))
+
+                def on_select(selected: str | None) -> None:
+                    if selected:
+                        self._switch_model(selected)
+
+                # Schedule on main thread - workers can use call_later
+                self.call_later(
+                    lambda: self.push_screen(ModelSelectModal(models, current), on_select)
+                )
             else:
                 self._add_message("[yellow]No models found. Is Ollama running?[/yellow]")
         except Exception as e:
@@ -281,13 +288,45 @@ class LoaderApp(App):
         message: str,
         details: str,
     ) -> bool:
-        """Show confirmation modal and wait for user response."""
-        modal = ConfirmationModal(
-            tool_name=tool_name,
-            message=message,
-            details=details,
-        )
-        return await self.push_screen_wait(modal)
+        """Show approval bar and wait for user response."""
+        # Create a future to wait on
+        loop = asyncio.get_event_loop()
+        self._pending_confirmation = loop.create_future()
+        self._pending_command = details
+
+        # Show the approval bar
+        approval_bar = self.query_one("#approval-bar", ApprovalBar)
+        self.call_later(lambda: approval_bar.show_approval(tool_name, message, details))
+
+        # Wait for user response
+        try:
+            return await self._pending_confirmation
+        finally:
+            self._pending_confirmation = None
+            self._pending_command = ""
+
+    def on_approval_bar_approved(self, event: ApprovalBar.Approved) -> None:
+        """Handle approval from the bar."""
+        if self._pending_confirmation and not self._pending_confirmation.done():
+            self._pending_confirmation.set_result(True)
+
+    def on_approval_bar_rejected(self, event: ApprovalBar.Rejected) -> None:
+        """Handle rejection from the bar."""
+        if self._pending_confirmation and not self._pending_confirmation.done():
+            self._pending_confirmation.set_result(False)
+        # Refocus input
+        self.query_one(InputArea).focus_input()
+
+    def on_approval_bar_edit_requested(self, event: ApprovalBar.EditRequested) -> None:
+        """Handle edit request - put command in input for editing."""
+        if self._pending_confirmation and not self._pending_confirmation.done():
+            self._pending_confirmation.set_result(False)
+        # Put the command in the input field for editing
+        input_area = self.query_one(InputArea)
+        input_widget = input_area.query_one("#user-input", Input)
+        input_widget.value = event.command
+        input_widget.cursor_position = len(event.command)
+        input_area.focus_input()
 
     @work(exclusive=True)
     async def run_agent(self, user_input: str) -> str:
@@ -487,11 +526,9 @@ class LoaderApp(App):
 
     def on_steering_received(self, message: SteeringReceived) -> None:
         """Handle steering message being processed by agent."""
-        # The steering message was already displayed when sent,
-        # this confirms it was injected into the agent's context
-        self._add_message(
-            "[dim italic]↪ Steering message injected, agent will incorporate it...[/dim italic]"
-        )
+        # Don't display anything - auto-steering is internal
+        # Only show if this was user-initiated (but we don't track that currently)
+        pass
 
     # Reasoning event handlers
     def on_decomposition_created(self, message: DecompositionCreated) -> None:
@@ -592,19 +629,9 @@ class LoaderApp(App):
 
     def on_completion_check_performed(self, message: CompletionCheckPerformed) -> None:
         """Handle task completion check."""
-        check = message.completion_check
-        if check and not check.is_complete:
-            lines = ["[bold yellow]⚡ Task not complete yet![/bold yellow]"]
-            if check.accomplished:
-                lines.append(f"  [green]Done:[/green] {', '.join(check.accomplished[:3])}")
-            if check.suggested_next_steps:
-                lines.append("  [yellow]Next steps:[/yellow]")
-                for step in check.suggested_next_steps[:2]:
-                    lines.append(f"    → {step}")
-            lines.append("  [italic]Continuing...[/italic]")
-            self._add_message("\n".join(lines), "completion-check")
-        else:
-            self._add_message(f"[dim]{escape(message.content)}[/dim]")
+        # Don't display anything - completion checks are internal steering
+        # The agent will continue automatically if needed
+        pass
 
     def on_rollback_tracked(self, message: RollbackTracked) -> None:
         """Handle rollback action tracking (verbose mode only)."""
