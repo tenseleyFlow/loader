@@ -1288,15 +1288,25 @@ class Agent:
             # No tool calls - check if model is describing instead of acting
             if self._contains_unexecuted_code(content) and iterations < self.config.max_iterations - 1:
                 # Model outputted code blocks without using tools - nudge it
+                await emit(AgentEvent(
+                    type="error",
+                    content="⚠ Chatbot mode detected - steering agent to use tools instead of giving instructions",
+                ))
                 self.messages.append(Message(
                     role=Role.ASSISTANT,
                     content=response_content,
                 ))
                 self.messages.append(Message(
                     role=Role.USER,
-                    content="STOP. Do not show me code to copy. USE YOUR TOOLS to execute the actions. "
-                            "Call the bash tool to run commands. Call the write tool to create files. "
-                            "Execute the task NOW using tool calls.",
+                    content="CRITICAL ERROR: You are giving me instructions to copy instead of EXECUTING the task.\n\n"
+                            "DO NOT write:\n"
+                            "- Numbered steps (1., 2., 3.)\n"
+                            "- Instructions like 'Open your terminal...'\n"
+                            "- Code blocks for me to copy\n"
+                            "- 'You can run...', 'Create this file...'\n\n"
+                            "INSTEAD: Use your bash and write tools RIGHT NOW to execute the task.\n"
+                            "Example: [call write tool], [call bash tool]\n"
+                            "DO IT NOW - don't describe it.",
                 ))
                 continue
 
@@ -1573,7 +1583,22 @@ class Agent:
             'execute this', 'paste this',
         ]
 
+        # Tutorial/instruction patterns
+        tutorial_patterns = [
+            r'^\s*\d+\.\s+(open|create|navigate|run|execute|make)',  # Numbered instructions
+            r'(first|second|third|next|then),?\s+(open|create|navigate)',  # Sequenced steps
+            r'open your (terminal|command|shell)',  # Tutorial starter
+            r'navigate to (the|your|~/)',  # Navigation instruction
+            r'here\'s how you can (quickly|easily)?',  # How-to preamble
+            r'you can (start by|begin by|follow these)',  # Tutorial start
+        ]
+
         content_lower = content.lower()
+
+        # Check for tutorial patterns
+        for pattern in tutorial_patterns:
+            if re.search(pattern, content_lower, re.MULTILINE | re.IGNORECASE):
+                return True
 
         # If chatbot phrases present with code blocks, it's describing not doing
         for phrase in chatbot_phrases:
