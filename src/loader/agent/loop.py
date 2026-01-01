@@ -1286,8 +1286,24 @@ class Agent:
                 continue
 
             # No tool calls - check if model is describing instead of acting
-            if self._contains_unexecuted_code(content) and iterations < self.config.max_iterations - 1:
+            # IMPORTANT: Check ORIGINAL content before safeguards filtered it!
+            # Debug log
+            try:
+                has_unexecuted = self._contains_unexecuted_code(response_content)
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(f"[chatbot-check] iterations={iterations}, has_unexecuted={has_unexecuted}\n")
+                    f.write(f"[chatbot-check] response_content (first 200): {response_content[:200]}\n")
+                    f.write(f"[chatbot-check] filtered content (first 200): {content[:200]}\n")
+            except Exception:
+                pass
+
+            if self._contains_unexecuted_code(response_content) and iterations < self.config.max_iterations - 1:
                 # Model outputted code blocks without using tools - nudge it
+                try:
+                    with open("/tmp/loader_debug.log", "a") as f:
+                        f.write(f"[chatbot-check] TRIGGERING chatbot recovery\n")
+                except Exception:
+                    pass
                 await emit(AgentEvent(
                     type="error",
                     content="⚠ Chatbot mode detected - steering agent to use tools instead of giving instructions",
