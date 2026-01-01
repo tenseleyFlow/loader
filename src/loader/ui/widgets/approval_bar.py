@@ -84,6 +84,8 @@ class ApprovalBar(Widget):
         self._tool_name: str = ""
         self._command_preview: str = ""
         self._full_command: str = ""
+        # Make this widget focusable from the start
+        self.can_focus = True
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="approval-container"):
@@ -117,9 +119,24 @@ class ApprovalBar(Widget):
             preview = preview[:57] + "..."
         preview_label.update(preview)
 
-        # Show the bar
+        # Show the bar and focus it
         self.add_class("visible")
+        self.can_focus = True  # Make sure it can receive focus
+
+        # Debug logging
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval-bar] show_approval: tool={tool_name}, visible=True, focusing...\n")
+        except Exception:
+            pass
+
         self.focus()
+
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval-bar] focus() called, has_focus={self.has_focus}\n")
+        except Exception:
+            pass
 
     def hide_approval(self) -> None:
         """Hide the approval bar."""
@@ -130,15 +147,30 @@ class ApprovalBar(Widget):
 
     def action_approve(self) -> None:
         """Handle 'y' key - approve the action."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval-bar] action_approve called, posting Approved message\n")
+        except Exception:
+            pass
         self.post_message(self.Approved())
         self.hide_approval()
 
     def action_reject(self) -> None:
         """Handle 'n' or escape - reject the action."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval-bar] action_reject called, posting Rejected message\n")
+        except Exception:
+            pass
         self.post_message(self.Rejected())
         self.hide_approval()
 
     def action_edit(self) -> None:
         """Handle 'e' key - edit the command."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval-bar] action_edit called, posting EditRequested message\n")
+        except Exception:
+            pass
         self.post_message(self.EditRequested(self._full_command))
         self.hide_approval()

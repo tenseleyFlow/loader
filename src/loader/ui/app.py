@@ -294,24 +294,60 @@ class LoaderApp(App):
         self._pending_confirmation = loop.create_future()
         self._pending_command = details
 
-        # Show the approval bar
+        # Show the approval bar - must use call_from_thread since we're in worker
         approval_bar = self.query_one("#approval-bar", ApprovalBar)
-        self.call_later(lambda: approval_bar.show_approval(tool_name, message, details))
 
-        # Wait for user response
+        def show_bar():
+            try:
+                approval_bar.show_approval(tool_name, message, details)
+                # Debug log
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(f"[approval] Bar shown, waiting for user input\n")
+            except Exception as e:
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(f"[approval] Error showing bar: {e}\n")
+
+        self.call_from_thread(show_bar)
+
+        # Wait for user response with timeout
         try:
-            return await self._pending_confirmation
+            result = await asyncio.wait_for(self._pending_confirmation, timeout=300.0)
+            try:
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(f"[approval] Got result: {result}\n")
+            except Exception:
+                pass
+            return result
+        except asyncio.TimeoutError:
+            try:
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(f"[approval] Timeout waiting for user\n")
+            except Exception:
+                pass
+            return False
         finally:
             self._pending_confirmation = None
             self._pending_command = ""
+            # Hide the bar
+            self.call_from_thread(approval_bar.hide_approval)
 
     def on_approval_bar_approved(self, event: ApprovalBar.Approved) -> None:
         """Handle approval from the bar."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval] Approved handler called\n")
+        except Exception:
+            pass
         if self._pending_confirmation and not self._pending_confirmation.done():
             self._pending_confirmation.set_result(True)
 
     def on_approval_bar_rejected(self, event: ApprovalBar.Rejected) -> None:
         """Handle rejection from the bar."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval] Rejected handler called\n")
+        except Exception:
+            pass
         if self._pending_confirmation and not self._pending_confirmation.done():
             self._pending_confirmation.set_result(False)
         # Refocus input
@@ -319,6 +355,11 @@ class LoaderApp(App):
 
     def on_approval_bar_edit_requested(self, event: ApprovalBar.EditRequested) -> None:
         """Handle edit request - put command in input for editing."""
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval] Edit handler called\n")
+        except Exception:
+            pass
         if self._pending_confirmation and not self._pending_confirmation.done():
             self._pending_confirmation.set_result(False)
         # Put the command in the input field for editing
