@@ -451,8 +451,13 @@ class LoaderApp(App):
             self._current_streaming.start_streaming()
             msg_area.mount(self._current_streaming)
 
-        self._current_streaming.append(message.content)
-        msg_area.scroll_end(animate=False)
+        # Filter content through safeguards before displaying
+        # This removes bracket tool calls, code blocks, etc. from stream
+        filtered_content = self.agent.safeguards.filter_stream_chunk(message.content)
+
+        if filtered_content:
+            self._current_streaming.append(filtered_content)
+            msg_area.scroll_end(animate=False)
 
         # Track that we've shown actual content
         if message.content.strip():
