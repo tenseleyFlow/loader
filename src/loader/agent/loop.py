@@ -1347,10 +1347,7 @@ class Agent:
                         f.write(f"[chatbot-check] TRIGGERING chatbot recovery\n")
                 except Exception:
                     pass
-                await emit(AgentEvent(
-                    type="error",
-                    content="⚠ Chatbot mode detected - steering agent to use tools instead of giving instructions",
-                ))
+                # Silently steer - don't show error to user (internal correction)
                 self.messages.append(Message(
                     role=Role.ASSISTANT,
                     content=response_content,
