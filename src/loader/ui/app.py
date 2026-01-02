@@ -289,25 +289,33 @@ class LoaderApp(App):
         details: str,
     ) -> bool:
         """Show approval bar and wait for user response."""
+        import threading
+
         # Create a future to wait on
         loop = asyncio.get_event_loop()
         self._pending_confirmation = loop.create_future()
         self._pending_command = details
 
-        # Show the approval bar - must use call_from_thread since we're in worker
+        # Show the approval bar
         approval_bar = self.query_one("#approval-bar", ApprovalBar)
 
         def show_bar():
             try:
                 approval_bar.show_approval(tool_name, message, details)
-                # Debug log
                 with open("/tmp/loader_debug.log", "a") as f:
                     f.write(f"[approval] Bar shown, waiting for user input\n")
             except Exception as e:
                 with open("/tmp/loader_debug.log", "a") as f:
                     f.write(f"[approval] Error showing bar: {e}\n")
 
-        self.call_from_thread(show_bar)
+        # Check if we're on the main thread or a worker thread
+        # call_from_thread only works from non-main threads
+        try:
+            # Try call_from_thread first (works if in worker thread)
+            self.call_from_thread(show_bar)
+        except RuntimeError:
+            # We're on main thread - just call directly
+            show_bar()
 
         # Wait for user response with timeout
         try:
@@ -328,8 +336,11 @@ class LoaderApp(App):
         finally:
             self._pending_confirmation = None
             self._pending_command = ""
-            # Hide the bar
-            self.call_from_thread(approval_bar.hide_approval)
+            # Hide the bar - same thread-safe approach
+            try:
+                self.call_from_thread(approval_bar.hide_approval)
+            except RuntimeError:
+                approval_bar.hide_approval()
 
     def on_approval_bar_approved(self, event: ApprovalBar.Approved) -> None:
         """Handle approval from the bar."""
