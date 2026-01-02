@@ -130,6 +130,33 @@ class CodeBlockFilter:
                 was_filtered = True
                 continue
 
+            # Check for hallucinated tool narration and filter the line
+            hallucination_match = re.search(
+                r'([Uu]sed\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool|'
+                r'[Uu]sing\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool|'
+                r'with\s+file_path\s*=\s*[`\'"]|'
+                r'with\s+command\s*[`\'"]|'
+                r'[Hh]ere\s+is\s+what\s+[Ii]\s+did:)',
+                self._buffer
+            )
+            if hallucination_match:
+                # Find end of line and remove whole line
+                line_start = self._buffer.rfind('\n', 0, hallucination_match.start()) + 1
+                line_end = self._buffer.find('\n', hallucination_match.end())
+                if line_end == -1:
+                    # Line continues to end of buffer - wait for more
+                    if line_start > 0:
+                        result_parts.append(self._buffer[:line_start])
+                    self._buffer = self._buffer[line_start:]
+                    break
+                else:
+                    # Remove the whole line
+                    result_parts.append(self._buffer[:line_start])
+                    removed.append(self._buffer[line_start:line_end])
+                    self._buffer = self._buffer[line_end:]
+                    was_filtered = True
+                    continue
+
             # Check for preamble patterns and filter the line
             preamble_match = re.search(
                 r'(Here is a JSON response|Here are the function calls|'
@@ -272,6 +299,23 @@ class CodeBlockFilter:
             matches = re.findall(pattern, filtered, re.IGNORECASE | re.MULTILINE)
             removed.extend(matches)
             filtered = re.sub(pattern, '', filtered, flags=re.IGNORECASE | re.MULTILINE)
+
+        # Pattern to match hallucinated/narrated tool uses (remove entire line)
+        # These are lines where model describes using tools instead of actually calling them
+        hallucination_patterns = [
+            r'^.*[Uu]sed\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool.*$',  # "Used bash tool..."
+            r'^.*[Uu]sing\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool.*$',  # "...using the write tool"
+            r'^.*with\s+file_path\s*=\s*[`\'"][^`\'"]+[`\'"].*$',  # Narrated file_path parameter
+            r'^.*with\s+command\s*[`\'"][^`\'"]+[`\'"].*$',  # Narrated bash command
+            r'^\s*\*\s*[Uu]sed\s+`.*$',  # "* Used `bash`..." (bullet point narration)
+            r'^.*[Hh]ere\s+is\s+what\s+[Ii]\s+did:.*$',  # "Here is what I did:"
+            r'^\s*\d+\.\s+[Uu]sed\s+.*tool.*$',  # "1. Used bash tool..."
+            r'^\s*\d+\.\s+[Cc]reated\s+.*using\s+the\s+.*tool.*$',  # "1. Created... using the write tool"
+        ]
+        for pattern in hallucination_patterns:
+            matches = re.findall(pattern, filtered, re.MULTILINE)
+            removed.extend(matches)
+            filtered = re.sub(pattern, '', filtered, flags=re.MULTILINE)
 
         # Filter internal recovery/system prompts (multiline blocks)
         internal_prompt_patterns = [

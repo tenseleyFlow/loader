@@ -1314,15 +1314,17 @@ class Agent:
                 ))
                 self.messages.append(Message(
                     role=Role.USER,
-                    content="CRITICAL ERROR: You are giving me instructions to copy instead of EXECUTING the task.\n\n"
+                    content="CRITICAL ERROR: You are PRETENDING to use tools instead of actually using them.\n\n"
                             "DO NOT write:\n"
-                            "- Numbered steps (1., 2., 3.)\n"
-                            "- Instructions like 'Open your terminal...'\n"
-                            "- Code blocks for me to copy\n"
-                            "- 'You can run...', 'Create this file...'\n\n"
-                            "INSTEAD: Use your bash and write tools RIGHT NOW to execute the task.\n"
-                            "Example: [call write tool], [call bash tool]\n"
-                            "DO IT NOW - don't describe it.",
+                            "- 'Used bash tool with command...' (THIS IS FAKE)\n"
+                            "- 'Created a file using the write tool...' (THIS IS FAKE)\n"
+                            "- 'Here is what I did:' followed by descriptions\n"
+                            "- Numbered steps or instructions\n"
+                            "- Code blocks for me to copy\n\n"
+                            "Your tool calls MUST go through the proper tool interface.\n"
+                            "Writing 'Used bash tool...' does NOT execute anything!\n\n"
+                            "ACTUALLY call the tools using the tool_call mechanism.\n"
+                            "DO IT NOW - stop narrating and start executing.",
                 ))
                 continue
 
@@ -1576,6 +1578,22 @@ class Agent:
             r'\[USE\s+\w+\s+tool:',
         ]
         for pattern in bracket_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                return True
+
+        # Check for hallucinated/narrated tool uses - model DESCRIBES using tools
+        # but doesn't actually call them (past tense narration)
+        hallucination_patterns = [
+            r'used\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "Used bash tool..."
+            r'used\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "Used the bash tool..."
+            r'using\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "...using the write tool"
+            r'with\s+file_path\s*=\s*[`\'"]',  # "with file_path=`..." (narrated parameter)
+            r'with\s+command\s*[`\'"]',  # "with command `..." (narrated bash)
+            r'i\s+(ran|executed|created|wrote|read)\s+(the\s+)?(command|file)',  # "I ran the command"
+            r'\*\s*used\s+`',  # "* Used `bash`..." (bullet point narration)
+            r'here\s+is\s+what\s+i\s+did:',  # "Here is what I did:"
+        ]
+        for pattern in hallucination_patterns:
             if re.search(pattern, content, re.IGNORECASE):
                 return True
 
