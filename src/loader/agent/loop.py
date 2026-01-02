@@ -82,7 +82,7 @@ class ReasoningConfig:
 class AgentConfig:
     """Configuration for the agent."""
     max_iterations: int = 15  # Reduced from 20
-    temperature: float = 0.5  # Lower = faster, more focused
+    temperature: float = 0.3  # Low for better instruction following
     max_tokens: int = 2048  # Reduced from 4096, most responses are shorter
     force_react: bool = False  # Force ReAct even if model supports native tools
     auto_context: bool = True  # Auto-detect project context on startup
@@ -234,7 +234,33 @@ class Agent:
 
     def _build_messages(self) -> list[Message]:
         """Build the full message list for the LLM."""
-        return [self._get_system_message()] + self.messages
+        messages = [self._get_system_message()]
+
+        # Add few-shot examples if this is a fresh conversation
+        if len(self.messages) <= 2:  # User message + maybe prefill
+            messages.extend(self._get_few_shot_examples())
+
+        messages.extend(self.messages)
+        return messages
+
+    def _get_few_shot_examples(self) -> list[Message]:
+        """Get few-shot examples demonstrating proper tool use."""
+        if self.use_react:
+            # ReAct format examples
+            return [
+                Message(role=Role.USER, content="Create a file called hello.py that prints hello"),
+                Message(role=Role.ASSISTANT, content='<tool_call>\n{"name": "write", "arguments": {"file_path": "hello.py", "content": "print(\'hello\')"}}\n</tool_call>'),
+                Message(role=Role.TOOL, content="Created hello.py"),
+                Message(role=Role.ASSISTANT, content="Done."),
+            ]
+        else:
+            # Bracket format examples
+            return [
+                Message(role=Role.USER, content="Create a file called hello.py that prints hello"),
+                Message(role=Role.ASSISTANT, content='[write: file_path="hello.py", content="print(\'hello\')"]'),
+                Message(role=Role.TOOL, content="Created hello.py"),
+                Message(role=Role.ASSISTANT, content="Done."),
+            ]
 
     async def _should_plan(self, task: str) -> bool:
         """Ask LLM if this task needs planning."""
@@ -607,6 +633,23 @@ class Agent:
 
         while iterations < self.config.max_iterations:
             iterations += 1
+
+            # On first iteration, add assistant prefilling to guide tool use
+            if iterations == 1 and len(self.messages) == 1:  # Just the user's message
+                # Check if task looks like it needs immediate action
+                task_lower = task.lower()
+                action_keywords = ['create', 'write', 'make', 'run', 'execute', 'build', 'install', 'delete', 'remove', 'add', 'edit', 'modify', 'update', 'fix']
+                if any(kw in task_lower for kw in action_keywords):
+                    # Prime with partial assistant response - start of tool call
+                    self.messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content="[",
+                    ))
+                    try:
+                        with open("/tmp/loader_debug.log", "a") as f:
+                            f.write(f"[loop] Added assistant prefill '[' for action task\n")
+                    except Exception:
+                        pass
 
             # Check for steering messages from user
             steering_messages = self._drain_steering_queue()
