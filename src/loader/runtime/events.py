@@ -16,6 +16,7 @@ from ..agent.reasoning import (
     TaskDecomposition,
 )
 from ..llm.base import Message
+from .dod import DefinitionOfDone
 from .tracing import RuntimeTraceEvent
 
 
@@ -27,12 +28,16 @@ class AgentEvent:
     content: str = ""
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
+    phase: str | None = None
     step_info: str | None = None
     recovery_attempt: int | None = None
     is_stream_end: bool = False
     confirm_message: str | None = None
     confirm_details: str | None = None
     is_error: bool = False
+    dod_status: str | None = None
+    pending_items_count: int | None = None
+    last_verification_result: str | None = None
 
     decomposition: TaskDecomposition | None = None
     subtask: Subtask | None = None
@@ -42,6 +47,7 @@ class AgentEvent:
     completion_check: TaskCompletionCheck | None = None
     rollback_plan: RollbackPlan | None = None
     rollback_action: RollbackAction | None = None
+    definition_of_done: DefinitionOfDone | None = None
 
 
 @dataclass
@@ -56,3 +62,4 @@ class TurnSummary:
     verification_status: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
     trace: list[RuntimeTraceEvent] = field(default_factory=list)
+    definition_of_done: DefinitionOfDone | None = None

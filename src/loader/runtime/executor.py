@@ -55,6 +55,9 @@ class ToolExecutor:
         on_confirmation: BrowserConfirmation = None,
         emit_confirmation: ConfirmationEmitter = None,
         source: str,
+        skip_duplicate_check: bool = False,
+        record_action: bool = True,
+        skip_confirmation: bool = False,
     ) -> ToolExecutionOutcome:
         """Execute a tool call through one consistent runtime path."""
 
@@ -69,30 +72,31 @@ class ToolExecutor:
         if browser_block is not None:
             return self._blocked_outcome(tool_call, browser_block)
 
-        is_duplicate, duplicate_reason = self.safeguards.check_duplicate(
-            tool_call.name,
-            tool_call.arguments,
-        )
-        if is_duplicate:
-            self.tracer.record(
-                "tool.duplicate",
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                reason=duplicate_reason,
+        if not skip_duplicate_check:
+            is_duplicate, duplicate_reason = self.safeguards.check_duplicate(
+                tool_call.name,
+                tool_call.arguments,
             )
-            duplicate_message = f"[Skipped - duplicate action: {duplicate_reason}]"
-            return ToolExecutionOutcome(
-                tool_call=tool_call,
-                state=ToolExecutionState.DUPLICATE,
-                message=Message.tool_result_message(
+            if is_duplicate:
+                self.tracer.record(
+                    "tool.duplicate",
+                    tool_name=tool_call.name,
                     tool_call_id=tool_call.id,
-                    display_content=duplicate_message,
-                    result_content=duplicate_message,
-                ),
-                event_content=duplicate_message,
-                is_error=False,
-                result_output=duplicate_message,
-            )
+                    reason=duplicate_reason,
+                )
+                duplicate_message = f"[Skipped - duplicate action: {duplicate_reason}]"
+                return ToolExecutionOutcome(
+                    tool_call=tool_call,
+                    state=ToolExecutionState.DUPLICATE,
+                    message=Message.tool_result_message(
+                        tool_call_id=tool_call.id,
+                        display_content=duplicate_message,
+                        result_content=duplicate_message,
+                    ),
+                    event_content=duplicate_message,
+                    is_error=False,
+                    result_output=duplicate_message,
+                )
 
         validation = self.safeguards.validate_action(tool_call.name, tool_call.arguments)
         if not validation.valid:
@@ -111,13 +115,14 @@ class ToolExecutor:
             tool_call,
             on_confirmation,
             emit_confirmation,
+            skip_confirmation=skip_confirmation,
         )
         result_text = format_tool_result(
             tool_call.name,
             result.output,
             result.is_error,
         )
-        if not result.is_error:
+        if record_action and not result.is_error:
             self.safeguards.record_action(tool_call.name, tool_call.arguments)
 
         category = categorize_error(result.output) if result.is_error else None
@@ -169,7 +174,12 @@ class ToolExecutor:
         tool_call: ToolCall,
         on_confirmation: BrowserConfirmation,
         emit_confirmation: ConfirmationEmitter,
+        *,
+        skip_confirmation: bool = False,
     ) -> RegistryToolResult:
+        previous_skip = self.registry.skip_confirmation
+        if skip_confirmation:
+            self.registry.skip_confirmation = True
         try:
             return await self.registry.execute(tool_call.name, **tool_call.arguments)
         except ConfirmationRequired as confirmation:
@@ -199,12 +209,13 @@ class ToolExecutor:
                     is_error=False,
                 )
 
-            previous_skip = self.registry.skip_confirmation
             self.registry.skip_confirmation = True
             try:
                 return await self.registry.execute(tool_call.name, **tool_call.arguments)
             finally:
                 self.registry.skip_confirmation = previous_skip
+        finally:
+            self.registry.skip_confirmation = previous_skip
 
     def _browser_command_message(self, tool_call: ToolCall) -> str | None:
         if tool_call.name != "bash":

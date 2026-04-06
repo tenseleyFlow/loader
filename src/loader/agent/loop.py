@@ -86,6 +86,7 @@ class AgentConfig:
     auto_plan: bool = False  # Auto-plan complex tasks (disabled by default - confuses smaller models)
     auto_recover: bool = True  # Auto-recover from tool errors
     max_recovery_attempts: int = 2  # Reduced from 3
+    verification_retry_budget: int = 3  # Retry budget for verify/fix loop
     stream: bool = True  # Stream LLM responses for real-time output
 
     # Reasoning stages configuration
@@ -109,6 +110,7 @@ class Agent:
         self.backend = backend
         self.registry = registry or create_default_registry()
         self.config = config or AgentConfig()
+        self.project_root = Path(project_root or ".").expanduser().resolve()
         self.messages: list[Message] = []
         self.session = ConversationSession(
             system_message_factory=self._get_system_message,
@@ -136,7 +138,7 @@ class Agent:
         # Load project context if enabled
         self.project_context: ProjectContext | None = None
         if self.config.auto_context:
-            self.project_context = detect_project(project_root)
+            self.project_context = detect_project(self.project_root)
 
     def steer(self, message: str) -> bool:
         """Send a steering message to the agent during execution.

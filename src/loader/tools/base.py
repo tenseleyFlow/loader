@@ -1,7 +1,7 @@
 """Base classes for the tool system."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -18,8 +18,10 @@ class ConfirmationRequired(Exception):
 @dataclass
 class ToolResult:
     """Result of a tool execution."""
+
     output: str
     is_error: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class Tool(ABC):
@@ -137,9 +139,9 @@ class ToolRegistry:
 
 def create_default_registry() -> ToolRegistry:
     """Create a registry with default tools."""
-    from .file_tools import ReadTool, WriteTool, EditTool, GlobTool
-    from .shell_tools import BashTool
+    from .file_tools import EditTool, GlobTool, ReadTool, WriteTool
     from .search_tools import GrepTool
+    from .shell_tools import BashTool
 
     registry = ToolRegistry()
     registry.register(ReadTool())

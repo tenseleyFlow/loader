@@ -484,7 +484,7 @@ class ActionTracker:
     MAX_RESPONSE_HISTORY = 5  # Track last N responses for text loops
 
     def __init__(self):
-        self._files_created: set[str] = set()
+        self._file_writes: dict[str, list[str]] = {}
         self._files_edited: dict[str, list[str]] = {}  # path -> list of edit sigs
         self._commands_run: set[str] = set()
         self._dirs_created: set[str] = set()
@@ -493,7 +493,7 @@ class ActionTracker:
 
     def reset(self):
         """Reset all tracking."""
-        self._files_created.clear()
+        self._file_writes.clear()
         self._files_edited.clear()
         self._commands_run.clear()
         self._dirs_created.clear()
@@ -514,10 +514,15 @@ class ActionTracker:
         # Use hash of old+new to detect same edit
         return f"{hash(old_string)}:{hash(new_string)}"
 
-    def would_duplicate_file_create(self, file_path: str) -> bool:
-        """Check if creating this file would be a duplicate."""
+    def _make_write_signature(self, content: str) -> str:
+        """Create a signature for a write operation."""
+        return str(hash(content))
+
+    def would_duplicate_file_create(self, file_path: str, content: str) -> bool:
+        """Check if writing the same content to a file would be a duplicate."""
         norm_path = self._normalize_path(file_path)
-        return norm_path in self._files_created
+        sig = self._make_write_signature(content)
+        return sig in self._file_writes.get(norm_path, [])
 
     def would_duplicate_edit(self, file_path: str, old_string: str, new_string: str) -> bool:
         """Check if this edit would be a duplicate."""
@@ -536,10 +541,13 @@ class ActionTracker:
         norm_path = self._normalize_path(dir_path)
         return norm_path in self._dirs_created
 
-    def record_file_create(self, file_path: str) -> None:
-        """Record that a file was created."""
+    def record_file_create(self, file_path: str, content: str) -> None:
+        """Record that a file write completed."""
         norm_path = self._normalize_path(file_path)
-        self._files_created.add(norm_path)
+        sig = self._make_write_signature(content)
+        if norm_path not in self._file_writes:
+            self._file_writes[norm_path] = []
+        self._file_writes[norm_path].append(sig)
 
     def record_edit(self, file_path: str, old_string: str, new_string: str) -> None:
         """Record that an edit was made."""
@@ -572,8 +580,9 @@ class ActionTracker:
         """
         if tool_name == "write":
             file_path = arguments.get("file_path", "")
-            if self.would_duplicate_file_create(file_path):
-                return True, f"File already created: {file_path}"
+            content = arguments.get("content", "")
+            if self.would_duplicate_file_create(file_path, content):
+                return True, f"Same file content already written: {file_path}"
 
         elif tool_name == "edit":
             file_path = arguments.get("file_path", "")
@@ -598,8 +607,9 @@ class ActionTracker:
 
         if tool_name == "write":
             file_path = arguments.get("file_path", "")
+            content = arguments.get("content", "")
             if file_path:
-                self.record_file_create(file_path)
+                self.record_file_create(file_path, content)
 
         elif tool_name == "edit":
             file_path = arguments.get("file_path", "")

@@ -65,6 +65,26 @@
     "description": "The streaming helper delegates into the main runtime path instead of maintaining a second loop."
   },
   {
+    "name": "definition_of_done_verify_phase",
+    "category": "definition-of-done",
+    "description": "Mutating tasks enter a verify phase before completion and return evidence-backed responses."
+  },
+  {
+    "name": "verify_failure_routes_to_fix_loop",
+    "category": "definition-of-done",
+    "description": "Verification failures route back into execution with a structured fix loop."
+  },
+  {
+    "name": "verify_retry_budget_exhaustion",
+    "category": "definition-of-done",
+    "description": "Verification escalates to the user once the fix-loop retry budget is exhausted."
+  },
+  {
+    "name": "conversational_task_skips_verify_phase",
+    "category": "definition-of-done",
+    "description": "Conversational tasks skip the verify phase entirely and avoid DoD overhead."
+  },
+  {
     "name": "completion_check_continuation",
     "category": "behavior",
     "description": "Premature completion triggers a continuation prompt and the task continues."

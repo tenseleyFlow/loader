@@ -2,9 +2,10 @@
 
 import asyncio
 import shlex
+from pathlib import Path
 from typing import Any
 
-from .base import Tool, ToolResult, ConfirmationRequired
+from .base import ConfirmationRequired, Tool, ToolResult
 
 
 class BashTool(Tool):
@@ -39,6 +40,10 @@ class BashTool(Tool):
                 "command": {
                     "type": "string",
                     "description": "The bash command to execute",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory to run the command in (default: current directory)",
                 },
                 "timeout": {
                     "type": "number",
@@ -93,6 +98,7 @@ class BashTool(Tool):
     async def execute(
         self,
         command: str,
+        cwd: str | None = None,
         timeout: float | None = None,
         **kwargs: Any,
     ) -> ToolResult:
@@ -103,12 +109,16 @@ class BashTool(Tool):
             )
 
         timeout = timeout or self.timeout
+        resolved_cwd = None
+        if cwd:
+            resolved_cwd = str(Path(cwd).expanduser().resolve())
 
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=resolved_cwd,
             )
 
             try:
@@ -116,7 +126,7 @@ class BashTool(Tool):
                     process.communicate(),
                     timeout=timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
                 return ToolResult(
@@ -141,13 +151,26 @@ class BashTool(Tool):
             if len(output) > 50000:
                 output = output[:50000] + "\n\n... (output truncated)"
 
+            metadata = {
+                "command": command,
+                "cwd": resolved_cwd,
+                "exit_code": process.returncode,
+                "stdout": stdout.decode("utf-8", errors="replace") if stdout else "",
+                "stderr": stderr.decode("utf-8", errors="replace") if stderr else "",
+            }
+
             if process.returncode != 0:
                 return ToolResult(
                     f"Exit code {process.returncode}\n{output}",
                     is_error=True,
+                    metadata=metadata,
                 )
 
-            return ToolResult(output)
+            return ToolResult(output, metadata=metadata)
 
         except Exception as e:
-            return ToolResult(f"Error executing command: {e}", is_error=True)
+            return ToolResult(
+                f"Error executing command: {e}",
+                is_error=True,
+                metadata={"command": command, "cwd": resolved_cwd},
+            )

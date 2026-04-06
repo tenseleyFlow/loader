@@ -20,6 +20,14 @@ from ..agent.reasoning import (
 )
 from ..agent.recovery import RecoveryContext, format_failure_message, format_recovery_prompt
 from ..llm.base import Message, Role, ToolCall
+from .dod import (
+    DefinitionOfDone,
+    DefinitionOfDoneStore,
+    VerificationEvidence,
+    build_verification_summary,
+    derive_verification_commands,
+    record_successful_tool_call,
+)
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
 from .tracing import RuntimeTracer
@@ -39,6 +47,14 @@ class AssistantTurn:
     usage: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class CompletionGateResult:
+    """Outcome of the definition-of-done completion gate."""
+
+    should_continue: bool
+    final_response: str
+
+
 class ConversationRuntime:
     """Runs one explicit conversation turn against the current session."""
 
@@ -46,6 +62,7 @@ class ConversationRuntime:
         self.agent = agent
         self.tracer = RuntimeTracer()
         self.executor = ToolExecutor(agent.registry, agent.safeguards, self.tracer)
+        self.dod_store = DefinitionOfDoneStore(agent.project_root)
 
     async def run_turn(
         self,
@@ -74,6 +91,12 @@ class ConversationRuntime:
 
         rollback_plan = RollbackPlan() if self.agent.config.reasoning.rollback else None
         summary = TurnSummary(final_response="")
+        dod = self.dod_store.create_or_resume(
+            original_task or task,
+            retry_budget=self.agent.config.verification_retry_budget,
+        )
+        summary.definition_of_done = dod
+        await self._emit_dod_status(emit, dod)
 
         while iterations < self.agent.config.max_iterations:
             iterations += 1
@@ -239,6 +262,7 @@ class ConversationRuntime:
                                 type="tool_call",
                                 tool_name=tool_call.name,
                                 tool_args=tool_call.arguments,
+                                phase="assistant",
                             )
                         )
 
@@ -285,6 +309,8 @@ class ConversationRuntime:
                             continue
 
                     if outcome.state == ToolExecutionState.EXECUTED and not outcome.is_error:
+                        record_successful_tool_call(dod, tool_call)
+                        self.dod_store.save(dod)
                         self.agent._recovery_context = None
                         is_loop, loop_description = self.agent.safeguards.detect_loop()
                         if is_loop:
@@ -320,6 +346,7 @@ class ConversationRuntime:
                             content=outcome.event_content,
                             tool_name=tool_call.name,
                             is_error=outcome.is_error,
+                            phase="assistant",
                         )
                     )
 
@@ -454,7 +481,11 @@ class ConversationRuntime:
 
             self.agent.safeguards.record_response(content)
             effective_task = original_task or task
-            if cfg.completion_check and continuation_count < cfg.max_continuation_prompts:
+            if (
+                cfg.completion_check
+                and not dod.mutating_actions
+                and continuation_count < cfg.max_continuation_prompts
+            ):
                 is_premature = (
                     detect_premature_completion(effective_task, content, actions_taken)
                     if cfg.use_quick_completion
@@ -493,6 +524,16 @@ class ConversationRuntime:
             final_message = Message(role=Role.ASSISTANT, content=response_content)
             self.agent.session.append(final_message)
             summary.assistant_messages.append(final_message)
+
+            gate_result = await self._run_definition_of_done_gate(
+                dod=dod,
+                candidate_response=final_response,
+                emit=emit,
+                summary=summary,
+            )
+            if gate_result.should_continue:
+                continue
+            final_response = gate_result.final_response
 
             if rollback_plan and rollback_plan.actions:
                 await emit(
@@ -562,6 +603,7 @@ class ConversationRuntime:
                             type="tool_call",
                             tool_name=chunk.pending_tool_call.name,
                             tool_args=chunk.pending_tool_call.arguments,
+                            phase="assistant",
                         )
                     )
 
@@ -683,6 +725,178 @@ class ConversationRuntime:
             is_error=True,
         )
 
+    async def _run_definition_of_done_gate(
+        self,
+        *,
+        dod: DefinitionOfDone,
+        candidate_response: str,
+        emit: EventSink,
+        summary: TurnSummary,
+    ) -> CompletionGateResult:
+        implementation_item = "Complete the requested work"
+        if implementation_item in dod.pending_items:
+            dod.pending_items.remove(implementation_item)
+            dod.completed_items.append(implementation_item)
+
+        mutating_paths = [path for path in dod.touched_files if path]
+        requires_verification = bool(mutating_paths or dod.mutating_actions)
+        if not requires_verification:
+            dod.status = "done"
+            dod.last_verification_result = "skipped"
+            summary.verification_status = "skipped"
+            summary.definition_of_done = dod
+            self.dod_store.save(dod)
+            await self._emit_dod_status(emit, dod)
+            return CompletionGateResult(
+                should_continue=False,
+                final_response=candidate_response,
+            )
+
+        verify_item = "Collect verification evidence"
+        if verify_item not in dod.pending_items and verify_item not in dod.completed_items:
+            dod.pending_items.append(verify_item)
+
+        if not dod.verification_commands:
+            dod.verification_commands = derive_verification_commands(
+                dod,
+                project_root=self.agent.project_root,
+                task_statement=dod.task_statement,
+            )
+
+        verification_passed = await self._verify_definition_of_done(
+            dod=dod,
+            emit=emit,
+            summary=summary,
+        )
+        if verification_passed:
+            if verify_item in dod.pending_items:
+                dod.pending_items.remove(verify_item)
+            if verify_item not in dod.completed_items:
+                dod.completed_items.append(verify_item)
+            dod.status = "done"
+            dod.last_verification_result = "passed"
+            dod.confidence = "high"
+            summary.verification_status = "passed"
+            summary.definition_of_done = dod
+            self.dod_store.save(dod)
+            await self._emit_dod_status(emit, dod)
+            verified_response = candidate_response
+            verification_summary = build_verification_summary(dod.evidence)
+            if verification_summary not in verified_response:
+                verified_response = f"{candidate_response.rstrip()}\n\n{verification_summary}"
+            return CompletionGateResult(
+                should_continue=False,
+                final_response=verified_response,
+            )
+
+        dod.last_verification_result = "failed"
+        summary.verification_status = "failed"
+        summary.definition_of_done = dod
+        if dod.retry_count >= dod.retry_budget:
+            dod.status = "failed"
+            dod.confidence = "low"
+            self.dod_store.save(dod)
+            await self._emit_dod_status(emit, dod)
+            failure_summary = build_verification_summary(dod.evidence)
+            exhausted_response = (
+                "I couldn't verify that the task is complete within the retry budget.\n\n"
+                f"{failure_summary}"
+            )
+            return CompletionGateResult(
+                should_continue=False,
+                final_response=exhausted_response,
+            )
+
+        dod.retry_count += 1
+        dod.status = "fixing"
+        dod.confidence = "medium"
+        self.dod_store.save(dod)
+        await self._emit_dod_status(emit, dod)
+        failure_prompt = (
+            "[DEFINITION OF DONE CHECK FAILED]\n"
+            f"Task: {dod.task_statement}\n"
+            f"Attempt: {dod.retry_count}/{dod.retry_budget}\n"
+            f"Pending items: {', '.join(dod.pending_items)}\n\n"
+            f"{build_verification_summary(dod.evidence)}\n\n"
+            "Fix the failures above, then finish the task again."
+        )
+        self.agent.session.append(Message(role=Role.USER, content=failure_prompt))
+        return CompletionGateResult(should_continue=True, final_response="")
+
+    async def _verify_definition_of_done(
+        self,
+        *,
+        dod: DefinitionOfDone,
+        emit: EventSink,
+        summary: TurnSummary,
+    ) -> bool:
+        dod.status = "verifying"
+        self.dod_store.save(dod)
+        await self._emit_dod_status(emit, dod)
+
+        if not dod.verification_commands:
+            summary.verification_status = "failed"
+            return False
+
+        dod.evidence = []
+        all_passed = True
+        for index, command in enumerate(dod.verification_commands, start=1):
+            verification_call = ToolCall(
+                id=f"verify-{summary.iterations}-{index}",
+                name="bash",
+                arguments={
+                    "command": command,
+                    "cwd": str(self.agent.project_root),
+                },
+            )
+            await emit(
+                AgentEvent(
+                    type="tool_call",
+                    tool_name=verification_call.name,
+                    tool_args=verification_call.arguments,
+                    phase="verification",
+                )
+            )
+            outcome = await self.executor.execute_tool_call(
+                verification_call,
+                on_confirmation=None,
+                emit_confirmation=None,
+                source="verification",
+                skip_duplicate_check=True,
+                record_action=False,
+                skip_confirmation=True,
+            )
+            await emit(
+                AgentEvent(
+                    type="tool_result",
+                    content=outcome.event_content,
+                    tool_name=verification_call.name,
+                    is_error=outcome.is_error,
+                    phase="verification",
+                )
+            )
+
+            metadata = {}
+            if outcome.registry_result is not None:
+                metadata = outcome.registry_result.metadata
+            evidence = VerificationEvidence(
+                command=command,
+                passed=not outcome.is_error,
+                exit_code=metadata.get("exit_code"),
+                stdout=str(metadata.get("stdout", "")),
+                stderr=str(metadata.get("stderr", "")),
+                output=outcome.result_output,
+                kind=self._classify_verification_kind(command),
+            )
+            dod.evidence.append(evidence)
+            all_passed = all_passed and evidence.passed
+            summary.tool_result_messages.append(outcome.message)
+            self.agent.session.append(outcome.message)
+
+        self.dod_store.save(dod)
+        summary.verification_status = "passed" if all_passed else "failed"
+        return all_passed
+
     def _finalize_summary(self, summary: TurnSummary) -> TurnSummary:
         summary.trace = list(self.tracer.events)
         return summary
@@ -708,6 +922,41 @@ class ConversationRuntime:
                     self.agent.capability_profile.preferred_tool_call_format
                 ),
             )
+
+    async def _emit_dod_status(self, emit: EventSink, dod: DefinitionOfDone) -> None:
+        self.dod_store.save(dod)
+        await emit(
+            AgentEvent(
+                type="dod_status",
+                content=(
+                    f"DoD: {dod.status} "
+                    f"({len(dod.pending_items)} pending"
+                    + (
+                        f", last verification: {dod.last_verification_result}"
+                        if dod.last_verification_result
+                        else ""
+                    )
+                    + ")"
+                ),
+                dod_status=dod.status,
+                pending_items_count=len(dod.pending_items),
+                last_verification_result=dod.last_verification_result,
+                definition_of_done=dod,
+            )
+        )
+
+    @staticmethod
+    def _classify_verification_kind(command: str) -> str:
+        command_lower = command.lower()
+        if "lint" in command_lower or "ruff" in command_lower:
+            return "lint"
+        if "type" in command_lower or "mypy" in command_lower or "py_compile" in command_lower:
+            return "typecheck"
+        if "test" in command_lower or "pytest" in command_lower:
+            return "test"
+        if "build" in command_lower:
+            return "build"
+        return "runtime"
 
     @staticmethod
     def _emit_confirmation(emit: EventSink):

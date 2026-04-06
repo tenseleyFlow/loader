@@ -26,6 +26,10 @@ SCENARIO_NAMES = [
     "native_and_raw_tool_paths_share_executor_trace",
     "backend_capability_probe_refreshes_native_tool_mode",
     "run_streaming_delegates_to_primary_runtime",
+    "definition_of_done_verify_phase",
+    "verify_failure_routes_to_fix_loop",
+    "verify_retry_budget_exhaustion",
+    "conversational_task_skips_verify_phase",
     "completion_check_continuation",
     "tool_result_contract_regression",
 ]
@@ -67,14 +71,28 @@ def tool_event_names(run) -> list[str]:
     return [
         event.tool_name
         for event in run.events
-        if event.type == "tool_call" and event.tool_name
+        if event.type == "tool_call" and event.tool_name and event.phase != "verification"
     ]
 
 
 def tool_result_messages(run) -> list[str]:
     """Return emitted tool result messages in order."""
 
-    return [event.content for event in run.events if event.type == "tool_result"]
+    return [
+        event.content
+        for event in run.events
+        if event.type == "tool_result" and event.phase != "verification"
+    ]
+
+
+def verification_commands(run) -> list[str]:
+    """Return verification-phase bash commands."""
+
+    return [
+        str((event.tool_args or {}).get("command", ""))
+        for event in run.events
+        if event.type == "tool_call" and event.phase == "verification"
+    ]
 
 
 def trace_event_names(run) -> list[str]:
@@ -83,6 +101,16 @@ def trace_event_names(run) -> list[str]:
     summary = run.agent.last_turn_summary
     assert summary is not None
     return [event.name for event in summary.trace]
+
+
+def dod_statuses(run) -> list[str]:
+    """Return DoD statuses emitted during a run."""
+
+    return [
+        event.dod_status
+        for event in run.events
+        if event.type == "dod_status" and event.dod_status
+    ]
 
 
 @pytest.mark.asyncio
@@ -561,6 +589,148 @@ async def test_run_streaming_delegates_to_primary_runtime(temp_dir: Path) -> Non
     assert agent.last_turn_summary.final_response.startswith(
         "Finished reading the streamed fixture."
     )
+
+
+@pytest.mark.asyncio
+async def test_definition_of_done_verify_phase(temp_dir: Path) -> None:
+    target = temp_dir / "verified.txt"
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "verified\n"},
+                ),
+                content="I'll create the file now.",
+            ),
+            final_response("Created verified.txt."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create verified.txt with a line of text.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert verification_commands(run) == [f"test -f {target}"]
+    assert dod_statuses(run) == ["draft", "verifying", "done"]
+    assert "Verification:" in run.response
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.verification_status == "passed"
+    assert run.agent.last_turn_summary.definition_of_done is not None
+
+
+@pytest.mark.asyncio
+async def test_verify_failure_routes_to_fix_loop(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(temp_dir)
+    target = temp_dir / "broken.py"
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "print(\n"},
+                ),
+                content="I'll create the script.",
+            ),
+            final_response("Created broken.py."),
+            native_tool_response(
+                ToolCall(
+                    id="write-2",
+                    name="write",
+                    arguments={
+                        "file_path": str(target),
+                        "content": "print('fixed from verify loop')\n",
+                    },
+                ),
+                content="I'll fix the verification failure.",
+            ),
+            final_response("Fixed broken.py."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create broken.py and make sure it runs.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert target.read_text() == "print('fixed from verify loop')\n"
+    assert verification_commands(run) == ["python broken.py", "python broken.py"]
+    assert "fixing" in dod_statuses(run)
+    assert "Verification:" in run.response
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.verification_status == "passed"
+
+
+@pytest.mark.asyncio
+async def test_verify_retry_budget_exhaustion(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(temp_dir)
+    target = temp_dir / "still-broken.py"
+    config = non_streaming_config()
+    config.verification_retry_budget = 1
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "print(\n"},
+                ),
+                content="I'll create the script.",
+            ),
+            final_response("Created still-broken.py."),
+            native_tool_response(
+                ToolCall(
+                    id="write-2",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "print(\n"},
+                ),
+                content="I'll try one more fix.",
+            ),
+            final_response("Tried to fix still-broken.py."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create still-broken.py and make sure it runs.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert "couldn't verify" in run.response.lower()
+    assert dod_statuses(run)[-1] == "failed"
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.verification_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_conversational_task_skips_verify_phase() -> None:
+    backend = ScriptedBackend(
+        streams=[
+            [
+                StreamChunk(content="Hello there.", full_content="Hello there.", is_done=True),
+            ]
+        ]
+    )
+
+    run = await run_scenario("hello there", backend, config=AgentConfig(auto_context=False))
+
+    assert run.response == "Hello there."
+    assert not dod_statuses(run)
+    assert run.agent.last_turn_summary is None
 
 
 @pytest.mark.asyncio
