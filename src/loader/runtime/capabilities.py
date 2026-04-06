@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 ToolCallFormat = Literal["native", "json_tag", "bracket"]
 VerificationStrictness = Literal["lax", "standard", "strict"]
+
+
+class SupportsCapabilityProfile(Protocol):
+    """Runtime interface for backends that can describe capabilities."""
+
+    def capability_profile(self) -> CapabilityProfile: ...
+
+
+class SupportsNativeTools(Protocol):
+    """Runtime interface for backends that can explicitly report tool support."""
+
+    def supports_native_tools(self) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -203,3 +215,30 @@ def resolve_capability_profile(
         verification_strictness="standard",
         notes=["Unknown model family; defaulting to safe ReAct-style tool use."],
     )
+
+
+def resolve_backend_capability_profile(backend: Any) -> CapabilityProfile:
+    """Resolve capabilities from the backend first, then fall back to model heuristics."""
+
+    explicit_profile = getattr(backend, "capability_profile", None)
+    if callable(explicit_profile):
+        profile = explicit_profile()
+        if isinstance(profile, CapabilityProfile):
+            return profile
+
+    model_name = getattr(backend, "model", backend.__class__.__name__)
+    explicit_native_tools = getattr(backend, "supports_native_tools", None)
+    if callable(explicit_native_tools):
+        supports_native_tools = bool(explicit_native_tools())
+        preferred_tool_call_format: ToolCallFormat = (
+            "native" if supports_native_tools else "json_tag"
+        )
+        return _profile(
+            model_name,
+            supports_native_tools=supports_native_tools,
+            preferred_tool_call_format=preferred_tool_call_format,
+            verification_strictness="standard",
+            notes=["Resolved from backend capability surface."],
+        )
+
+    return resolve_capability_profile(model_name)

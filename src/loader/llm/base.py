@@ -1,9 +1,10 @@
 """Base classes for LLM backends."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AsyncIterator, Any
+from typing import Any
 
 
 class Role(str, Enum):
@@ -38,6 +39,29 @@ class Message:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_results: list[ToolResult] = field(default_factory=list)
 
+    @classmethod
+    def tool_result_message(
+        cls,
+        *,
+        tool_call_id: str,
+        display_content: str,
+        result_content: str,
+        is_error: bool = False,
+    ) -> "Message":
+        """Build a tool-result message with a typed tool result payload."""
+
+        return cls(
+            role=Role.TOOL,
+            content=display_content,
+            tool_results=[
+                ToolResult(
+                    tool_call_id=tool_call_id,
+                    content=result_content,
+                    is_error=is_error,
+                )
+            ],
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for API calls."""
         result: dict[str, Any] = {
@@ -49,6 +73,10 @@ class Message:
                 {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
                 for tc in self.tool_calls
             ]
+        if self.tool_results:
+            primary_result = self.tool_results[0]
+            result["tool_call_id"] = primary_result.tool_call_id
+            result["is_error"] = primary_result.is_error
         return result
 
 

@@ -1,6 +1,10 @@
 """Runtime primitives for Loader's turn engine."""
 
-from .capabilities import CapabilityProfile, resolve_capability_profile
+from .capabilities import (
+    CapabilityProfile,
+    resolve_backend_capability_profile,
+    resolve_capability_profile,
+)
 from .events import AgentEvent, TurnSummary
 from .session import ConversationSession
 from .tracing import RuntimeTraceEvent, RuntimeTracer
@@ -12,5 +16,6 @@ __all__ = [
     "RuntimeTraceEvent",
     "RuntimeTracer",
     "TurnSummary",
+    "resolve_backend_capability_profile",
     "resolve_capability_profile",
 ]
