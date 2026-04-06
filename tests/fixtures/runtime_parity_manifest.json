@@ -15,6 +15,11 @@
     "description": "A single assistant turn executes multiple tools before finalizing."
   },
   {
+    "name": "turn_summary_smoke_for_multi_tool_turn",
+    "category": "summary",
+    "description": "Completed multi-tool turns populate TurnSummary with assistant messages, tool results, and trace data."
+  },
+  {
     "name": "write_file_allowed",
     "category": "confirmation",
     "description": "A destructive write goes through the confirmation path and succeeds."
@@ -43,6 +48,21 @@
     "name": "raw_json_tool_call_fallback",
     "category": "fallback",
     "description": "Raw JSON tool syntax is recovered when native tool calls are absent."
+  },
+  {
+    "name": "native_and_raw_tool_paths_share_executor_trace",
+    "category": "executor",
+    "description": "Native and extracted tool calls emit the same executor trace events, annotated by source."
+  },
+  {
+    "name": "backend_capability_probe_refreshes_native_tool_mode",
+    "category": "capabilities",
+    "description": "Turn startup can refine backend capabilities before the first request and enable native tool use."
+  },
+  {
+    "name": "run_streaming_delegates_to_primary_runtime",
+    "category": "runtime",
+    "description": "The streaming helper delegates into the main runtime path instead of maintaining a second loop."
   },
   {
     "name": "completion_check_continuation",

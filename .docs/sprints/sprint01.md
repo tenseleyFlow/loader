@@ -116,3 +116,12 @@ Modeled on `refs/claw-code/rust/crates/runtime/src/conversation.rs:110-117` (`Tu
 - capability profiles replace substring-based model detection
 - full-turn tests cover the critical runtime paths
 - the parity checklist from Sprint 00 reflects the new state
+
+## Audit Notes
+
+Audit checkpoint on 2026-04-06:
+
+- closed the gap where Ollama `/api/show` probing existed in code but did not affect the agent before the first request
+- collapsed `Agent.run_streaming()` onto the primary runtime path so Loader no longer carries a second shadow execution loop
+- expanded deterministic parity coverage for `TurnSummary`, shared executor tracing, capability refresh, and streaming delegation
+- residual debt remains in runtime size and heuristics, but the Sprint 01 contract is now implemented rather than partially scaffolded

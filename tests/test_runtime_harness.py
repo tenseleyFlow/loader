@@ -9,18 +9,23 @@ import pytest
 
 from loader.agent.loop import Agent, AgentConfig
 from loader.llm.base import CompletionResponse, Role, StreamChunk, ToolCall
+from loader.runtime.capabilities import resolve_capability_profile
 from tests.helpers.runtime_harness import ScriptedBackend, run_scenario
 
 SCENARIO_NAMES = [
     "streaming_text",
     "read_file_roundtrip",
     "multi_tool_turn_roundtrip",
+    "turn_summary_smoke_for_multi_tool_turn",
     "write_file_allowed",
     "write_file_denied",
     "bash_stdout_roundtrip",
     "bash_confirmation_prompt_approved",
     "bash_confirmation_prompt_denied",
     "raw_json_tool_call_fallback",
+    "native_and_raw_tool_paths_share_executor_trace",
+    "backend_capability_probe_refreshes_native_tool_mode",
+    "run_streaming_delegates_to_primary_runtime",
     "completion_check_continuation",
     "tool_result_contract_regression",
 ]
@@ -461,6 +466,100 @@ async def test_native_and_raw_tool_paths_share_executor_trace(temp_dir: Path) ->
     assert any(
         event.name == "tool.received" and event.data["source"] == "raw_text"
         for event in raw_summary.trace
+    )
+
+
+@pytest.mark.asyncio
+async def test_backend_capability_probe_refreshes_native_tool_mode(
+    temp_dir: Path,
+) -> None:
+    fixture = temp_dir / "fixture.txt"
+    fixture.write_text("capability probe line\n")
+
+    class LazyCapabilityBackend(ScriptedBackend):
+        def __init__(self, completions: list[CompletionResponse]) -> None:
+            super().__init__(completions=completions, supports_native_tools=False)
+            self.model = "custom-qwen-build"
+            self._described = False
+
+        async def describe_model(self) -> dict[str, dict[str, list[str]]]:
+            self._described = True
+            return {"details": {"families": ["qwen2.5"]}}
+
+        def capability_profile(self):
+            model_details = (
+                {"details": {"families": ["qwen2.5"]}} if self._described else None
+            )
+            return resolve_capability_profile(
+                self.model,
+                model_details=model_details,
+            )
+
+    backend = LazyCapabilityBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(id="read-1", name="read", arguments={"file_path": str(fixture)}),
+                content="I'll inspect that file after probing capabilities.",
+            ),
+            final_response("Capability probing enabled the native read."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Read the fixture file after checking model capabilities.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert backend._described
+    assert not run.agent.use_react
+    assert run.invocations[0].tools is not None
+    assert tool_event_names(run) == ["read"]
+    assert "Capability probing enabled the native read." in run.response
+
+
+@pytest.mark.asyncio
+async def test_run_streaming_delegates_to_primary_runtime(temp_dir: Path) -> None:
+    fixture = temp_dir / "streaming.txt"
+    fixture.write_text("streamed runtime line\n")
+    backend = ScriptedBackend(
+        streams=[
+            [
+                StreamChunk(
+                    content="I'll inspect the file now.",
+                    full_content="I'll inspect the file now.",
+                    tool_calls=[
+                        ToolCall(id="read-1", name="read", arguments={"file_path": str(fixture)})
+                    ],
+                    is_done=True,
+                )
+            ],
+            [
+                StreamChunk(
+                    content="Finished reading the streamed fixture.",
+                    full_content="Finished reading the streamed fixture.",
+                    is_done=True,
+                )
+            ],
+        ]
+    )
+    agent = Agent(
+        backend=backend,
+        config=AgentConfig(auto_context=False, max_iterations=8),
+        project_root=temp_dir,
+    )
+
+    events = [event async for event in agent.run_streaming("Read the streamed fixture file.")]
+
+    assert any(event.type == "tool_call" and event.tool_name == "read" for event in events)
+    assert any(
+        event.type == "tool_result" and "streamed runtime line" in event.content
+        for event in events
+    )
+    assert agent.last_turn_summary is not None
+    assert agent.last_turn_summary.final_response.startswith(
+        "Finished reading the streamed fixture."
     )
 
 

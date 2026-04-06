@@ -46,14 +46,17 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 - `tool_result_contract_regression`: green
 - `turn_summary_smoke_for_multi_tool_turn`: green
 - `native_and_raw_tool_paths_share_executor_trace`: green
+- `backend_capability_probe_refreshes_native_tool_mode`: green
+- `run_streaming_delegates_to_primary_runtime`: green
 
 ## Verification snapshot
 
 As of 2026-04-06:
 
-- `uv run pytest -q`: 78 passed
+- `uv run pytest -q`: 80 passed
 - `tests/test_runtime_harness.py` is fully green, including the original contract regression
 - native and extracted tool calls now record the same executor trace events, with source-specific metadata
+- turn startup can refine backend capability profiles before the first request, and `run_streaming()` now delegates into the main runtime path
 
 ## Definition of honesty
 
