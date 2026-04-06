@@ -1,6 +1,10 @@
 """Tests for runtime capability profile resolution."""
 
-from loader.runtime.capabilities import CapabilityProfile, resolve_capability_profile
+from loader.runtime.capabilities import (
+    CapabilityProfile,
+    resolve_backend_capability_profile,
+    resolve_capability_profile,
+)
 
 
 def test_explicit_override_wins() -> None:
@@ -43,3 +47,15 @@ def test_unknown_models_default_to_safe_react_profile() -> None:
     assert not resolved.supports_native_tools
     assert resolved.preferred_tool_call_format == "json_tag"
     assert "defaulting to safe" in resolved.notes[0].lower()
+
+
+def test_backend_capability_profile_prefers_explicit_backend_surface() -> None:
+    class DummyBackend:
+        def supports_native_tools(self) -> bool:
+            return True
+
+    resolved = resolve_backend_capability_profile(DummyBackend())
+
+    assert resolved.supports_native_tools
+    assert resolved.preferred_tool_call_format == "native"
+    assert "backend capability surface" in resolved.notes[0].lower()

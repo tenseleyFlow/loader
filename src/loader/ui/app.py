@@ -270,6 +270,8 @@ class LoaderApp(App):
         if hasattr(self.agent.backend, "model"):
             old_model = self.agent.backend.model
             self.agent.backend.model = model_name
+            if hasattr(self.agent, "refresh_capability_profile"):
+                self.agent.refresh_capability_profile()
             self.model_name = model_name
             # Update status line
             self.query_one(StatusLine).model = model_name

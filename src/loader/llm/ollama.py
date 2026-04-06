@@ -5,6 +5,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from ..runtime.capabilities import CapabilityProfile, resolve_capability_profile
 from .base import (
     CompletionResponse,
     LLMBackend,
@@ -17,40 +18,6 @@ from .base import (
 
 class OllamaBackend(LLMBackend):
     """Ollama API backend for local LLM inference."""
-
-    # Models known to support native function calling in Ollama
-    # Verified working with Ollama's tool calling API
-    NATIVE_TOOL_MODELS = {
-        "llama3.1", "llama3.2", "llama3.3",
-        "qwen2.5", "qwen2",
-        "mistral", "mixtral",
-        "command-r",
-        "granite",
-        # Note: deepseek-coder, codestral, starcoder do NOT support tools in Ollama
-    }
-
-    # Models that definitely do NOT support native tools (use ReAct)
-    NO_TOOL_MODELS = {
-        "llama2", "llama:latest",  # Base llama without version
-        "phi", "phi3",
-        "gemma", "gemma2",
-        "tinyllama",
-        "orca",
-        "vicuna",
-        "wizard",
-        "neural-chat",
-        "starling",
-        "openchat",
-        "yi",
-        "solar",
-        "dolphin",
-        # Coding models that don't support Ollama tools
-        "codestral",
-        "deepseek-coder",
-        "starcoder",
-        "codegemma",
-        "deepseek-r1",  # Reasoning model, no tools
-    }
 
     def __init__(
         self,
@@ -72,6 +39,8 @@ class OllamaBackend(LLMBackend):
         self.num_gpu = num_gpu
         self._client = httpx.AsyncClient(timeout=timeout)
         self._supports_native_tools: bool | None = None
+        self._model_details_cache: dict[str, Any] | None = None
+        self._capability_profile: CapabilityProfile | None = None
 
     def _build_options(self, temperature: float, max_tokens: int) -> dict:
         """Build Ollama options dict with performance settings."""
@@ -136,6 +105,40 @@ class OllamaBackend(LLMBackend):
         except Exception:
             return []
 
+    async def describe_model(self) -> dict[str, Any] | None:
+        """Fetch and cache Ollama model details for capability resolution."""
+
+        if self._model_details_cache is not None:
+            return self._model_details_cache
+
+        if not self.model:
+            return None
+
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/api/show",
+                json={"name": self.model},
+            )
+            response.raise_for_status()
+            self._model_details_cache = response.json()
+        except Exception:
+            self._model_details_cache = None
+
+        return self._model_details_cache
+
+    def capability_profile(self) -> CapabilityProfile:
+        """Return the resolved capability profile for the current model."""
+
+        if (
+            self._capability_profile is None
+            or self._capability_profile.model_name != self.model
+        ):
+            self._capability_profile = resolve_capability_profile(
+                self.model,
+                model_details=self._model_details_cache,
+            )
+        return self._capability_profile
+
     def supports_native_tools(self) -> bool:
         """Check if current model supports native function calling.
 
@@ -145,36 +148,19 @@ class OllamaBackend(LLMBackend):
         if self.force_react:
             return False
 
+        if self._capability_profile is not None and self._capability_profile.model_name != self.model:
+            self._capability_profile = None
+            self._supports_native_tools = None
+
         if self._supports_native_tools is not None:
             return self._supports_native_tools
 
-        model_lower = self.model.lower()
-
-        # First check if it's explicitly a NO_TOOL model
-        for no_tool_model in self.NO_TOOL_MODELS:
-            if no_tool_model in model_lower:
-                self._supports_native_tools = False
-                return False
-
-        # Check if model name contains any known native tool model
-        for native_model in self.NATIVE_TOOL_MODELS:
-            if native_model in model_lower:
-                self._supports_native_tools = True
-                return True
-
-        # Default to False for unknown models (safer - uses ReAct)
-        self._supports_native_tools = False
-        return False
+        self._supports_native_tools = self.capability_profile().supports_native_tools
+        return self._supports_native_tools
 
     def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Format messages for Ollama API."""
-        formatted = []
-        for msg in messages:
-            formatted.append({
-                "role": msg.role.value,
-                "content": msg.content,
-            })
-        return formatted
+        return [message.to_dict() for message in messages]
 
     def _format_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         """Format tools for Ollama API."""
