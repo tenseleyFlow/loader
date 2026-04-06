@@ -1,0 +1,57 @@
+[
+  {
+    "name": "streaming_text",
+    "category": "baseline",
+    "description": "Simple streamed answer with no tool use."
+  },
+  {
+    "name": "read_file_roundtrip",
+    "category": "tool-roundtrip",
+    "description": "Native tool call reads a file, then the model summarizes the result."
+  },
+  {
+    "name": "multi_tool_turn_roundtrip",
+    "category": "tool-roundtrip",
+    "description": "A single assistant turn executes multiple tools before finalizing."
+  },
+  {
+    "name": "write_file_allowed",
+    "category": "confirmation",
+    "description": "A destructive write goes through the confirmation path and succeeds."
+  },
+  {
+    "name": "write_file_denied",
+    "category": "confirmation",
+    "description": "A destructive write is declined and does not touch the filesystem."
+  },
+  {
+    "name": "bash_stdout_roundtrip",
+    "category": "shell",
+    "description": "Bash returns stdout cleanly through the runtime."
+  },
+  {
+    "name": "bash_confirmation_prompt_approved",
+    "category": "shell",
+    "description": "A destructive bash command is approved through the callback path."
+  },
+  {
+    "name": "bash_confirmation_prompt_denied",
+    "category": "shell",
+    "description": "A destructive bash command is denied through the callback path."
+  },
+  {
+    "name": "raw_json_tool_call_fallback",
+    "category": "fallback",
+    "description": "Raw JSON tool syntax is recovered when native tool calls are absent."
+  },
+  {
+    "name": "completion_check_continuation",
+    "category": "behavior",
+    "description": "Premature completion triggers a continuation prompt and the task continues."
+  },
+  {
+    "name": "tool_result_contract_regression",
+    "category": "known-failure",
+    "description": "Duplicate-suppression and pre-validation branches should not build invalid Message objects."
+  }
+]
