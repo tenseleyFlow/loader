@@ -56,6 +56,8 @@ class ConversationRuntime:
     ) -> TurnSummary:
         """Run one task turn and return a structured summary."""
 
+        await self._prepare_runtime_capabilities()
+
         iterations = 0
         final_response = ""
         actions_taken: list[str] = []
@@ -689,6 +691,23 @@ class ConversationRuntime:
     def _merge_usage(target: dict[str, int], update: dict[str, int]) -> None:
         for key, value in update.items():
             target[key] = target.get(key, 0) + value
+
+    async def _prepare_runtime_capabilities(self) -> None:
+        describe_model = getattr(self.agent.backend, "describe_model", None)
+        if callable(describe_model):
+            await describe_model()
+
+        previous_profile = self.agent.capability_profile
+        self.agent.refresh_capability_profile()
+        if self.agent.capability_profile != previous_profile:
+            self.tracer.record(
+                "runtime.capabilities_refreshed",
+                model_name=self.agent.capability_profile.model_name,
+                supports_native_tools=self.agent.capability_profile.supports_native_tools,
+                preferred_tool_call_format=(
+                    self.agent.capability_profile.preferred_tool_call_format
+                ),
+            )
 
     @staticmethod
     def _emit_confirmation(emit: EventSink):

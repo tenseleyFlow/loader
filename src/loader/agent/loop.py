@@ -1,54 +1,47 @@
 """The main agent loop."""
 
 import asyncio
+import contextlib
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Awaitable, Callable
 
-from ..llm.base import LLMBackend, Message, Role, ToolCall
-from ..tools.base import ToolRegistry, create_default_registry, ConfirmationRequired
 from ..context.project import ProjectContext, detect_project
+from ..llm.base import LLMBackend, Message, Role, ToolCall
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.conversation import ConversationRuntime
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.session import ConversationSession
+from ..tools.base import ToolRegistry, create_default_registry
+from .planner import (
+    PLANNING_PROMPT,
+    SHOULD_PLAN_PROMPT,
+    Plan,
+    format_step_prompt,
+    parse_plan,
+    should_plan,
+)
 from .prompts import build_system_prompt
-from .parsing import parse_tool_calls, format_tool_result
-from .planner import Plan, parse_plan, should_plan, format_step_prompt, PLANNING_PROMPT, SHOULD_PLAN_PROMPT
-from .recovery import RecoveryContext, format_recovery_prompt, format_failure_message
 from .reasoning import (
-    TaskDecomposition,
-    Subtask,
-    SelfCritique,
-    ConfidenceAssessment,
-    ActionVerification,
-    ConfidenceLevel,
-    TaskCompletionCheck,
-    RollbackPlan,
-    RollbackAction,
-    RollbackType,
+    CONFIDENCE_PROMPT,
     DECOMPOSITION_PROMPT,
     SELF_CRITIQUE_PROMPT,
-    CONFIDENCE_PROMPT,
     VERIFICATION_PROMPT,
-    COMPLETION_CHECK_PROMPT,
+    ActionVerification,
+    ConfidenceAssessment,
+    ConfidenceLevel,
+    SelfCritique,
+    TaskDecomposition,
+    estimate_confidence_quick,
+    is_conversational,
+    parse_confidence,
     parse_decomposition,
     parse_self_critique,
-    parse_confidence,
     parse_verification,
-    parse_completion_check,
-    should_decompose,
-    should_self_critique,
-    estimate_confidence_quick,
     quick_verify,
-    detect_premature_completion,
-    get_continuation_prompt,
-    is_destructive_tool,
-    create_rollback_plan_for_action,
-    is_conversational,
-    estimate_complexity,
-    get_token_budget,
+    should_decompose,
 )
+from .recovery import RecoveryContext
 from .safeguards import RuntimeSafeguards
 
 
@@ -209,8 +202,11 @@ class Agent:
 
     def refresh_capability_profile(self) -> None:
         """Refresh the runtime capability profile from the current backend."""
-
-        self.capability_profile = resolve_backend_capability_profile(self.backend)
+        previous_profile = self.capability_profile
+        refreshed_profile = resolve_backend_capability_profile(self.backend)
+        self.capability_profile = refreshed_profile
+        if refreshed_profile != previous_profile:
+            self._system_message = None
         self._use_react = None
 
     def _get_few_shot_examples(self) -> list[Message]:
@@ -552,7 +548,7 @@ class Agent:
 
                     # Run the step
                     step_prompt = format_step_prompt(plan, step)
-                    step_response = await self._run_inner(
+                    await self._run_inner(
                         step_prompt, emit, on_confirmation,
                         original_task=self._current_task,
                     )
@@ -596,91 +592,36 @@ class Agent:
         self,
         user_message: str,
     ) -> AsyncIterator[AgentEvent]:
-        """Run the agent with streaming output."""
-        # Add user message
-        self.messages.append(Message(role=Role.USER, content=user_message))
+        """Run the agent with streaming output from the primary runtime path."""
 
-        iterations = 0
-        tools = None if self.use_react else self.registry.get_schemas()
+        queue: asyncio.Queue[AgentEvent | BaseException | None] = asyncio.Queue()
 
-        while iterations < self.config.max_iterations:
-            iterations += 1
+        async def on_event(event: AgentEvent) -> None:
+            await queue.put(event)
 
-            yield AgentEvent(type="thinking")
+        async def run_agent() -> None:
+            try:
+                await self.run(user_message, on_event=on_event)
+            except BaseException as exc:  # pragma: no cover - propagated below
+                await queue.put(exc)
+            finally:
+                await queue.put(None)
 
-            # Stream the response
-            full_content = ""
-            tool_calls: list[ToolCall] = []
-
-            async for chunk in self.backend.stream(
-                messages=self._build_messages(),
-                tools=tools,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-            ):
-                if chunk.content:
-                    full_content += chunk.content
-                    yield AgentEvent(type="response", content=chunk.content)
-
-                if chunk.tool_calls:
-                    tool_calls = chunk.tool_calls
-
-            # In ReAct mode, parse tool calls from text
-            if self.use_react:
-                parsed = parse_tool_calls(full_content)
-                tool_calls = parsed.tool_calls
-
-                if parsed.is_final_answer and not tool_calls:
-                    self.messages.append(Message(
-                        role=Role.ASSISTANT,
-                        content=full_content,
-                    ))
+        task = asyncio.create_task(run_agent())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
                     break
-
-            # If there are tool calls, execute them
-            if tool_calls:
-                self.messages.append(Message(
-                    role=Role.ASSISTANT,
-                    content=full_content,
-                    tool_calls=tool_calls,
-                ))
-
-                for tool_call in tool_calls:
-                    yield AgentEvent(
-                        type="tool_call",
-                        tool_name=tool_call.name,
-                        tool_args=tool_call.arguments,
-                    )
-
-                    result = await self.registry.execute(
-                        tool_call.name,
-                        **tool_call.arguments,
-                    )
-
-                    yield AgentEvent(
-                        type="tool_result",
-                        content=result.output,
-                        tool_name=tool_call.name,
-                    )
-
-                    result_text = format_tool_result(
-                        tool_call.name,
-                        result.output,
-                        result.is_error,
-                    )
-                    self.messages.append(Message(
-                        role=Role.TOOL,
-                        content=result_text,
-                    ))
-
-                continue
-
-            # No tool calls - done
-            self.messages.append(Message(
-                role=Role.ASSISTANT,
-                content=full_content,
-            ))
-            break
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+            await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     def _contains_unexecuted_code(self, content: str) -> bool:
         """Detect if response contains code blocks that should be tool calls.
@@ -781,9 +722,9 @@ class Agent:
         instead of using the proper tool calling API. This method tries to
         parse and recover them.
         """
-        import re
         import json
         import os
+        import re
 
         tool_calls = []
         tool_names = ["write", "read", "edit", "bash", "glob", "grep"]

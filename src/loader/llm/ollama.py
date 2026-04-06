@@ -1,7 +1,8 @@
 """Ollama backend implementation."""
 
 import json
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -10,7 +11,6 @@ from .base import (
     CompletionResponse,
     LLMBackend,
     Message,
-    Role,
     StreamChunk,
     ToolCall,
 )
@@ -40,7 +40,25 @@ class OllamaBackend(LLMBackend):
         self._client = httpx.AsyncClient(timeout=timeout)
         self._supports_native_tools: bool | None = None
         self._model_details_cache: dict[str, Any] | None = None
+        self._model_details_loaded_for: str | None = None
         self._capability_profile: CapabilityProfile | None = None
+
+    def _invalidate_model_caches_if_needed(self) -> None:
+        """Clear cached capability state when the active model changes."""
+
+        if (
+            self._capability_profile is not None
+            and self._capability_profile.model_name != self.model
+        ):
+            self._capability_profile = None
+            self._supports_native_tools = None
+
+        if (
+            self._model_details_loaded_for is not None
+            and self._model_details_loaded_for != self.model
+        ):
+            self._model_details_cache = None
+            self._model_details_loaded_for = None
 
     def _build_options(self, temperature: float, max_tokens: int) -> dict:
         """Build Ollama options dict with performance settings."""
@@ -108,7 +126,9 @@ class OllamaBackend(LLMBackend):
     async def describe_model(self) -> dict[str, Any] | None:
         """Fetch and cache Ollama model details for capability resolution."""
 
-        if self._model_details_cache is not None:
+        self._invalidate_model_caches_if_needed()
+
+        if self._model_details_loaded_for == self.model:
             return self._model_details_cache
 
         if not self.model:
@@ -121,18 +141,18 @@ class OllamaBackend(LLMBackend):
             )
             response.raise_for_status()
             self._model_details_cache = response.json()
+            self._model_details_loaded_for = self.model
         except Exception:
             self._model_details_cache = None
+            self._model_details_loaded_for = self.model
 
         return self._model_details_cache
 
     def capability_profile(self) -> CapabilityProfile:
         """Return the resolved capability profile for the current model."""
 
-        if (
-            self._capability_profile is None
-            or self._capability_profile.model_name != self.model
-        ):
+        self._invalidate_model_caches_if_needed()
+        if self._capability_profile is None:
             self._capability_profile = resolve_capability_profile(
                 self.model,
                 model_details=self._model_details_cache,
@@ -148,9 +168,7 @@ class OllamaBackend(LLMBackend):
         if self.force_react:
             return False
 
-        if self._capability_profile is not None and self._capability_profile.model_name != self.model:
-            self._capability_profile = None
-            self._supports_native_tools = None
+        self._invalidate_model_caches_if_needed()
 
         if self._supports_native_tools is not None:
             return self._supports_native_tools
@@ -228,6 +246,8 @@ class OllamaBackend(LLMBackend):
         max_tokens: int = 4096,
     ) -> CompletionResponse:
         """Generate a completion using Ollama."""
+        await self.describe_model()
+
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": self._format_messages(messages),
@@ -305,6 +325,8 @@ class OllamaBackend(LLMBackend):
         max_tokens: int = 4096,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion from Ollama."""
+        await self.describe_model()
+
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": self._format_messages(messages),
@@ -365,7 +387,6 @@ class OllamaBackend(LLMBackend):
 
     async def _stream_response(self, response) -> AsyncIterator[StreamChunk]:
         """Internal helper to stream response chunks."""
-        import re
 
         full_content = ""
         display_content = ""  # Content to show (filtered)

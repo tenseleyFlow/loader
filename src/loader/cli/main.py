@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+
 import click
 import httpx
 from rich.console import Console
@@ -28,10 +29,11 @@ async def select_model_interactive() -> str | None:
     Returns:
         Selected model name, or None if cancelled/no models.
     """
-    from ..llm.ollama import OllamaBackend
-    from ..config import get_last_model
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
+
+    from ..config import get_last_model
+    from ..llm.ollama import OllamaBackend
 
     # Create a temporary client to list models
     backend = OllamaBackend(model="")
@@ -194,10 +196,10 @@ async def _main(
     reason: bool,
     prompt: str | None,
 ) -> None:
-    from ..llm.ollama import OllamaBackend
     from ..agent.loop import Agent, AgentConfig, ReasoningConfig
+    from ..config import get_default_model, get_last_model, set_last_model
+    from ..llm.ollama import OllamaBackend
     from ..tools.base import create_default_registry
-    from ..config import get_default_model, set_last_model, get_last_model
 
     # Handle model selection
     if select_model:
@@ -222,9 +224,6 @@ async def _main(
         timeout=timeout,
     )
 
-    # Determine actual mode based on model capabilities (not just CLI flag)
-    mode_str = "ReAct" if react or not llm.supports_native_tools() else "Native"
-
     # Check health
     if not await llm.health_check():
         console.print("[red]Error: Cannot connect to Ollama. Is it running?[/red]")
@@ -233,6 +232,11 @@ async def _main(
         # Offer to select a different model
         console.print("\nTry [cyan]loader --select-model[/cyan] to choose from available models.")
         return
+
+    await llm.describe_model()
+
+    # Determine actual mode based on resolved model capabilities (not just CLI flag)
+    mode_str = "ReAct" if react or not llm.supports_native_tools() else "Native"
 
     # Save this model as the new default
     set_last_model(model)
@@ -333,8 +337,9 @@ def _format_tool_args(args: dict | None) -> str:
 
 async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
     """Run a single prompt."""
-    from ..tools.base import ConfirmationRequired
     import time
+
+    from ..tools.base import ConfirmationRequired
 
     thinking_start = None
     streamed_response = False
@@ -404,10 +409,12 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
 
 async def run_interactive(agent, skip_confirmation: bool = False) -> None:
     """Run interactive chat loop."""
+    import os
+
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
+
     from ..tools.base import ConfirmationRequired
-    import os
 
     history_file = os.path.expanduser("~/.loader_history")
     session = PromptSession(history=FileHistory(history_file))
