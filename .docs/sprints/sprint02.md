@@ -115,3 +115,20 @@ This is what makes the contract visible to the user instead of hidden inside the
 - failed verification cannot escape into a "looks done" final answer
 - simple tasks stay cheap (verify is skipped); complex tasks enter the verify/fix loop automatically
 - the user can see the DoD phase from the CLI and TUI
+
+## Audit Notes
+
+Audit checkpoint on 2026-04-06:
+
+- added a persisted `DefinitionOfDone` runtime object under `src/loader/runtime/dod.py` and store-backed state under `.loader/dod/`
+- routed mutating tasks through an explicit verify/fix gate in `src/loader/runtime/conversation.py`, with retry-budget exhaustion returning an honest failure summary instead of a premature success
+- taught verification runs to execute through the shared executor with duplicate suppression disabled, confirmations skipped, and project-root working-directory awareness
+- tightened duplicate suppression so rewrites used for recovery are allowed while true same-content rewrites are still skipped
+- surfaced DoD state in both the non-TUI CLI and the TUI status line, and added deterministic coverage for runtime parity, DoD persistence/sizing, and status formatting
+- full verification is green at `uv run pytest -q` with 90 passing tests
+
+Residual debt after Sprint 02:
+
+- DoD acceptance criteria and pending items are still runtime-derived and shallow; Loader does not yet have the richer task/workflow artifacts planned in Sprint 04 and Sprint 05
+- verification summaries are runtime-generated from captured evidence rather than model-authored evidence explanations
+- task-size-aware verification is intentionally conservative today; larger-task evidence scaling still has room to move closer to the reference verifier design
