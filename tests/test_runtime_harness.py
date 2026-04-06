@@ -72,6 +72,14 @@ def tool_result_messages(run) -> list[str]:
     return [event.content for event in run.events if event.type == "tool_result"]
 
 
+def trace_event_names(run) -> list[str]:
+    """Return recorded runtime trace event names."""
+
+    summary = run.agent.last_turn_summary
+    assert summary is not None
+    return [event.name for event in summary.trace]
+
+
 @pytest.mark.asyncio
 async def test_runtime_parity_manifest_matches_implemented_cases() -> None:
     manifest_names = [entry["name"] for entry in load_manifest()]
@@ -159,6 +167,42 @@ async def test_multi_tool_turn_roundtrip(temp_dir: Path) -> None:
     assert tool_event_names(run) == ["read", "grep"]
     assert len(tool_result_messages(run)) == 2
     assert "two parity lines" in run.response
+
+
+@pytest.mark.asyncio
+async def test_turn_summary_smoke_for_multi_tool_turn(temp_dir: Path) -> None:
+    fixture = temp_dir / "fixture.txt"
+    fixture.write_text("alpha parity line\nbeta line\ngamma parity line\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(id="read-1", name="read", arguments={"file_path": str(fixture)}),
+                ToolCall(
+                    id="grep-1",
+                    name="grep",
+                    arguments={"pattern": "parity", "path": str(fixture)},
+                ),
+                content="I'll inspect the file and count parity matches.",
+            ),
+            final_response("The file has two parity lines, including alpha parity line."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Inspect the fixture and find parity lines.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    summary = run.agent.last_turn_summary
+    assert summary is not None
+    assert summary.final_response == run.response
+    assert summary.iterations == 2
+    assert len(summary.assistant_messages) == 2
+    assert len(summary.tool_result_messages) == 2
+    assert "assistant.tool_batch" in trace_event_names(run)
 
 
 @pytest.mark.asyncio
@@ -353,6 +397,71 @@ async def test_raw_json_tool_call_fallback(temp_dir: Path) -> None:
     assert tool_event_names(run) == ["read"]
     assert any("alpha parity line" in message for message in tool_result_messages(run))
     assert "Recovered the raw JSON tool call" in run.response
+
+
+@pytest.mark.asyncio
+async def test_native_and_raw_tool_paths_share_executor_trace(temp_dir: Path) -> None:
+    native_fixture = temp_dir / "native.txt"
+    native_fixture.write_text("native parity line\n")
+    native_backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(id="read-1", name="read", arguments={"file_path": str(native_fixture)}),
+                content="I'll inspect the native tool result.",
+            ),
+            final_response("Native read complete."),
+        ]
+    )
+    native_run = await run_scenario(
+        "Read native.txt.",
+        native_backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    raw_fixture = temp_dir / "raw.txt"
+    raw_fixture.write_text("raw parity line\n")
+    raw_json = f'{{"name": "read", "arguments": {{"file_path": "{raw_fixture}"}}}}'
+    raw_backend = ScriptedBackend(
+        streams=[
+            [
+                StreamChunk(content=raw_json[:20], is_done=False),
+                StreamChunk(content=raw_json[20:], full_content=raw_json, is_done=True),
+            ],
+            [
+                StreamChunk(
+                    content="Raw read complete.",
+                    full_content="Raw read complete.",
+                    is_done=True,
+                )
+            ],
+        ]
+    )
+    raw_run = await run_scenario(
+        "Read raw.txt.",
+        raw_backend,
+        config=AgentConfig(auto_context=False, max_iterations=8),
+        project_root=temp_dir,
+    )
+
+    for run in (native_run, raw_run):
+        names = trace_event_names(run)
+        assert "assistant.tool_batch" in names
+        assert "tool.received" in names
+        assert "tool.executed" in names
+
+    native_summary = native_run.agent.last_turn_summary
+    raw_summary = raw_run.agent.last_turn_summary
+    assert native_summary is not None
+    assert raw_summary is not None
+    assert any(
+        event.name == "tool.received" and event.data["source"] == "native"
+        for event in native_summary.trace
+    )
+    assert any(
+        event.name == "tool.received" and event.data["source"] == "raw_text"
+        for event in raw_summary.trace
+    )
 
 
 @pytest.mark.asyncio
