@@ -9,14 +9,14 @@ from ..agent.loop import AgentEvent
 
 if TYPE_CHECKING:
     from ..agent.reasoning import (
-        TaskDecomposition,
-        Subtask,
-        SelfCritique,
-        ConfidenceAssessment,
         ActionVerification,
-        TaskCompletionCheck,
-        RollbackPlan,
+        ConfidenceAssessment,
         RollbackAction,
+        RollbackPlan,
+        SelfCritique,
+        Subtask,
+        TaskCompletionCheck,
+        TaskDecomposition,
     )
 
 
@@ -42,6 +42,7 @@ class ToolCallStarted(Message):
 
     tool_name: str
     tool_args: dict
+    phase: str | None = None
 
 
 @dataclass
@@ -51,6 +52,7 @@ class ToolCallCompleted(Message):
     tool_name: str
     content: str
     is_error: bool = False
+    phase: str | None = None
     # For edit tool diffs
     old_string: str | None = None
     new_string: str | None = None
@@ -182,6 +184,16 @@ class RollbackSummary(Message):
     rollback_plan: "RollbackPlan | None" = None
 
 
+@dataclass
+class DefinitionOfDoneUpdated(Message):
+    """Definition-of-done status changed."""
+
+    content: str
+    dod_status: str
+    pending_items_count: int = 0
+    last_verification_result: str | None = None
+
+
 class EventAdapter:
     """Adapts Agent callback events to Textual messages."""
 
@@ -244,6 +256,7 @@ class EventAdapter:
                     ToolCallStarted(
                         tool_name=tool_name,
                         tool_args=tool_args,
+                        phase=event.phase,
                     )
                 )
 
@@ -297,7 +310,7 @@ class EventAdapter:
                         )
                         self._debug_log(f"  edit extracted: old={bool(old_string)} ({len(old_string) if old_string else 0} chars), new={bool(new_string)} ({len(new_string) if new_string else 0} chars), path={file_path}")
                     else:
-                        self._debug_log(f"  edit: tool_args was empty!")
+                        self._debug_log("  edit: tool_args was empty!")
                 elif tool_name == "write":
                     # For writes, content is the new file content
                     # Try multiple key names that models might use
@@ -315,13 +328,14 @@ class EventAdapter:
                         )
                         self._debug_log(f"  write extracted: new={bool(new_string)} ({len(new_string) if new_string else 0} chars), path={file_path}")
                     else:
-                        self._debug_log(f"  write: tool_args was empty!")
+                        self._debug_log("  write: tool_args was empty!")
 
                 self.app.post_message(
                     ToolCallCompleted(
                         tool_name=tool_name,
                         content=event.content,
                         is_error=event.is_error,
+                        phase=event.phase,
                         old_string=old_string,
                         new_string=new_string,
                         file_path=file_path,
@@ -414,3 +428,13 @@ class EventAdapter:
                     content=event.content,
                     rollback_plan=event.rollback_plan,
                 ))
+
+            case "dod_status":
+                self.app.post_message(
+                    DefinitionOfDoneUpdated(
+                        content=event.content,
+                        dod_status=event.dod_status or "",
+                        pending_items_count=event.pending_items_count or 0,
+                        last_verification_result=event.last_verification_result,
+                    )
+                )

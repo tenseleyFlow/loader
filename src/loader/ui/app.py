@@ -5,13 +5,12 @@ import time
 from pathlib import Path
 
 from rich.markup import escape
-
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, ScrollableContainer
 from textual.reactive import reactive
 from textual.widgets import Footer, Input, Static
-from textual import work
 from textual.worker import Worker, get_current_worker
 
 from ..agent.loop import Agent, AgentEvent
@@ -21,6 +20,7 @@ from .adapter import (
     ConfidenceAssessed,
     CritiquePerformed,
     DecompositionCreated,
+    DefinitionOfDoneUpdated,
     ErrorOccurred,
     EventAdapter,
     PlanCreated,
@@ -36,7 +36,14 @@ from .adapter import (
     ToolCallStarted,
     VerificationPerformed,
 )
-from .widgets import ApprovalBar, ConfirmationModal, DiffWidget, InputArea, StatusLine, StreamingText, ToolCallWidget
+from .widgets import (
+    ApprovalBar,
+    DiffWidget,
+    InputArea,
+    StatusLine,
+    StreamingText,
+    ToolCallWidget,
+)
 
 
 class LoaderApp(App):
@@ -174,7 +181,9 @@ class LoaderApp(App):
         # Show generating status immediately (before async work starts)
         self.is_generating = True
         self._start_timer()
-        self.query_one(StatusLine).set_generating(True)
+        status = self.query_one(StatusLine)
+        status.clear_definition_of_done()
+        status.set_generating(True)
 
         # Start agent task
         self.run_agent(user_input)
@@ -291,7 +300,6 @@ class LoaderApp(App):
         details: str,
     ) -> bool:
         """Show approval bar and wait for user response."""
-        import threading
 
         # Create a future to wait on
         loop = asyncio.get_event_loop()
@@ -305,7 +313,7 @@ class LoaderApp(App):
             try:
                 approval_bar.show_approval(tool_name, message, details)
                 with open("/tmp/loader_debug.log", "a") as f:
-                    f.write(f"[approval] Bar shown, waiting for user input\n")
+                    f.write("[approval] Bar shown, waiting for user input\n")
             except Exception as e:
                 with open("/tmp/loader_debug.log", "a") as f:
                     f.write(f"[approval] Error showing bar: {e}\n")
@@ -328,10 +336,10 @@ class LoaderApp(App):
             except Exception:
                 pass
             return result
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 with open("/tmp/loader_debug.log", "a") as f:
-                    f.write(f"[approval] Timeout waiting for user\n")
+                    f.write("[approval] Timeout waiting for user\n")
             except Exception:
                 pass
             return False
@@ -348,7 +356,7 @@ class LoaderApp(App):
         """Handle approval from the bar."""
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval] Approved handler called\n")
+                f.write("[approval] Approved handler called\n")
         except Exception:
             pass
         if self._pending_confirmation and not self._pending_confirmation.done():
@@ -358,7 +366,7 @@ class LoaderApp(App):
         """Handle rejection from the bar."""
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval] Rejected handler called\n")
+                f.write("[approval] Rejected handler called\n")
         except Exception:
             pass
         if self._pending_confirmation and not self._pending_confirmation.done():
@@ -370,7 +378,7 @@ class LoaderApp(App):
         """Handle edit request - put command in input for editing."""
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval] Edit handler called\n")
+                f.write("[approval] Edit handler called\n")
         except Exception:
             pass
         if self._pending_confirmation and not self._pending_confirmation.done():
@@ -386,6 +394,7 @@ class LoaderApp(App):
     async def run_agent(self, user_input: str) -> str:
         """Run the agent asynchronously."""
         import asyncio
+
         import httpx
 
         worker = get_current_worker()
@@ -499,7 +508,11 @@ class LoaderApp(App):
 
         # Create tool widget
         widget = ToolCallWidget(
-            tool_name=message.tool_name,
+            tool_name=(
+                f"verify {message.tool_name}"
+                if message.phase == "verification"
+                else message.tool_name
+            ),
             tool_args=message.tool_args,
         )
         msg_area.mount(widget)
@@ -582,6 +595,14 @@ class LoaderApp(App):
         # This handles cases like empty LLM responses with fallback messages
         if not self._streamed_content and message.content.strip():
             self._add_message(message.content)
+
+    def on_definition_of_done_updated(self, message: DefinitionOfDoneUpdated) -> None:
+        """Handle definition-of-done status changes."""
+        self.query_one(StatusLine).update_definition_of_done(
+            message.dod_status,
+            message.pending_items_count,
+            message.last_verification_result,
+        )
 
     def on_steering_received(self, message: SteeringReceived) -> None:
         """Handle steering message being processed by agent."""
@@ -722,6 +743,7 @@ class LoaderApp(App):
         msg_area = self.query_one("#message-area", ScrollableContainer)
         msg_area.remove_children()
         self.agent.clear_history()
+        self.query_one(StatusLine).clear_definition_of_done()
         self._add_message("[dim]Conversation cleared.[/dim]")
 
     def action_cancel(self) -> None:

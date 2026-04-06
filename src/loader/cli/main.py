@@ -11,6 +11,8 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 
+from .rendering import format_dod_status
+
 console = Console()
 
 
@@ -369,14 +371,22 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
                 console.print(f" [dim]({elapsed:.1f}s)[/dim]")
                 thinking_start = None
             args_str = _format_tool_args(event.tool_args)
-            console.print(f"[cyan]> {event.tool_name}[/cyan]({args_str})")
+            tool_label = (
+                f"verify {event.tool_name}"
+                if event.phase == "verification"
+                else event.tool_name
+            )
+            console.print(f"[cyan]> {tool_label}[/cyan]({args_str})")
         elif event.type == "tool_result":
             # Show result in a compact panel
             lines = event.content.splitlines()
             preview = "\n".join(lines[:10])
             if len(lines) > 10:
                 preview += f"\n[dim]... ({len(lines) - 10} more lines)[/dim]"
-            console.print(Panel(preview, border_style="dim"))
+            border_style = "magenta" if event.phase == "verification" else "dim"
+            console.print(Panel(preview, border_style=border_style))
+        elif event.type == "dod_status":
+            console.print(f"[dim]{format_dod_status(event)}[/dim]")
         elif event.type == "recovery":
             console.print(f"[yellow]Recovering from error ({event.recovery_attempt}/3)...[/yellow]")
         elif event.type == "error":
@@ -485,7 +495,12 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                     console.print()  # New line after any streamed content
                     streaming_started = False
                 args_str = _format_tool_args(event.tool_args)
-                console.print(f"[cyan]> {event.tool_name}[/cyan]({args_str})")
+                tool_label = (
+                    f"verify {event.tool_name}"
+                    if event.phase == "verification"
+                    else event.tool_name
+                )
+                console.print(f"[cyan]> {tool_label}[/cyan]({args_str})")
             elif event.type == "tool_result":
                 # Show compact result
                 lines = event.content.splitlines()
@@ -493,7 +508,10 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                     preview = event.content
                 else:
                     preview = "\n".join(lines[:3]) + f"\n[dim]... ({len(lines) - 3} more lines)[/dim]"
-                console.print(f"[dim]{preview}[/dim]")
+                style = "magenta" if event.phase == "verification" else "dim"
+                console.print(f"[{style}]{preview}[/{style}]")
+            elif event.type == "dod_status":
+                console.print(f"\n[dim]{format_dod_status(event)}[/dim]")
             elif event.type == "recovery":
                 console.print(f"\n[yellow]Recovering from error ({event.recovery_attempt}/3)...[/yellow]")
             elif event.type == "error":

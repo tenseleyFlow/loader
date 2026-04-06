@@ -3,6 +3,8 @@
 from textual.reactive import reactive
 from textual.widgets import Static
 
+from ..status_helpers import format_definition_of_done_parts
+
 
 class StatusLine(Static):
     """Status bar showing model info, activity, elapsed time, and tokens."""
@@ -12,6 +14,9 @@ class StatusLine(Static):
     activity: reactive[str] = reactive("")
     elapsed: reactive[float] = reactive(0.0)
     tokens: reactive[int] = reactive(0)
+    dod_status: reactive[str] = reactive("")
+    pending_items_count: reactive[int] = reactive(0)
+    last_verification_result: reactive[str] = reactive("")
 
     def render(self) -> str:
         """Render the status line."""
@@ -28,6 +33,14 @@ class StatusLine(Static):
         # Token count
         if self.tokens > 0:
             parts.append(f"[dim]{self.tokens} tokens[/dim]")
+
+        parts.extend(
+            format_definition_of_done_parts(
+                self.dod_status,
+                self.pending_items_count,
+                self.last_verification_result,
+            )
+        )
 
         # Model info
         if self.model:
@@ -51,6 +64,18 @@ class StatusLine(Static):
         """React to token count changes."""
         self.refresh()
 
+    def watch_dod_status(self, dod_status: str) -> None:
+        """React to DoD status changes."""
+        self.refresh()
+
+    def watch_pending_items_count(self, pending_items_count: int) -> None:
+        """React to DoD pending item changes."""
+        self.refresh()
+
+    def watch_last_verification_result(self, last_verification_result: str) -> None:
+        """React to verification result changes."""
+        self.refresh()
+
     def set_generating(self, is_generating: bool) -> None:
         """Set generating state."""
         if is_generating:
@@ -66,3 +91,20 @@ class StatusLine(Static):
     def update_tokens(self, tokens: int) -> None:
         """Update token count."""
         self.tokens = tokens
+
+    def update_definition_of_done(
+        self,
+        status: str,
+        pending_items_count: int,
+        last_verification_result: str | None,
+    ) -> None:
+        """Update definition-of-done status."""
+        self.dod_status = status
+        self.pending_items_count = pending_items_count
+        self.last_verification_result = last_verification_result or ""
+
+    def clear_definition_of_done(self) -> None:
+        """Clear definition-of-done status."""
+        self.dod_status = ""
+        self.pending_items_count = 0
+        self.last_verification_result = ""
