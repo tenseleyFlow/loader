@@ -218,7 +218,6 @@ def categorize_error(error_message: str) -> ErrorCategory:
     if any(x in error_lower for x in [
         "unauthorized", "403 forbidden", "401 unauthorized",
         "authentication failed", "invalid credentials",
-        "access denied", "permission denied to",
         "invalid token", "token expired",
     ]):
         return ErrorCategory.AUTH_ERROR

@@ -1,7 +1,6 @@
 """Tests for the ReAct parsing module."""
 
-import pytest
-from loader.agent.parsing import parse_tool_calls, format_tool_result
+from loader.agent.parsing import format_tool_result, parse_tool_calls
 
 
 class TestParseToolCalls:

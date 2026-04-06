@@ -1,10 +1,8 @@
 """Tests for the error recovery system."""
 
-import pytest
 from loader.agent.recovery import (
     ErrorCategory,
     RecoveryContext,
-    ToolAttempt,
     categorize_error,
     format_failure_message,
     format_recovery_prompt,
@@ -43,7 +41,7 @@ class TestCategorizeError:
 
     def test_network_error(self):
         assert categorize_error("Network unreachable") == ErrorCategory.NETWORK_ERROR
-        assert categorize_error("Connection refused") == ErrorCategory.NETWORK_ERROR
+        assert categorize_error("Connection refused") == ErrorCategory.CONNECTION_REFUSED
 
     def test_unknown(self):
         assert categorize_error("Something weird happened") == ErrorCategory.UNKNOWN
@@ -136,10 +134,11 @@ class TestFormatRecoveryPrompt:
         ctx.add_attempt("read", {"path": "test.py"}, "No such file")
 
         prompt = format_recovery_prompt(ctx, "read", {"path": "test.py"}, "No such file")
-        assert "Tool: read" in prompt
+        assert "Failed Command" in prompt
+        assert "read(path='test.py')" in prompt
         assert "No such file" in prompt
         assert "1/3" in prompt
-        assert "Do NOT repeat" in prompt
+        assert "retry the same command with slight variations" in prompt
 
 
 class TestFormatFailureMessage:

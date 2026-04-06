@@ -1,11 +1,17 @@
 """Tests for tool implementations."""
 
 import pytest
+
 from loader.tools import (
-    ReadTool, WriteTool, EditTool, GlobTool,
-    BashTool, GrepTool, ConfirmationRequired,
+    BashTool,
+    ConfirmationRequired,
+    EditTool,
+    GlobTool,
+    GrepTool,
+    ReadTool,
+    WriteTool,
 )
-from loader.tools.base import ToolRegistry, create_default_registry
+from loader.tools.base import create_default_registry
 
 
 class TestReadTool:
