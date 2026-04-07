@@ -149,15 +149,17 @@ class ClarifyGrounding:
     def slot_prompt_block(
         self,
         focus_slot: ClarifySlot | str | None,
+        pressure_kind: ClarifyPressureKind | str | None = None,
     ) -> str:
         """Render the most relevant workspace evidence for one clarify slot."""
 
         slot = _resolve_slot(focus_slot)
+        pressure = _resolve_pressure(pressure_kind)
         lines: list[str] = []
         if self.project_type != "unknown":
             lines.append(f"- Project type: {self.project_type}")
 
-        relevant_facts = self.relevant_facts(slot)
+        relevant_facts = self.relevant_facts(slot, pressure)
         if relevant_facts:
             lines.append(
                 "- Relevant repo facts: "
@@ -169,7 +171,7 @@ class ClarifyGrounding:
                 + "; ".join(fact.render() for fact in self.repo_facts)
             )
 
-        relevant_paths = self.relevant_paths(slot)
+        relevant_paths = self.relevant_paths(slot, pressure)
         if relevant_paths:
             lines.append(
                 "- Relevant paths: " + ", ".join(relevant_paths)
@@ -231,15 +233,25 @@ class ClarifyGrounding:
     def relevant_facts(
         self,
         focus_slot: ClarifySlot | str | None,
+        pressure_kind: ClarifyPressureKind | str | None = None,
     ) -> list[ClarifyRepoFact]:
         """Return the repo facts most useful for the requested clarify slot."""
 
         slot = _resolve_slot(focus_slot)
+        pressure = _resolve_pressure(pressure_kind)
         primary = self.primary_fact()
         secondary = self.secondary_fact()
         if slot == ClarifySlot.LIKELY_TOUCHPOINTS:
+            if pressure in {
+                ClarifyPressureKind.EXAMPLE,
+                ClarifyPressureKind.TRADEOFF,
+                ClarifyPressureKind.ASSUMPTION,
+            }:
+                return [fact for fact in [primary, secondary] if fact is not None]
             return [fact for fact in [primary] if fact is not None]
         if slot in {ClarifySlot.NON_GOALS, ClarifySlot.DECISION_BOUNDARIES}:
+            if pressure == ClarifyPressureKind.ASSUMPTION:
+                return [fact for fact in [secondary, primary] if fact is not None]
             return [fact for fact in [primary, secondary] if fact is not None]
         if slot == ClarifySlot.CONSTRAINTS and secondary is not None:
             return [secondary]
@@ -248,13 +260,21 @@ class ClarifyGrounding:
     def relevant_paths(
         self,
         focus_slot: ClarifySlot | str | None,
+        pressure_kind: ClarifyPressureKind | str | None = None,
     ) -> list[str]:
         """Return the paths most useful for the requested clarify slot."""
 
         slot = _resolve_slot(focus_slot)
+        pressure = _resolve_pressure(pressure_kind)
         primary = self.primary_touchpoint()
         secondary = self.secondary_touchpoint()
         if slot == ClarifySlot.LIKELY_TOUCHPOINTS:
+            if pressure in {
+                ClarifyPressureKind.EXAMPLE,
+                ClarifyPressureKind.TRADEOFF,
+                ClarifyPressureKind.ASSUMPTION,
+            }:
+                return [path for path in [primary, secondary] if path is not None]
             return [path for path in [primary] if path is not None]
         if slot in {ClarifySlot.NON_GOALS, ClarifySlot.DECISION_BOUNDARIES}:
             return [path for path in [primary, secondary] if path is not None]
@@ -546,31 +566,31 @@ def build_grounded_clarify_question(
         return None
     fact = grounding.primary_fact()
     nearby_fact = grounding.secondary_fact()
-    pressure = (
-        pressure_kind
-        if isinstance(pressure_kind, ClarifyPressureKind)
-        else ClarifyPressureKind(pressure_kind)
-        if pressure_kind
-        else None
-    )
+    pressure = _resolve_pressure(pressure_kind)
     fact_clause = _render_repo_fact_clause(fact, anchor=anchor)
+    nearby_clause = _render_nearby_repo_fact_clause(
+        nearby_fact,
+        anchor=anchor,
+    )
 
     if slot == ClarifySlot.LIKELY_TOUCHPOINTS:
         if pressure == ClarifyPressureKind.EXAMPLE:
             return (
-                f"I found `{anchor}` in the repo.{fact_clause} Should that be the first concrete "
-                "touchpoint, or is there a different file or subsystem I should use instead?"
+                f"I found `{anchor}` in the repo.{fact_clause}{nearby_clause} "
+                "Should that be the first concrete touchpoint, and what nearby file "
+                "should still count as the counterexample surface I leave alone?"
             )
         if pressure == ClarifyPressureKind.TRADEOFF:
             return (
-                f"I found `{anchor}` in the repo.{fact_clause} "
+                f"I found `{anchor}` in the repo.{fact_clause}{nearby_clause} "
                 "Should I keep the work scoped there, "
                 "and what nearby file or surface should stay unchanged?"
             )
         if pressure == ClarifyPressureKind.ASSUMPTION:
             return (
-                f"I found `{anchor}` in the repo.{fact_clause} What assumption about the right "
-                "touchpoint would be risky for me to make without checking first?"
+                f"I found `{anchor}` in the repo.{fact_clause}{nearby_clause} "
+                "What assumption about the right touchpoint or nearby spillover "
+                "would be risky for me to make without checking first?"
             )
         return (
             f"I found `{anchor}` in the repo.{fact_clause} Should I keep this task scoped there, "
@@ -578,15 +598,23 @@ def build_grounded_clarify_question(
         )
 
     if slot == ClarifySlot.NON_GOALS:
-        nearby_clause = _render_nearby_repo_fact_clause(
-            nearby_fact,
-            anchor=anchor,
-        )
+        if pressure == ClarifyPressureKind.EXAMPLE:
+            return (
+                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+                f"{nearby_clause} What concrete change in `{anchor}` should count as "
+                "in scope, and what nearby change should still count as out of scope?"
+            )
         if pressure == ClarifyPressureKind.TRADEOFF:
             return (
                 f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
                 f"{nearby_clause} Should I keep the change scoped there and leave that nearby "
                 "surface unchanged, even if broader edits would be easier?"
+            )
+        if pressure == ClarifyPressureKind.ASSUMPTION:
+            return (
+                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+                f"{nearby_clause} What assumption about touching that nearby surface "
+                "would be risky for me to make without checking first?"
             )
         return (
             f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
@@ -595,15 +623,23 @@ def build_grounded_clarify_question(
         )
 
     if slot == ClarifySlot.DECISION_BOUNDARIES:
-        nearby_clause = _render_nearby_repo_fact_clause(
-            nearby_fact,
-            anchor=anchor,
-        )
+        if pressure == ClarifyPressureKind.EXAMPLE:
+            return (
+                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+                f"{nearby_clause} What concrete change here would you want me to make "
+                "without asking, and what nearby change should still force a stop?"
+            )
         if pressure == ClarifyPressureKind.TRADEOFF:
             return (
                 f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
                 f"{nearby_clause} If the fix starts pulling in that nearby surface, "
                 "should that be a stop-and-confirm boundary?"
+            )
+        if pressure == ClarifyPressureKind.ASSUMPTION:
+            return (
+                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+                f"{nearby_clause} What assumption about crossing into that nearby "
+                "surface would be risky unless I stop and confirm first?"
             )
         return (
             f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
@@ -623,6 +659,18 @@ def _resolve_slot(
         else ClarifySlot(focus_slot)
         if focus_slot
         else ClarifySlot.DESIRED_OUTCOME
+    )
+
+
+def _resolve_pressure(
+    pressure_kind: ClarifyPressureKind | str | None,
+) -> ClarifyPressureKind | None:
+    return (
+        pressure_kind
+        if isinstance(pressure_kind, ClarifyPressureKind)
+        else ClarifyPressureKind(pressure_kind)
+        if pressure_kind
+        else None
     )
 
 
