@@ -14,23 +14,6 @@ from .workflow_recovery import WorkflowRecoveryController
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 
-_ACTION_KEYWORDS = (
-    "create",
-    "write",
-    "make",
-    "run",
-    "execute",
-    "build",
-    "install",
-    "delete",
-    "remove",
-    "add",
-    "edit",
-    "modify",
-    "update",
-    "fix",
-)
-
 
 @dataclass(slots=True)
 class TurnPreludeDecision:
@@ -70,9 +53,6 @@ class TurnPreludeController:
         summary.iterations = iterations
         self.tracer.record("turn.iteration_started", iteration=iterations)
 
-        if self._should_seed_action_bracket(task=task, iterations=iterations):
-            self.agent.session.append(Message(role=Role.ASSISTANT, content="["))
-
         steering_messages = self.agent._drain_steering_queue()
         for steering_message in steering_messages:
             await emit(AgentEvent(type="steering", content=steering_message))
@@ -94,11 +74,3 @@ class TurnPreludeController:
             return TurnPreludeDecision(should_continue=True)
 
         return TurnPreludeDecision()
-
-    def _should_seed_action_bracket(self, *, task: str, iterations: int) -> bool:
-        """Return whether to preserve the legacy action-seed hint."""
-
-        if iterations != 1 or len(self.agent.messages) != 1:
-            return False
-        task_lower = task.lower()
-        return any(keyword in task_lower for keyword in _ACTION_KEYWORDS)

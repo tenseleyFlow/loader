@@ -266,11 +266,11 @@ class TurnIterationController:
             empty_retry_count=next_empty_retry_count,
             max_empty_retries=max_empty_retries,
         )
-        if empty_decision.should_continue and empty_decision.retry_prompt:
+        if empty_decision.should_continue and empty_decision.retry_message:
             self.agent.session.append(
                 Message(
-                    role=Role.ASSISTANT,
-                    content=empty_decision.retry_prompt,
+                    role=Role.USER,
+                    content=empty_decision.retry_message,
                 )
             )
             return TurnIterationDecision(
