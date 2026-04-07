@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from loader.agent.loop import AgentConfig
-from loader.llm.base import CompletionResponse, Role, ToolCall
+from loader.agent.loop import Agent, AgentConfig
+from loader.llm.base import CompletionResponse, Message, Role, ToolCall
 from tests.helpers.runtime_harness import ScriptedBackend, run_scenario
 
 
@@ -43,6 +43,25 @@ def tool_event_names(run) -> list[str]:
         event.tool_name
         for event in run.events
         if event.type == "tool_call" and event.tool_name and event.phase != "verification"
+    ]
+
+
+def test_fresh_agent_messages_are_disconnected_from_session_history(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    agent.session.append(
+        Message(role=Role.USER, content="Create allowed.txt with a greeting.")
+    )
+
+    assert agent.messages == []
+    assert [message.content for message in agent.session.messages] == [
+        "Create allowed.txt with a greeting."
     ]
 
 

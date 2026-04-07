@@ -9,7 +9,7 @@
   - `uv run pytest -q tests/test_parsing.py`
   - `uv run pytest -q tests/test_runtime_harness.py -k 'raw_json or native_and_raw_tool_paths_share_executor_trace or runtime_parity_manifest_matches_implemented_cases'`
 - Repo-wide verification after the latest Sprint 09 characterization update:
-  - `uv run pytest -q` → `188 passed`
+  - `uv run pytest -q` → `189 passed`
 - New Sprint 09 guardrails now cover raw-text recovery for:
   - `read`
   - `TodoWrite`
@@ -45,7 +45,7 @@ This is the subtraction scoreboard for Sprint 11 and Sprint 13.
 
 | Behavior | Current owner | Trigger | Dependency | Current coverage | Proposed disposition |
 | --- | --- | --- | --- | --- | --- |
-| Prefill trick | `src/loader/runtime/conversation.py:142-161` | First iteration, single user message, action-keyword heuristic | Direct session write of fake assistant `[` | No dedicated test | Delete |
+| Prefill trick | `src/loader/runtime/conversation.py:142-161` | First iteration, single user message, action-keyword heuristic | Direct session write of fake assistant `[` | `tests/test_runtime_repair_flows.py::test_fresh_agent_messages_are_disconnected_from_session_history` | Delete. Fresh sessions currently keep `agent.messages` disconnected from `session.messages`, so this gate is already stale in practice. |
 | Empty-output retry prompts | `src/loader/runtime/repair.py:43-76` via `conversation.py:192-211` | Assistant content is empty up to `max_empty_retries=5` | Five fake assistant continuation prompts | `tests/test_runtime_repair_flows.py::test_empty_response_repair_injects_retry_prompt_and_recovers` | Delete or reduce to one bounded retry with honest failure |
 | Raw-text tool fallback | `src/loader/runtime/repair.py:101-125` plus `src/loader/agent/parsing.py` and legacy `src/loader/agent/loop.py:862-1111` | Native tool call list is empty but response contains tool syntax | Parser stack, capability-profile behavior, legacy extractor | `tests/test_parsing.py`, `tests/test_runtime_harness.py` raw JSON scenarios | Keep short-term, gate by capability profile, unify in Sprint 11 |
 | Fake-tool narration repair | `src/loader/runtime/repair.py:156-182` plus `src/loader/agent/loop.py:770-860` | `_contains_unexecuted_code(...)` matches narration or code-block heuristics | Legacy regex wall plus injected scolding prompt | `tests/test_runtime_repair_flows.py::test_fake_tool_narration_repair_injects_scolding_prompt` | Delete |
@@ -73,6 +73,6 @@ Use [sprint09_interactive_validation.md](sprint09_interactive_validation.md) as 
 
 ## Immediate Sprint 09 Follow-on
 
-- Use the `188 passed` repo-wide baseline as the regression floor for the next Sprint 09 slices.
+- Use the `189 passed` repo-wide baseline as the regression floor for the next Sprint 09 slices.
 - Perform the interactive validation matrix once a real backend/profile pair is selected for the cleanup branch.
 - Use this inventory as the checklist for Sprint 10 service seams and Sprint 11 deletions.
