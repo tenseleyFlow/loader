@@ -9,6 +9,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from .workflow_signals import WorkflowSignalExtractor, WorkflowSignalPacket
+
 
 class WorkflowMode(StrEnum):
     """High-level runtime modes for one Loader task turn."""
@@ -68,6 +70,7 @@ class ModeDecision:
     scheduled_next_mode: WorkflowMode | None = None
     unresolved_questions: list[str] = field(default_factory=list)
     pressure_summary: list[str] = field(default_factory=list)
+    signal_summary: list[str] = field(default_factory=list)
 
     @property
     def reason(self) -> str:
@@ -89,6 +92,7 @@ class ModeDecision:
         scheduled_next_mode: WorkflowMode | None = None,
         unresolved_questions: list[str] | None = None,
         pressure_summary: list[str] | None = None,
+        signal_summary: list[str] | None = None,
     ) -> ModeDecision:
         """Build a non-router workflow decision for handoffs and reentry."""
 
@@ -105,6 +109,7 @@ class ModeDecision:
             scheduled_next_mode=scheduled_next_mode,
             unresolved_questions=list(unresolved_questions or []),
             pressure_summary=list(pressure_summary or []),
+            signal_summary=list(signal_summary or []),
         )
 
     def with_context(
@@ -119,6 +124,7 @@ class ModeDecision:
         scheduled_next_mode: WorkflowMode | None = None,
         unresolved_questions: list[str] | None = None,
         pressure_summary: list[str] | None = None,
+        signal_summary: list[str] | None = None,
     ) -> ModeDecision:
         """Return a copy with updated contextual routing metadata."""
 
@@ -148,6 +154,9 @@ class ModeDecision:
                 self.pressure_summary
                 if pressure_summary is None
                 else pressure_summary
+            ),
+            signal_summary=list(
+                self.signal_summary if signal_summary is None else signal_summary
             ),
         )
 
@@ -190,6 +199,7 @@ class WorkflowTimelineEntry:
     runner_up_score: float | None = None
     scheduled_next_mode: str | None = None
     unresolved_questions: list[str] = field(default_factory=list)
+    signal_summary: list[str] = field(default_factory=list)
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
     artifact_paths: list[str] = field(default_factory=list)
@@ -207,6 +217,7 @@ class WorkflowTimelineEntry:
             "runner_up_score": self.runner_up_score,
             "scheduled_next_mode": self.scheduled_next_mode,
             "unresolved_questions": list(self.unresolved_questions),
+            "signal_summary": list(self.signal_summary),
             "prompt_format": self.prompt_format,
             "prompt_sections": list(self.prompt_sections),
             "artifact_paths": list(self.artifact_paths),
@@ -226,6 +237,7 @@ class WorkflowTimelineEntry:
             runner_up_score=_optional_float(data.get("runner_up_score")),
             scheduled_next_mode=_optional_text(data.get("scheduled_next_mode")),
             unresolved_questions=_string_list(data.get("unresolved_questions")),
+            signal_summary=_string_list(data.get("signal_summary")),
             prompt_format=_optional_text(data.get("prompt_format")),
             prompt_sections=_string_list(data.get("prompt_sections")),
             artifact_paths=_string_list(data.get("artifact_paths")),
@@ -262,6 +274,7 @@ class WorkflowTimelineEntry:
                 else None
             ),
             unresolved_questions=list(decision.unresolved_questions),
+            signal_summary=list(decision.signal_summary),
             prompt_format=prompt_format,
             prompt_sections=list(prompt_sections or []),
             artifact_paths=list(artifact_paths or []),
@@ -273,6 +286,9 @@ class WorkflowPolicy:
 
     clarify_threshold = 0.55
     plan_threshold = 0.45
+
+    def __init__(self, signal_extractor: WorkflowSignalExtractor | None = None) -> None:
+        self.signal_extractor = signal_extractor or WorkflowSignalExtractor()
 
     def route(
         self,
@@ -286,8 +302,26 @@ class WorkflowPolicy:
         mutating_history: bool = False,
         stale_plan: bool = False,
         unresolved_questions: list[str] | None = None,
+        timeline: list[WorkflowTimelineEntry] | None = None,
     ) -> ModeDecision:
-        unresolved_questions = list(unresolved_questions or [])
+        signals = self.signal_extractor.extract_route_signals(
+            task,
+            requested_mode=requested_mode.value if requested_mode is not None else None,
+            has_brief=has_brief,
+            has_plan=has_plan,
+            allow_clarify=allow_clarify,
+            verification_pressure=verification_pressure,
+            mutating_history=mutating_history,
+            stale_plan=stale_plan,
+            unresolved_questions=unresolved_questions,
+            timeline=timeline,
+        )
+        return self.route_from_signals(signals)
+
+    def route_from_signals(self, signals: WorkflowSignalPacket) -> ModeDecision:
+        """Route from a typed workflow-signal packet."""
+
+        requested_mode = WorkflowMode.from_str(signals.requested_mode)
         if requested_mode is not None:
             return ModeDecision(
                 mode=requested_mode,
@@ -300,9 +334,10 @@ class WorkflowPolicy:
                     if requested_mode in {WorkflowMode.CLARIFY, WorkflowMode.PLAN}
                     else None
                 ),
+                signal_summary=list(signals.signal_summary),
             )
 
-        if stale_plan:
+        if signals.stale_artifact_pressure > 0:
             return ModeDecision(
                 mode=WorkflowMode.PLAN,
                 reason_code="stale_plan_artifacts",
@@ -312,14 +347,15 @@ class WorkflowPolicy:
                 runner_up_mode=WorkflowMode.EXECUTE,
                 runner_up_score=0.6,
                 scheduled_next_mode=WorkflowMode.EXECUTE,
-                unresolved_questions=unresolved_questions,
+                unresolved_questions=list(signals.unresolved_questions),
                 pressure_summary=[
                     "plan refresh pressure: stale artifacts require a refreshed plan",
                     "execute pressure: continue directly with the stale artifacts",
                 ],
+                signal_summary=list(signals.signal_summary),
             )
 
-        if has_plan:
+        if signals.has_plan:
             return ModeDecision(
                 mode=WorkflowMode.EXECUTE,
                 reason_code="existing_plan_artifacts",
@@ -328,45 +364,52 @@ class WorkflowPolicy:
                 route_score=0.9,
                 runner_up_mode=WorkflowMode.PLAN,
                 runner_up_score=0.45,
-                unresolved_questions=unresolved_questions,
+                unresolved_questions=list(signals.unresolved_questions),
                 pressure_summary=[
                     "execute pressure: persisted plan artifacts already exist",
                     "plan pressure: a plan refresh is available but not required",
                 ],
+                signal_summary=list(signals.signal_summary),
             )
 
-        ambiguity = self._ambiguity_score(task)
-        complexity = self._complexity_score(task)
+        ambiguity = signals.ambiguity_score
+        complexity = signals.complexity_score
 
         clarify_pressure = ambiguity
-        if allow_clarify and not has_brief:
+        if signals.allow_clarify and not signals.has_brief:
             clarify_pressure += 0.15
-        if unresolved_questions:
-            clarify_pressure += 0.12
+        if signals.unresolved_questions:
+            clarify_pressure += min(0.12, 0.04 * len(signals.unresolved_questions))
         if complexity < 0.55:
             clarify_pressure += 0.05
-        if not allow_clarify:
+        if signals.recent_clarify_count and signals.unresolved_questions:
+            clarify_pressure += 0.04
+        if not signals.allow_clarify:
             clarify_pressure = 0.0
 
         plan_pressure = complexity
-        if verification_pressure:
-            plan_pressure += 0.12
-        if mutating_history:
-            plan_pressure += 0.08
-        if has_brief:
+        plan_pressure += signals.verification_pressure
+        plan_pressure += signals.mutation_pressure
+        if signals.has_brief:
             plan_pressure += 0.06
-        if unresolved_questions:
+        if signals.unresolved_questions:
             plan_pressure += 0.06
+        if signals.recent_reentry_count:
+            plan_pressure += 0.06
+        if signals.recent_plan_refresh_count:
+            plan_pressure += 0.04
 
         execute_pressure = 0.35
-        if has_brief:
+        if signals.has_brief:
             execute_pressure += 0.14
         if ambiguity < 0.35:
             execute_pressure += 0.16
         if complexity < 0.45:
             execute_pressure += 0.12
-        if not unresolved_questions:
+        if not signals.unresolved_questions:
             execute_pressure += 0.05
+        if signals.recent_verify_skip_count and not signals.verification_pressure:
+            execute_pressure += 0.03
 
         scores = {
             WorkflowMode.CLARIFY: round(min(clarify_pressure, 1.0), 3),
@@ -385,7 +428,7 @@ class WorkflowPolicy:
         if (
             winner == WorkflowMode.CLARIFY
             and winner_score >= self.clarify_threshold
-            and allow_clarify
+            and signals.allow_clarify
         ):
             return ModeDecision(
                 mode=WorkflowMode.CLARIFY,
@@ -397,19 +440,20 @@ class WorkflowPolicy:
                 runner_up_mode=runner_up,
                 runner_up_score=runner_up_score,
                 scheduled_next_mode=WorkflowMode.EXECUTE,
-                unresolved_questions=unresolved_questions,
+                unresolved_questions=list(signals.unresolved_questions),
                 pressure_summary=pressure_summary,
+                signal_summary=list(signals.signal_summary),
             )
 
         if winner == WorkflowMode.PLAN and winner_score >= self.plan_threshold:
             reason_code = (
                 "verification_pressure_requires_plan"
-                if verification_pressure
+                if signals.verification_pressure
                 else "task_is_complex"
             )
             reason_summary = (
                 "verification pressure and task complexity favor a persisted plan"
-                if verification_pressure
+                if signals.verification_pressure
                 else "workflow pressure favors a persisted plan before execution"
             )
             return ModeDecision(
@@ -422,8 +466,9 @@ class WorkflowPolicy:
                 runner_up_mode=runner_up,
                 runner_up_score=runner_up_score,
                 scheduled_next_mode=WorkflowMode.EXECUTE,
-                unresolved_questions=unresolved_questions,
+                unresolved_questions=list(signals.unresolved_questions),
                 pressure_summary=pressure_summary,
+                signal_summary=list(signals.signal_summary),
             )
 
         return ModeDecision(
@@ -435,8 +480,9 @@ class WorkflowPolicy:
             route_score=winner_score,
             runner_up_mode=runner_up,
             runner_up_score=runner_up_score,
-            unresolved_questions=unresolved_questions,
+            unresolved_questions=list(signals.unresolved_questions),
             pressure_summary=pressure_summary,
+            signal_summary=list(signals.signal_summary),
         )
 
     def review_clarify(

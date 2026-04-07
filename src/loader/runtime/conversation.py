@@ -35,6 +35,7 @@ from .workflow import (
     WorkflowDecisionKind,
     WorkflowMode,
     WorkflowPolicy,
+    WorkflowSignalExtractor,
     WorkflowTimelineEntry,
     WorkflowTimelineEntryKind,
     build_execute_bridge,
@@ -54,7 +55,8 @@ class ConversationRuntime:
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
         self.dod_store = DefinitionOfDoneStore(agent.project_root)
-        self.workflow_policy = WorkflowPolicy()
+        self.workflow_signals = WorkflowSignalExtractor()
+        self.workflow_policy = WorkflowPolicy(self.workflow_signals)
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
         self.turn_requester = AssistantTurnRequester(agent, self.tracer)
         self.tool_batches = ToolBatchRunner(agent, self.dod_store)
@@ -488,12 +490,15 @@ class ConversationRuntime:
         requested_mode: str | None,
     ) -> str:
         requested = WorkflowMode.from_str(requested_mode)
-        decision = self.workflow_policy.route(
-            task,
-            requested_mode=requested,
-            has_brief=self._artifact_exists(dod.clarify_brief),
-            has_plan=self._artifact_exists(dod.implementation_plan)
-            and self._artifact_exists(dod.verification_plan),
+        decision = self.workflow_policy.route_from_signals(
+            self.workflow_signals.extract_route_signals(
+                task,
+                requested_mode=requested.value if requested is not None else None,
+                has_brief=self._artifact_exists(dod.clarify_brief),
+                has_plan=self._artifact_exists(dod.implementation_plan)
+                and self._artifact_exists(dod.verification_plan),
+                timeline=self.agent.session.workflow_timeline,
+            )
         )
         await self._set_workflow_mode(
             decision,
@@ -516,13 +521,16 @@ class ConversationRuntime:
                 summary=summary,
                 on_user_question=on_user_question,
             )
-            decision = self.workflow_policy.route(
-                task,
-                has_brief=self._artifact_exists(dod.clarify_brief),
-                has_plan=self._artifact_exists(dod.implementation_plan)
-                and self._artifact_exists(dod.verification_plan),
-                allow_clarify=False,
-                unresolved_questions=clarify_review.unresolved_questions,
+            decision = self.workflow_policy.route_from_signals(
+                self.workflow_signals.extract_route_signals(
+                    task,
+                    has_brief=self._artifact_exists(dod.clarify_brief),
+                    has_plan=self._artifact_exists(dod.implementation_plan)
+                    and self._artifact_exists(dod.verification_plan),
+                    allow_clarify=False,
+                    unresolved_questions=clarify_review.unresolved_questions,
+                    timeline=self.agent.session.workflow_timeline,
+                )
             )
             await self._set_workflow_mode(
                 decision.with_context(
@@ -1096,14 +1104,19 @@ class ConversationRuntime:
         if not freshness.stale_plan:
             return False
 
-        decision = self.workflow_policy.route(
-            task,
-            has_brief=self._artifact_exists(dod.clarify_brief),
-            has_plan=True,
-            allow_clarify=False,
-            stale_plan=True,
-            verification_pressure=bool(dod.retry_count or dod.last_verification_result == "failed"),
-            unresolved_questions=freshness.reasons,
+        decision = self.workflow_policy.route_from_signals(
+            self.workflow_signals.extract_route_signals(
+                task,
+                has_brief=self._artifact_exists(dod.clarify_brief),
+                has_plan=True,
+                allow_clarify=False,
+                stale_plan=True,
+                verification_pressure=bool(
+                    dod.retry_count or dod.last_verification_result == "failed"
+                ),
+                unresolved_questions=freshness.reasons,
+                timeline=self.agent.session.workflow_timeline,
+            )
         )
         await self._set_workflow_mode(
             decision,

@@ -19,6 +19,7 @@ from .workflow_policy import (
     WorkflowTimelineEntry,
     WorkflowTimelineEntryKind,
 )
+from .workflow_signals import WorkflowSignalExtractor, WorkflowSignalPacket
 
 __all__ = [
     "ArtifactFreshness",
@@ -32,6 +33,8 @@ __all__ = [
     "WorkflowDecisionKind",
     "WorkflowMode",
     "WorkflowPolicy",
+    "WorkflowSignalExtractor",
+    "WorkflowSignalPacket",
     "WorkflowTimelineEntry",
     "WorkflowTimelineEntryKind",
     "build_execute_bridge",
