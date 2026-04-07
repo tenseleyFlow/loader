@@ -47,6 +47,22 @@ def format_permission_mode_part(mode: str) -> str | None:
     return f"[{color}]perm {mode}[/{color}]"
 
 
+def format_capability_part(capability: str) -> str | None:
+    """Format the active capability profile for the status line."""
+
+    if not capability:
+        return None
+    return f"[dim]cap {capability}[/dim]"
+
+
+def format_session_part(session_id: str) -> str | None:
+    """Format the active session id for the status line."""
+
+    if not session_id:
+        return None
+    return f"[dim]session {session_id[-8:]}[/dim]"
+
+
 def format_workflow_mode_part(mode: str) -> str | None:
     """Format the active workflow mode for the status line."""
 

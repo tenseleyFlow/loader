@@ -7,8 +7,10 @@ from loader.cli.rendering import (
 )
 from loader.runtime.events import AgentEvent
 from loader.ui.status_helpers import (
+    format_capability_part,
     format_definition_of_done_parts,
     format_permission_mode_part,
+    format_session_part,
     format_workflow_mode_part,
 )
 
@@ -48,3 +50,8 @@ def test_permission_mode_helpers_use_expected_colors() -> None:
 def test_workflow_mode_helpers_use_expected_colors() -> None:
     assert format_workflow_mode_part("plan") == "[cyan]flow plan[/cyan]"
     assert format_workflow_mode("verify") == "[green]verify[/green]"
+
+
+def test_status_helpers_format_capability_and_session_parts() -> None:
+    assert format_capability_part("native/strict") == "[dim]cap native/strict[/dim]"
+    assert format_session_part("20260406T120000Z-abcdef01") == "[dim]session abcdef01[/dim]"

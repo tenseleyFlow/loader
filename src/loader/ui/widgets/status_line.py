@@ -4,8 +4,10 @@ from textual.reactive import reactive
 from textual.widgets import Static
 
 from ..status_helpers import (
+    format_capability_part,
     format_definition_of_done_parts,
     format_permission_mode_part,
+    format_session_part,
     format_workflow_mode_part,
 )
 
@@ -15,6 +17,8 @@ class StatusLine(Static):
 
     model: reactive[str] = reactive("")
     mode: reactive[str] = reactive("Native")
+    capability_profile: reactive[str] = reactive("")
+    session_id: reactive[str] = reactive("")
     workflow_mode: reactive[str] = reactive("")
     permission_mode: reactive[str] = reactive("")
     activity: reactive[str] = reactive("")
@@ -55,12 +59,18 @@ class StatusLine(Static):
         # Mode
         if self.mode:
             parts.append(f"[dim]{self.mode}[/dim]")
+        capability_profile = format_capability_part(self.capability_profile)
+        if capability_profile:
+            parts.append(capability_profile)
         workflow_mode = format_workflow_mode_part(self.workflow_mode)
         if workflow_mode:
             parts.append(workflow_mode)
         permission_mode = format_permission_mode_part(self.permission_mode)
         if permission_mode:
             parts.append(permission_mode)
+        session_part = format_session_part(self.session_id)
+        if session_part:
+            parts.append(session_part)
 
         return " · ".join(parts) if parts else "[dim]Ready[/dim]"
 
@@ -78,6 +88,14 @@ class StatusLine(Static):
 
     def watch_permission_mode(self, permission_mode: str) -> None:
         """React to permission mode changes."""
+        self.refresh()
+
+    def watch_capability_profile(self, capability_profile: str) -> None:
+        """React to capability profile changes."""
+        self.refresh()
+
+    def watch_session_id(self, session_id: str) -> None:
+        """React to session id changes."""
         self.refresh()
 
     def watch_workflow_mode(self, workflow_mode: str) -> None:
@@ -115,6 +133,14 @@ class StatusLine(Static):
     def update_permission_mode(self, permission_mode: str) -> None:
         """Update the active permission mode."""
         self.permission_mode = permission_mode
+
+    def update_capability_profile(self, capability_profile: str) -> None:
+        """Update the active capability profile."""
+        self.capability_profile = capability_profile
+
+    def update_session_id(self, session_id: str) -> None:
+        """Update the active session id."""
+        self.session_id = session_id
 
     def update_workflow_mode(self, workflow_mode: str) -> None:
         """Update the active workflow mode."""

@@ -68,6 +68,8 @@ class LoaderApp(App):
         agent: Agent,
         model_name: str = "",
         mode: str = "Native",
+        capability_profile: str = "",
+        session_id: str = "",
         workflow_mode: str = "execute",
         permission_mode: str = "",
         **kwargs,
@@ -76,6 +78,8 @@ class LoaderApp(App):
         self.agent = agent
         self.model_name = model_name
         self.mode = mode
+        self.capability_profile = capability_profile
+        self.session_id = session_id
         self.workflow_mode = workflow_mode
         self.permission_mode = permission_mode
         self.adapter = EventAdapter(self)
@@ -113,6 +117,8 @@ class LoaderApp(App):
         status = self.query_one(StatusLine)
         status.model = self.model_name
         status.mode = self.mode
+        status.capability_profile = self.capability_profile
+        status.session_id = self.session_id
         status.workflow_mode = self.workflow_mode
         status.permission_mode = self.permission_mode
 
@@ -228,7 +234,10 @@ class LoaderApp(App):
             self._handle_model_command("")  # List models
 
         else:
-            self._add_message(f"[red]Unknown command: /{cmd}[/red]\nType /help for available commands.")
+            self._add_message(
+                f"[red]Unknown command: /{cmd}[/red]\n"
+                "Type /help for available commands."
+            )
 
     def _show_help(self) -> None:
         """Show help message with available commands."""
@@ -293,13 +302,23 @@ class LoaderApp(App):
                 self.agent.refresh_capability_profile()
             self.model_name = model_name
             # Update status line
-            self.query_one(StatusLine).model = model_name
+            status = self.query_one(StatusLine)
+            status.model = model_name
             # Update mode based on new model's capabilities
             if hasattr(self.agent.backend, "supports_native_tools"):
                 supports_native = self.agent.backend.supports_native_tools()
                 self.mode = "Native" if supports_native else "ReAct"
-                self.query_one(StatusLine).mode = self.mode
-            self._add_message(f"[green]Switched model:[/green] {old_model} → [bold]{model_name}[/bold]")
+                status.mode = self.mode
+            if hasattr(self.agent, "capability_profile"):
+                self.capability_profile = (
+                    f"{self.agent.capability_profile.preferred_tool_call_format}/"
+                    f"{self.agent.capability_profile.verification_strictness}"
+                )
+                status.capability_profile = self.capability_profile
+            self._add_message(
+                "[green]Switched model:[/green] "
+                f"{old_model} → [bold]{model_name}[/bold]"
+            )
         else:
             self._add_message("[red]Model switching not supported for this backend[/red]")
 
@@ -578,7 +597,13 @@ class LoaderApp(App):
         # Debug: log what we received
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"on_tool_call_completed: tool={message.tool_name}, new_string={bool(message.new_string)}, old_string={bool(message.old_string)}, file_path={message.file_path}\n")
+                f.write(
+                    "on_tool_call_completed: "
+                    f"tool={message.tool_name}, "
+                    f"new_string={bool(message.new_string)}, "
+                    f"old_string={bool(message.old_string)}, "
+                    f"file_path={message.file_path}\n"
+                )
         except Exception:
             pass
 
@@ -589,7 +614,11 @@ class LoaderApp(App):
         # Note: old_string can be empty string (inserting), so check `is not None`
         if message.tool_name == "edit" and message.new_string and message.old_string is not None:
             # Replace tool widget with diff widget
-            self._debug_log(f"  -> showing EDIT diff widget (old={len(message.old_string)} chars, new={len(message.new_string)} chars)")
+            self._debug_log(
+                "  -> showing EDIT diff widget "
+                f"(old={len(message.old_string)} chars, "
+                f"new={len(message.new_string)} chars)"
+            )
             if tool_widget:
                 tool_widget.remove()
 
@@ -693,7 +722,11 @@ class LoaderApp(App):
                     "completed": "●",
                     "failed": "✗",
                 }.get(st.status, "?")
-                deps = f" [dim](after: {', '.join(st.dependencies)})[/dim]" if st.dependencies else ""
+                deps = (
+                    f" [dim](after: {', '.join(st.dependencies)})[/dim]"
+                    if st.dependencies
+                    else ""
+                )
                 lines.append(f"  {status_icon} {i}. {st.description}{deps}")
             widget = Static("\n".join(lines), classes="decomposition-container")
             msg_area.mount(widget)

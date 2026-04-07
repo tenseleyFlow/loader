@@ -367,8 +367,14 @@ async def _main(
         status_parts = [
             f"Model: {model}",
             f"Mode: {mode_str}",
+            (
+                "Capabilities: "
+                f"{agent.capability_profile.preferred_tool_call_format}/"
+                f"{agent.capability_profile.verification_strictness}"
+            ),
             f"Workflow: {format_workflow_mode(agent.workflow_mode)}",
             f"Permissions: {format_permission_mode(agent.active_permission_mode)}",
+            f"Session: {agent.session.session_id}",
         ]
         if agent.project_context:
             status_parts.append(f"Project: {agent.project_context.project_type}")
@@ -390,8 +396,14 @@ async def _main(
         status_parts = [
             f"Model: {model}",
             f"Mode: {mode_str}",
+            (
+                "Capabilities: "
+                f"{agent.capability_profile.preferred_tool_call_format}/"
+                f"{agent.capability_profile.verification_strictness}"
+            ),
             f"Workflow: {format_workflow_mode(agent.workflow_mode)}",
             f"Permissions: {format_permission_mode(agent.active_permission_mode)}",
+            f"Session: {agent.session.session_id}",
         ]
         if agent.project_context:
             status_parts.append(f"Project: {agent.project_context.project_type}")
@@ -413,6 +425,11 @@ async def _main(
             agent=agent,
             model_name=model,
             mode=mode_str,
+            capability_profile=(
+                f"{agent.capability_profile.preferred_tool_call_format}/"
+                f"{agent.capability_profile.verification_strictness}"
+            ),
+            session_id=agent.session.session_id,
             workflow_mode=agent.workflow_mode,
             permission_mode=agent.active_permission_mode,
         )
