@@ -53,7 +53,7 @@ class ConversationRuntime:
         self.router = ModeRouter()
         self.artifact_store = WorkflowArtifactStore(self.context.project_root)
         self.turn_requester = AssistantTurnRequester(self.context, self.tracer)
-        self.tool_batches = ToolBatchRunner(agent, self.dod_store)
+        self.tool_batches = ToolBatchRunner(self.context, self.dod_store)
         self.repairer = ResponseRepairer(agent)
         self.completion_policy = CompletionPolicy(agent)
         self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
