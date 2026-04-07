@@ -32,6 +32,10 @@ SCENARIO_NAMES = [
     "read_only_mode_allows_safe_bash",
     "workspace_write_denies_write_outside_root",
     "danger_full_access_allows_dangerous_bash",
+    "prompt_mode_prompts_destructive_write",
+    "allow_mode_skips_prompt_for_destructive_write",
+    "deny_rule_blocks_allowed_mode",
+    "ask_rule_prompts_even_when_mode_would_allow",
     "raw_json_tool_call_fallback",
     "native_and_raw_tool_paths_share_executor_trace",
     "backend_capability_probe_refreshes_native_tool_mode",
@@ -45,6 +49,7 @@ SCENARIO_NAMES = [
     "conversational_task_skips_verify_phase",
     "explore_mode_skips_dod_and_router",
     "explore_mode_denies_write",
+    "explore_mode_ignores_global_allow_policy",
     "completion_check_continuation",
     "tool_result_contract_regression",
 ]
@@ -589,6 +594,162 @@ async def test_danger_full_access_allows_dangerous_bash(temp_dir: Path) -> None:
     assert tool_event_names(run) == ["bash"]
     assert not any("requires" in message for message in tool_result_messages(run))
     assert not any(event.type == "confirmation" for event in run.events)
+
+
+@pytest.mark.asyncio
+async def test_prompt_mode_prompts_destructive_write(temp_dir: Path) -> None:
+    target = temp_dir / "prompted.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.PROMPT
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "prompted\n"},
+                ),
+                content="I'll create the file after approval.",
+            ),
+            final_response("The file was created."),
+        ]
+    )
+    prompts: list[str] = []
+
+    async def approve_confirmation(tool_name: str, message: str, details: str) -> bool:
+        assert tool_name == "write"
+        prompts.append(details)
+        return True
+
+    run = await run_scenario(
+        "Create prompted.txt after approval.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+        on_confirmation=approve_confirmation,
+    )
+
+    assert target.read_text() == "prompted\n"
+    assert prompts and "active_mode=prompt" in prompts[0]
+    assert any(event.type == "confirmation" for event in run.events)
+
+
+@pytest.mark.asyncio
+async def test_allow_mode_skips_prompt_for_destructive_write(temp_dir: Path) -> None:
+    target = temp_dir / "allow-mode.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.ALLOW
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "allow mode\n"},
+                ),
+                content="I'll create the file directly.",
+            ),
+            final_response("The file was created."),
+        ]
+    )
+    prompts: list[str] = []
+
+    async def unexpected_confirmation(tool_name: str, message: str, details: str) -> bool:
+        prompts.append(tool_name)
+        return False
+
+    run = await run_scenario(
+        "Create allow-mode.txt directly.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+        on_confirmation=unexpected_confirmation,
+    )
+
+    assert target.read_text() == "allow mode\n"
+    assert prompts == []
+    assert not any(event.type == "confirmation" for event in run.events)
+    assert "The file was created." in run.response
+
+
+@pytest.mark.asyncio
+async def test_deny_rule_blocks_allowed_mode(temp_dir: Path) -> None:
+    loader_root = temp_dir / ".loader"
+    loader_root.mkdir()
+    (loader_root / "permission-rules.json").write_text(
+        '{"deny": [{"tool": "write", "path_contains": "secrets"}]}\n'
+    )
+    target = temp_dir / "secrets.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.ALLOW
+    config.auto_recover = False
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "denied\n"},
+                ),
+                content="I'll write the secret file.",
+            ),
+            final_response("The write was blocked by policy."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create secrets.txt.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert not target.exists()
+    assert any("denied by rule" in message for message in tool_result_messages(run))
+    assert "tool.permission_denied" in trace_event_names(run)
+
+
+@pytest.mark.asyncio
+async def test_ask_rule_prompts_even_when_mode_would_allow(temp_dir: Path) -> None:
+    loader_root = temp_dir / ".loader"
+    loader_root.mkdir()
+    (loader_root / "permission-rules.json").write_text(
+        '{"ask": [{"tool": "write", "path_contains": "README"}]}\n'
+    )
+    target = temp_dir / "README.md"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.ALLOW
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "ask rule\n"},
+                ),
+                content="I'll update the README if you approve it.",
+            ),
+            final_response("The write was declined."),
+        ]
+    )
+    prompts: list[str] = []
+
+    async def deny_confirmation(tool_name: str, message: str, details: str) -> bool:
+        prompts.append(details)
+        return False
+
+    run = await run_scenario(
+        "Update README.md.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+        on_confirmation=deny_confirmation,
+    )
+
+    assert not target.exists()
+    assert prompts and "matched_ask_rule=tool=write, path_contains=README" in prompts[0]
+    assert any(event.type == "confirmation" for event in run.events)
+    assert "declined" in run.response.lower()
 
 
 @pytest.mark.asyncio
@@ -1212,6 +1373,47 @@ async def test_explore_mode_denies_write(temp_dir: Path) -> None:
     assert not dod_statuses(run)
     assert not workflow_modes(run)
     assert not (temp_dir / ".loader" / "dod").exists()
+
+
+@pytest.mark.asyncio
+async def test_explore_mode_ignores_global_allow_policy(temp_dir: Path) -> None:
+    loader_root = temp_dir / ".loader"
+    loader_root.mkdir()
+    (loader_root / "permission-rules.json").write_text(
+        '{"allow": [{"tool": "write", "path_contains": "new.txt"}]}\n'
+    )
+    target = temp_dir / "new.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.ALLOW
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={
+                        "file_path": str(target),
+                        "content": "still denied\n",
+                    },
+                ),
+                content="I'll write a file.",
+            ),
+            final_response("Explore mode is read-only, so I cannot make that change here."),
+        ]
+    )
+
+    run = await run_explore_scenario(
+        "Create a new file anyway.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert not target.exists()
+    assert any("read-only" in message.lower() for message in tool_result_messages(run))
+    assert "tool.permission_denied" in trace_event_names(run)
+    assert not dod_statuses(run)
+    assert not workflow_modes(run)
 
 
 @pytest.mark.asyncio

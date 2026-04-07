@@ -1,6 +1,6 @@
 # Loader Runtime Parity Checkpoint
 
-Date: 2026-04-06
+Date: 2026-04-07
 
 This file tracks the current deterministic runtime baseline for Loader. It stays intentionally narrow and operational: what the runtime can do today, what remains weak, and what scenarios we measure with repeatable tests.
 
@@ -8,9 +8,10 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 
 - streamed text-only replies
 - native-tool round trips for `read`, `write`, `edit`, `patch`, `glob`, `grep`, `bash`, `git`, `TodoWrite`, `AskUserQuestion`, `project_memory_*`, and `notepad_*`
-- explicit permission modes: `read-only`, `workspace-write`, and `danger-full-access`
+- explicit permission modes: `read-only`, `workspace-write`, `danger-full-access`, `prompt`, and `allow`
 - tool lifecycle hooks in `pre_tool_use` → permission check → execute → `post_tool_use` / `post_tool_use_failure` order
-- confirmation callbacks still exist for destructive `write` and `bash` actions after policy allows them
+- rule-based permission policy with workspace-local `allow` / `deny` / `ask` rules from `.loader/permission-rules.json`
+- policy-backed prompting for destructive tool use, with approval context that includes mode, requirement, and matched rule information
 - raw JSON fallback when the model emits tool syntax in plain text
 - persisted definition-of-done state under `.loader/dod/`
 - persisted clarify briefs under `.loader/briefs/`
@@ -40,6 +41,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - workspace-bound file operations with canonicalized boundary checks, binary detection, size limits, and structured patch metadata
 - shell mutability classification plus structured truncation and stderr/exit-code metadata
 - richer structured `AskUserQuestion` prompts with titles, context, options, and optional freeform responses
+- assistant-turn request handling now lives in `runtime.assistant_turns`, and DoD/finalization logic now lives in `runtime.finalization` instead of accumulating further inside `conversation.py`
 
 ## Known weak spots
 
@@ -52,8 +54,8 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - evidence summaries are deterministic runtime summaries of captured output, not model-written verification narratives
 - session compaction summaries are heuristic runtime summaries, not model-assisted continuity artifacts
 - project-memory capture on finalized DoD evidence is still lightweight and command-summary oriented, not semantically curated memory extraction
-- policy rules (`allow` / `deny` / `ask`) are still deferred, and the current permission system is mode-based rather than rule-based
-- destructive tool calls still pass through the legacy confirmation path after policy allows them, so Loader has not fully reached claw-code's prompt/allow model
+- rule syntax is intentionally narrow and workspace-local; Loader still does not have claw-code's richer rule model or broader prompt/allow operator surface
+- policy state is inspectable in doctor/status, but there is not yet a richer UX for editing, previewing, or temporarily overriding rules from the product surface
 - shell safety is still heuristic and command-based; Loader does not yet have a richer shell sandbox or argument-aware mutability model
 - explore mode is a one-shot read-only lane, not yet a richer interactive inspection workflow with deeper repo navigation affordances
 - the read-only `git` helper is intentionally narrow compared with claw-code and OMX's broader repo/product surfaces, and the `patch` tool still stops short of AST/LSP-aware editing
@@ -80,6 +82,10 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 - `read_only_mode_allows_safe_bash`: green
 - `workspace_write_denies_write_outside_root`: green
 - `danger_full_access_allows_dangerous_bash`: green
+- `prompt_mode_prompts_destructive_write`: green
+- `allow_mode_skips_prompt_for_destructive_write`: green
+- `deny_rule_blocks_allowed_mode`: green
+- `ask_rule_prompts_even_when_mode_would_allow`: green
 - `raw_json_tool_call_fallback`: green
 - `completion_check_continuation`: green
 - `tool_result_contract_regression`: green
@@ -96,12 +102,13 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 - `conversational_task_skips_verify_phase`: green
 - `explore_mode_skips_dod_and_router`: green
 - `explore_mode_denies_write`: green
+- `explore_mode_ignores_global_allow_policy`: green
 
 ## Verification snapshot
 
-As of 2026-04-06:
+As of 2026-04-07:
 
-- `uv run pytest -q`: 153 passed
+- `uv run pytest -q`: 166 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers router heuristics, clarify/plan artifact round trips, DoD workflow links, and todo-to-DoD syncing
@@ -114,11 +121,11 @@ As of 2026-04-06:
 - `tests/test_inspection.py` covers `loader doctor`, `loader status`, `loader session list/show`, and session-resume CLI dispatch
 - `tests/test_explore_runtime.py` covers the direct explore lane contract and forced read-only behavior outside the parity harness
 - `tests/test_expanded_tools.py` covers structured patch application, read-only git helpers, `notepad_append`, and richer structured user questions
-- `tests/test_permissions.py` covers permission policy overrides and hook lifecycle ordering
+- `tests/test_permissions.py` covers prompt/allow mode parsing, rule precedence, policy-backed prompting behavior, and hook lifecycle ordering
 - `tests/test_tool_safety.py` covers workspace boundaries, binary/oversize guards, patch metadata, and shell truncation/classification
 - `tests/test_status_surfaces.py` covers the CLI/TUI DoD, workflow-mode, permission-mode, capability-profile, and session-id formatting helpers
 - native and extracted tool calls now record the same executor trace events, with source-specific metadata
-- turn startup can refine backend capability profiles before the first request, `run_streaming()` delegates into the main runtime path, mutating tasks route through persisted evidence-backed completion, workflow artifacts survive across turns, sessions compact safely, explore queries bypass DoD/router overhead safely, and tool execution hangs off a stable hook-and-policy seam
+- turn startup can refine backend capability profiles before the first request, `run_streaming()` delegates into the main runtime path, mutating tasks route through persisted evidence-backed completion, workflow artifacts survive across turns, sessions compact safely, explore queries bypass DoD/router overhead safely, policy rules are enforced deterministically, and assistant-turn/finalization concerns now hang off smaller runtime modules instead of growing the conversation monolith further
 
 ## Definition of honesty
 
@@ -130,3 +137,4 @@ As of 2026-04-06:
 - Sprint 04 adds routing, artifacts, and structured user questions, but it is still a first-pass workflow layer rather than full OMX consensus planning or deep interview rigor.
 - Sprint 05 adds durable sessions, resume, compaction, and native memory/notepad tools, but it stops short of Sprint 06's inspectable session/status product surfaces and still uses heuristic continuity summaries rather than richer semantic memory extraction.
 - Sprint 06 adds inspectable product surfaces, a constrained explore lane, and a broader tool registry, but it still stops short of interactive explore workflows, richer git ergonomics, AST/LSP-aware editing, or any multi-agent/team runtime.
+- Sprint 07 is underway: Loader now has prompt/allow modes, rule-based permission policy, policy-backed prompting, and smaller assistant-turn/finalization runtime seams, but the broader Sprint 07 audit and remaining policy/product ergonomics work are not done yet.

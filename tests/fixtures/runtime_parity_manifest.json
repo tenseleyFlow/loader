@@ -70,6 +70,26 @@
     "description": "Danger-full-access mode permits dangerous shell operations when approved."
   },
   {
+    "name": "prompt_mode_prompts_destructive_write",
+    "category": "permissions",
+    "description": "Prompt mode routes destructive writes through the policy approval path before execution."
+  },
+  {
+    "name": "allow_mode_skips_prompt_for_destructive_write",
+    "category": "permissions",
+    "description": "Allow mode executes destructive writes without a second legacy confirmation prompt."
+  },
+  {
+    "name": "deny_rule_blocks_allowed_mode",
+    "category": "permissions",
+    "description": "A deny rule still blocks tool execution even when the active permission mode would otherwise allow it."
+  },
+  {
+    "name": "ask_rule_prompts_even_when_mode_would_allow",
+    "category": "permissions",
+    "description": "An ask rule forces interactive approval even when the active permission mode would otherwise allow the tool."
+  },
+  {
     "name": "raw_json_tool_call_fallback",
     "category": "fallback",
     "description": "Raw JSON tool syntax is recovered when native tool calls are absent."
@@ -133,6 +153,11 @@
     "name": "explore_mode_denies_write",
     "category": "explore",
     "description": "Explore mode stays read-only even when the broader session would otherwise allow workspace writes."
+  },
+  {
+    "name": "explore_mode_ignores_global_allow_policy",
+    "category": "explore",
+    "description": "Explore mode ignores global allow rules so the read-only lane cannot be elevated into write access."
   },
   {
     "name": "completion_check_continuation",
