@@ -125,24 +125,3 @@ def test_response_repairer_uses_context_legacy_raw_fallback(temp_dir: Path) -> N
     assert analysis.tool_calls == [tool_call]
     assert analysis.tool_source == "raw_text"
     assert analysis.clear_stream is True
-
-
-def test_response_repairer_uses_context_legacy_fake_narration_detector(
-    temp_dir: Path,
-) -> None:
-    context = build_context(
-        temp_dir=temp_dir,
-        use_react=False,
-        contains_unexecuted_code=lambda content: "Used bash tool" in content,
-        extract_raw_json_tool_calls=lambda content: [],
-    )
-    repairer = ResponseRepairer(context)
-
-    message = repairer.fake_tool_narration_message(
-        response_content="Used bash tool with command='pytest'",
-        iterations=1,
-        max_iterations=5,
-    )
-
-    assert message is not None
-    assert "CRITICAL ERROR" in message

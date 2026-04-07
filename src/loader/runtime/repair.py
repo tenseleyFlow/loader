@@ -156,34 +156,6 @@ class ResponseRepairer:
             extracted_iterations=next_extracted_iterations,
         )
 
-    def fake_tool_narration_message(
-        self,
-        *,
-        response_content: str,
-        iterations: int,
-        max_iterations: int,
-    ) -> str | None:
-        """Return a repair message when the assistant narrates fake tool use."""
-
-        if not self.context.legacy.contains_unexecuted_code(response_content):
-            return None
-        if iterations >= max_iterations - 1:
-            return None
-        return (
-            "CRITICAL ERROR: You are PRETENDING to use tools instead of actually "
-            "using them.\n\n"
-            "DO NOT write:\n"
-            "- 'Used bash tool with command...' (THIS IS FAKE)\n"
-            "- 'Created a file using the write tool...' (THIS IS FAKE)\n"
-            "- 'Here is what I did:' followed by descriptions\n"
-            "- Numbered steps or instructions\n"
-            "- Code blocks for me to copy\n\n"
-            "Your tool calls MUST go through the proper tool interface.\n"
-            "Writing 'Used bash tool...' does NOT execute anything!\n\n"
-            "ACTUALLY call the tools using the tool_call mechanism.\n"
-            "DO IT NOW - stop narrating and start executing."
-        )
-
     def deflection_message(
         self,
         *,

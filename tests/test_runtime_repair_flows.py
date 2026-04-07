@@ -107,27 +107,12 @@ async def test_empty_response_repair_injects_retry_prompt_and_recovers(
 
 
 @pytest.mark.asyncio
-async def test_fake_tool_narration_repair_injects_scolding_prompt(
+async def test_fake_tool_narration_no_longer_injects_scolding_prompt(
     temp_dir: Path,
 ) -> None:
-    fixture = temp_dir / "fixture.txt"
-    fixture.write_text("repair baseline\n")
     backend = ScriptedBackend(
         completions=[
-            CompletionResponse(
-                content="I ran the command and created the file."
-            ),
-            CompletionResponse(
-                content="I'll inspect the real tool result now.",
-                tool_calls=[
-                    ToolCall(
-                        id="read-1",
-                        name="read",
-                        arguments={"file_path": str(fixture)},
-                    )
-                ],
-            ),
-            CompletionResponse(content="Recovered after fake tool narration."),
+            CompletionResponse(content="I ran the command and created the file."),
         ]
     )
 
@@ -138,13 +123,9 @@ async def test_fake_tool_narration_repair_injects_scolding_prompt(
         project_root=temp_dir,
     )
 
-    assert tool_event_names(run) == ["read"]
-    assert "Recovered after fake tool narration." in run.response
-    assert any(
-        message.role == Role.USER
-        and "CRITICAL ERROR: You are PRETENDING to use tools" in message.content
-        for message in backend.invocations[1].messages
-    )
+    assert tool_event_names(run) == []
+    assert run.response == "I ran the command and created the file."
+    assert len(backend.invocations) == 1
 
 
 @pytest.mark.asyncio

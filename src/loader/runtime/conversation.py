@@ -276,21 +276,6 @@ class ConversationRuntime:
 
                 continue
 
-            repair_message = self.repairer.fake_tool_narration_message(
-                response_content=response_content,
-                iterations=iterations,
-                max_iterations=self.context.config.max_iterations,
-            )
-            if repair_message is not None:
-                await self.phase_tracker.enter(
-                    TurnPhase.REPAIR,
-                    emit,
-                    detail="Repairing fake tool narration",
-                )
-                self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
-                self.context.session.append(Message(role=Role.USER, content=repair_message))
-                continue
-
             deflection_message = self.repairer.deflection_message(
                 content=content,
                 actions_taken=actions_taken,
