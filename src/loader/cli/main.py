@@ -5,7 +5,6 @@ import re
 import sys
 
 import click
-import httpx
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -13,6 +12,15 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..runtime.permissions import PermissionMode
+from ..runtime.inspection import (
+    CheckStatus,
+    DoctorReport,
+    StatusSnapshot,
+    collect_doctor_report,
+    collect_status_snapshot,
+    load_session_detail,
+    list_session_summaries,
+)
 from .options import inject_resume_target
 from .rendering import (
     format_dod_status,
@@ -21,6 +29,17 @@ from .rendering import (
 )
 
 console = Console()
+SPECIAL_COMMANDS = {"doctor", "status", "session"}
+
+try:
+    import httpx
+
+    HttpReadTimeout = httpx.ReadTimeout
+except ModuleNotFoundError:  # pragma: no cover - exercised in minimal test envs
+    httpx = None
+
+    class HttpReadTimeout(Exception):
+        """Fallback timeout type when httpx is unavailable at import time."""
 
 
 def format_size(size_bytes: int) -> str:
@@ -203,7 +222,23 @@ def cli(
 def main() -> None:
     """Entry-point wrapper that supports `--resume [session-id]` syntax."""
 
-    cli.main(args=inject_resume_target(sys.argv[1:]), prog_name="loader")
+    argv = inject_resume_target(sys.argv[1:])
+    if argv and argv[0] in {"-h", "--help"}:
+        click.echo(_loader_help_text())
+        return
+
+    if argv and argv[0] == "session" and len(argv) >= 3 and argv[1] == "resume":
+        cli.main(
+            args=["--resume-target", argv[2], *argv[3:]],
+            prog_name="loader",
+        )
+        return
+
+    if argv and argv[0] in SPECIAL_COMMANDS:
+        _run_special_command(argv)
+        return
+
+    cli.main(args=argv, prog_name="loader")
 
 
 async def _main(
@@ -473,7 +508,7 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
         )
         if not streamed_response:
             console.print(Markdown(clean_response(response)))
-    except httpx.ReadTimeout:
+    except HttpReadTimeout:
         console.print("\n[red]Request timed out.[/red]")
         console.print("[dim]The model is taking too long. Try a smaller model or simpler prompt.[/dim]")
         return
@@ -619,7 +654,7 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
             if not streamed_response:
                 console.print(Markdown(clean_response(response)))
             console.print()
-        except httpx.ReadTimeout:
+        except HttpReadTimeout:
             console.print("\n[red]Request timed out.[/red]")
             console.print("[dim]The model is taking too long to respond. Try:[/dim]")
             console.print("  • A smaller model (e.g., [cyan]loader -m llama3.1:8b[/cyan])")
@@ -671,6 +706,316 @@ async def _ask_user_question_cli(
         return answer
 
     return await asyncio.to_thread(Prompt.ask, "Answer")
+
+
+@click.command(name="doctor")
+@click.option("--model", "-m", default=None, help="Model to inspect (default: saved model)")
+@click.option("--backend", "-b", default="ollama", help="Backend to inspect")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(
+        ["read-only", "workspace-write", "danger-full-access"],
+        case_sensitive=False,
+    ),
+    default="workspace-write",
+    show_default=True,
+    help="Permission mode to audit against tool requirements",
+)
+def doctor_cli(
+    model: str | None,
+    backend: str,
+    permission_mode: str,
+) -> None:
+    """Inspect Loader runtime health without entering the agent loop."""
+
+    asyncio.run(_doctor_main(model=model, backend=backend, permission_mode=permission_mode))
+
+
+@click.command(name="status")
+@click.option("--model", "-m", default=None, help="Model to summarize (default: saved model)")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(
+        ["read-only", "workspace-write", "danger-full-access"],
+        case_sensitive=False,
+    ),
+    default="workspace-write",
+    show_default=True,
+    help="Fallback permission mode when no session exists",
+)
+def status_cli(
+    model: str | None,
+    permission_mode: str,
+) -> None:
+    """Show the current Loader status from persisted state."""
+
+    _status_main(model=model, permission_mode=permission_mode)
+
+
+@click.group(name="session")
+def session_cli() -> None:
+    """Inspect persisted Loader sessions."""
+
+
+@session_cli.command("list")
+def session_list_cli() -> None:
+    """List persisted sessions."""
+
+    _session_list_main()
+
+
+@session_cli.command("show")
+@click.argument("session_id")
+def session_show_cli(session_id: str) -> None:
+    """Show one persisted session in detail."""
+
+    _session_show_main(session_id)
+
+
+def _run_special_command(argv: list[str]) -> None:
+    command = argv[0]
+    if command == "doctor":
+        doctor_cli.main(args=argv[1:], prog_name="loader doctor")
+        return
+    if command == "status":
+        status_cli.main(args=argv[1:], prog_name="loader status")
+        return
+    if command == "session":
+        if len(argv) == 1:
+            click.echo(_session_help_text())
+            return
+        session_cli.main(args=argv[1:], prog_name="loader session")
+        return
+
+
+def _loader_help_text() -> str:
+    ctx = click.Context(cli, info_name="loader")
+    base_help = cli.get_help(ctx)
+    extra = "\n".join(
+        [
+            "",
+            "Additional Commands:",
+            "  loader doctor              Inspect backend, workspace, and state health",
+            "  loader status              Show persisted runtime status",
+            "  loader session list        List persisted sessions",
+            "  loader session show <id>   Show one persisted session",
+            "  loader session resume <id> Resume a persisted session through the main runtime",
+        ]
+    )
+    return base_help + extra
+
+
+def _session_help_text() -> str:
+    return "\n".join(
+        [
+            "Usage: loader session [COMMAND]",
+            "",
+            "Commands:",
+            "  list          List persisted sessions",
+            "  show <id>     Show one persisted session",
+            "  resume <id>   Resume a persisted session through the main runtime",
+        ]
+    )
+
+
+def _status_color(status: CheckStatus) -> str:
+    return {
+        CheckStatus.PASS: "green",
+        CheckStatus.WARN: "yellow",
+        CheckStatus.FAIL: "red",
+    }[status]
+
+
+def _render_check_status(status: CheckStatus) -> str:
+    color = _status_color(status)
+    return f"[{color}]{status.value}[/{color}]"
+
+
+async def _doctor_main(
+    *,
+    model: str | None,
+    backend: str,
+    permission_mode: str,
+) -> None:
+    report = await collect_doctor_report(
+        model=model,
+        backend=backend,
+        permission_mode=permission_mode,
+    )
+    _print_doctor_report(report)
+
+
+def _print_doctor_report(report: DoctorReport) -> None:
+    overall_color = _status_color(report.overall_status)
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"[bold]Model:[/bold] {report.model}",
+                    f"[bold]Workspace:[/bold] {report.project_root}",
+                    f"[bold]Capabilities:[/bold] {report.capability_profile.model_name} / {report.capability_profile.preferred_tool_call_format}",
+                    f"[bold]Overall:[/bold] [{overall_color}]{report.overall_status.value}[/{overall_color}]",
+                ]
+            ),
+            title="[bold blue]Loader Doctor[/bold blue]",
+            border_style=overall_color,
+        )
+    )
+
+    checks = Table(show_header=True, header_style="bold cyan")
+    checks.add_column("Check", style="white")
+    checks.add_column("Status", width=8)
+    checks.add_column("Message", style="white")
+    checks.add_column("Remediation", style="dim")
+    for check in report.checks:
+        checks.add_row(
+            check.name,
+            _render_check_status(check.status),
+            check.message,
+            check.remediation,
+        )
+    console.print(checks)
+
+    permissions = Table(show_header=True, header_style="bold cyan")
+    permissions.add_column("Tool", style="white")
+    permissions.add_column("Required", style="white")
+    permissions.add_column("Allowed", style="white")
+    for item in report.tool_permissions:
+        allowed = "[green]yes[/green]" if item.allowed_in_active_mode else "[red]no[/red]"
+        permissions.add_row(item.tool_name, item.required_mode, allowed)
+    console.print()
+    console.print(permissions)
+
+
+def _status_main(
+    *,
+    model: str | None,
+    permission_mode: str,
+) -> None:
+    snapshot = collect_status_snapshot(model=model, permission_mode=permission_mode)
+    _print_status_snapshot(snapshot)
+
+
+def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Workspace", str(snapshot.project_root))
+    table.add_row("Project", snapshot.project_type)
+    table.add_row("Model", snapshot.model)
+    table.add_row("Capabilities", f"{snapshot.capability_profile.preferred_tool_call_format} / {snapshot.capability_profile.verification_strictness}")
+    table.add_row("Session", snapshot.active_session_id or "none")
+    table.add_row("Workflow", snapshot.workflow_mode)
+    table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row("Task", snapshot.current_task or "none")
+    table.add_row("Messages", str(snapshot.message_count))
+    table.add_row("DoD", snapshot.dod_status or "none")
+    table.add_row("Pending", str(snapshot.dod_pending_items_count))
+    table.add_row("Last Verify", snapshot.last_verification_result or "none")
+    if snapshot.usage:
+        table.add_row(
+            "Usage",
+            ", ".join(f"{key}={value}" for key, value in sorted(snapshot.usage.items())),
+        )
+    table.add_row("Compactions", str(snapshot.compaction_count))
+
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Loader Status[/bold blue]",
+            border_style="blue",
+        )
+    )
+
+    if snapshot.recent_verification:
+        evidence = Table(show_header=True, header_style="bold cyan")
+        evidence.add_column("Result", width=8)
+        evidence.add_column("Kind", width=10)
+        evidence.add_column("Command", style="white")
+        evidence.add_column("Detail", style="dim")
+        for item in snapshot.recent_verification:
+            result = "[green]pass[/green]" if item.passed else "[red]fail[/red]"
+            evidence.add_row(result, item.kind, item.command, item.detail or "-")
+        console.print(evidence)
+
+
+def _session_list_main() -> None:
+    entries = list_session_summaries()
+    if not entries:
+        console.print("[yellow]No persisted sessions found.[/yellow]")
+        return
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Current", width=7)
+    table.add_column("Session", style="white")
+    table.add_column("Updated", style="white")
+    table.add_column("Messages", justify="right")
+    table.add_column("Workflow", style="white")
+    table.add_column("Perms", style="white")
+    table.add_column("DoD", style="white")
+    table.add_column("Task", style="dim")
+    for entry in entries:
+        table.add_row(
+            "*" if entry.is_current else "",
+            entry.session_id,
+            entry.updated_at,
+            str(entry.message_count),
+            entry.workflow_mode,
+            entry.permission_mode,
+            entry.dod_status or "none",
+            entry.current_task or "",
+        )
+    console.print(table)
+
+
+def _session_show_main(session_id: str) -> None:
+    try:
+        detail = load_session_detail(session_id)
+    except FileNotFoundError:
+        console.print(f"[red]Session not found:[/red] {session_id}")
+        raise SystemExit(1) from None
+
+    snapshot = detail.snapshot
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Session", snapshot.session_id)
+    table.add_row("Current", "yes" if detail.is_current else "no")
+    table.add_row("Created", snapshot.created_at)
+    table.add_row("Updated", snapshot.updated_at)
+    table.add_row("Messages", str(len(snapshot.messages)))
+    table.add_row("Workflow", snapshot.workflow_mode)
+    table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row("Task", snapshot.current_task or "none")
+    table.add_row("Active DoD", snapshot.active_dod_path or "none")
+    if snapshot.usage:
+        table.add_row(
+            "Usage",
+            ", ".join(f"{key}={value}" for key, value in sorted(snapshot.usage.items())),
+        )
+    if snapshot.compaction is not None:
+        table.add_row("Compactions", str(snapshot.compaction.count))
+
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Loader Session[/bold blue]",
+            border_style="blue",
+        )
+    )
+
+    if detail.definition_of_done is not None:
+        dod_table = Table(show_header=False, box=None)
+        dod_table.add_column("Field", style="bold magenta")
+        dod_table.add_column("Value", style="white")
+        dod_table.add_row("Status", detail.definition_of_done.status)
+        dod_table.add_row("Pending", ", ".join(detail.definition_of_done.pending_items) or "none")
+        dod_table.add_row("Completed", ", ".join(detail.definition_of_done.completed_items) or "none")
+        dod_table.add_row(
+            "Last Verify",
+            detail.definition_of_done.last_verification_result or "none",
+        )
+        console.print(dod_table)
 
 
 if __name__ == "__main__":
