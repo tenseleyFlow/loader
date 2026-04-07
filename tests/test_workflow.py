@@ -23,7 +23,8 @@ def test_mode_router_routes_ambiguous_prompt_to_clarify() -> None:
     decision = router.route("Improve Loader so it feels more like claw-code.")
 
     assert decision.mode == WorkflowMode.CLARIFY
-    assert decision.ambiguity_score >= router.clarify_threshold
+    assert decision.reason_code == "task_is_ambiguous"
+    assert decision.route_score >= decision.runner_up_score
 
 
 def test_mode_router_routes_complex_prompt_to_plan() -> None:
