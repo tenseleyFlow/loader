@@ -26,6 +26,7 @@ from .permissions import (
 )
 from .prompting import build_system_prompt_result
 from .session import SessionSnapshot, SessionStore
+from .workflow_ledger import WorkflowLedger, workflow_ledger_highlights
 from .workflow_policy import WorkflowTimelineEntry
 
 
@@ -251,6 +252,7 @@ class WorkflowTimelineSnapshot:
     entry_limit: int | None = None
     highlights: list[str] = field(default_factory=list)
     entries: list[WorkflowTimelineEntry] = field(default_factory=list)
+    workflow_ledger: WorkflowLedger = field(default_factory=WorkflowLedger)
 
 
 def capability_summary(profile: CapabilityProfile) -> str:
@@ -656,6 +658,7 @@ def collect_workflow_timeline(
             entry_limit=limit,
             highlights=[],
             entries=[],
+            workflow_ledger=WorkflowLedger(),
         )
 
     filtered_entries = list(snapshot.workflow_timeline)
@@ -664,6 +667,7 @@ def collect_workflow_timeline(
     if kind:
         filtered_entries = [entry for entry in filtered_entries if entry.kind == kind]
     highlights = _workflow_timeline_highlights(filtered_entries)
+    highlights.extend(workflow_ledger_highlights(snapshot.workflow_ledger))
     if limit is not None:
         filtered_entries = filtered_entries[-limit:]
 
@@ -677,8 +681,9 @@ def collect_workflow_timeline(
         selected_mode=mode,
         selected_kind=kind,
         entry_limit=limit,
-        highlights=highlights,
+        highlights=list(dict.fromkeys(highlights)),
         entries=filtered_entries,
+        workflow_ledger=snapshot.workflow_ledger.copy(),
     )
 
 

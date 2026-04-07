@@ -23,6 +23,7 @@ from loader.runtime.inspection import (
     load_session_detail,
 )
 from loader.runtime.session import SessionSnapshot, SessionStore
+from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
 from loader.runtime.workflow_policy import WorkflowTimelineEntry
 
 
@@ -210,6 +211,40 @@ def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
                 signal_summary=["verify_pressure=low"],
             ),
         ],
+        workflow_ledger=WorkflowLedger(
+            assumptions=[
+                WorkflowLedgerItem(
+                    text="notes.txt stays out of scope unless clarified otherwise.",
+                    status="contradicted",
+                    introduced_phase="clarify",
+                    updated_phase="recovery",
+                    evidence=["Clarify scope assumed `notes.txt` stayed out of scope."],
+                )
+            ],
+            acceptance_anchors=[
+                WorkflowLedgerItem(
+                    text="notes.txt exists in the workspace root.",
+                    status="changed",
+                    introduced_phase="clarify",
+                    updated_phase="recovery",
+                    evidence=[
+                        (
+                            "Failed verification exposed missing brief coverage for "
+                            "`notes.txt exists`."
+                        )
+                    ],
+                )
+            ],
+            decision_boundaries=[
+                WorkflowLedgerItem(
+                    text="Escalate before broad UX changes.",
+                    status="reopened",
+                    introduced_phase="clarify",
+                    updated_phase="recovery",
+                    evidence=["The active task framing outgrew the persisted clarify brief."],
+                )
+            ],
+        ),
     )
     SessionStore(temp_dir).save(snapshot)
     return snapshot.session_id
@@ -417,6 +452,11 @@ def test_collect_workflow_timeline_supports_filters_and_highlights(
         "decision_boundaries",
     ]
     assert any(item.startswith("Asked again:") for item in snapshot.highlights)
+    assert snapshot.workflow_ledger.assumptions[0].status == "contradicted"
+    assert any(
+        item.startswith("Contradicted assumptions:")
+        for item in snapshot.highlights
+    )
 
 
 def test_status_and_session_commands_render_persisted_state(
@@ -475,6 +515,28 @@ def test_status_and_session_commands_render_persisted_state(
     assert session_id in workflow_result.output
     assert "handoff" in workflow_result.output
     assert "next=verify" in workflow_result.output
+
+
+def test_workflow_show_renders_workflow_ledger(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_rich_workflow(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(cli_main_module.workflow_cli, ["show"])
+
+    assert result.exit_code == 0
+    assert "Workflow Ledger" in result.output
+    assert "Assumptions" in result.output
+    assert "contradicted" in result.output
+    assert "notes.txt stays out of scope" in result.output
+    assert "Acceptance Anchors" in result.output
+    assert "Decision Boundaries" in result.output
 
 
 def test_workflow_show_command_supports_filters_and_highlights(

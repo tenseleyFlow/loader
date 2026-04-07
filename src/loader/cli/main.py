@@ -1564,6 +1564,12 @@ def _workflow_show_main(
             snapshot.highlights,
             title="[bold blue]Workflow Answers[/bold blue]",
         )
+    if snapshot.workflow_ledger.has_items():
+        console.print()
+        _print_workflow_ledger(
+            snapshot.workflow_ledger,
+            title="[bold blue]Workflow Ledger[/bold blue]",
+        )
     console.print()
     _print_workflow_timeline_entries(
         snapshot.entries,
@@ -1843,6 +1849,41 @@ def _format_workflow_timeline_context(entry) -> str:
     if entry.artifact_paths:
         parts.append(f"artifacts={len(entry.artifact_paths)}")
     return ", ".join(parts) or "-"
+
+
+def _print_workflow_ledger(
+    ledger,
+    *,
+    title: str,
+) -> None:
+    table = Table(show_header=False, box=None)
+    table.add_column("Section", style="bold cyan")
+    table.add_column("Details", style="white")
+
+    for label, items in (
+        ("Assumptions", ledger.assumptions),
+        ("Acceptance Anchors", ledger.acceptance_anchors),
+        ("Decision Boundaries", ledger.decision_boundaries),
+    ):
+        if not items:
+            continue
+        table.add_row(
+            label,
+            "\n".join(_format_workflow_ledger_item(item) for item in items[:4]),
+        )
+
+    console.print(Panel.fit(table, title=title, border_style="blue"))
+
+
+def _format_workflow_ledger_item(item) -> str:
+    details = [item.status]
+    if item.updated_phase and item.updated_phase != item.introduced_phase:
+        details.append(f"updated={item.updated_phase}")
+    elif item.introduced_phase:
+        details.append(f"phase={item.introduced_phase}")
+    if item.evidence:
+        details.append(f"evidence={item.evidence[0]}")
+    return f"- {item.text} ({', '.join(details)})"
 
 
 def _print_workflow_highlights(
