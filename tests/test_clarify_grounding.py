@@ -73,6 +73,31 @@ def test_grounding_prompt_block_renders_repo_evidence() -> None:
     assert "Referenced paths not found: src/loader/runtime/unknown.py" in block
 
 
+def test_slot_prompt_block_prefers_primary_and_nearby_facts_for_non_goals() -> None:
+    grounding = ClarifyGrounding(
+        project_type="python",
+        existing_references=["src/loader/runtime/workflow_lanes.py"],
+        candidate_touchpoints=["src/loader/runtime/clarify_strategy.py"],
+        repo_facts=[
+            ClarifyRepoFact(
+                path="src/loader/runtime/workflow_lanes.py",
+                summary="class WorkflowLaneRunner:",
+            ),
+            ClarifyRepoFact(
+                path="src/loader/runtime/clarify_strategy.py",
+                summary="Intent-aware clarify strategy for runtime follow-up.",
+            ),
+        ],
+    )
+
+    block = grounding.slot_prompt_block(ClarifySlot.NON_GOALS)
+
+    assert "Relevant repo facts" in block
+    assert "workflow_lanes.py" in block
+    assert "clarify_strategy.py" in block
+    assert "Relevant paths: src/loader/runtime/workflow_lanes.py" in block
+
+
 def test_build_grounded_question_anchors_touchpoint_tradeoff_with_repo_fact() -> None:
     question = build_grounded_clarify_question(
         task="Tighten Loader runtime clarify behavior.",
@@ -93,3 +118,30 @@ def test_build_grounded_question_anchors_touchpoint_tradeoff_with_repo_fact() ->
     assert "workflow_lanes.py" in question
     assert "WorkflowLaneRunner" in question
     assert "stay unchanged" in question.lower()
+
+
+def test_build_grounded_question_uses_nearby_fact_for_decision_boundaries() -> None:
+    question = build_grounded_clarify_question(
+        task="Tighten Loader runtime clarify behavior.",
+        focus_slot=ClarifySlot.DECISION_BOUNDARIES,
+        grounding=ClarifyGrounding(
+            existing_references=["src/loader/runtime/workflow_lanes.py"],
+            candidate_touchpoints=["src/loader/runtime/clarify_strategy.py"],
+            repo_facts=[
+                ClarifyRepoFact(
+                    path="src/loader/runtime/workflow_lanes.py",
+                    summary="class WorkflowLaneRunner:",
+                ),
+                ClarifyRepoFact(
+                    path="src/loader/runtime/clarify_strategy.py",
+                    summary="Intent-aware clarify strategy for runtime follow-up.",
+                ),
+            ],
+        ),
+        pressure_kind=ClarifyPressureKind.TRADEOFF,
+    )
+
+    assert question is not None
+    assert "workflow_lanes.py" in question
+    assert "clarify_strategy.py" in question
+    assert "stop-and-confirm boundary" in question

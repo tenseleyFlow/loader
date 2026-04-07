@@ -146,6 +146,49 @@ class ClarifyGrounding:
             )
         return "\n".join(lines) if lines else "- none"
 
+    def slot_prompt_block(
+        self,
+        focus_slot: ClarifySlot | str | None,
+    ) -> str:
+        """Render the most relevant workspace evidence for one clarify slot."""
+
+        slot = _resolve_slot(focus_slot)
+        lines: list[str] = []
+        if self.project_type != "unknown":
+            lines.append(f"- Project type: {self.project_type}")
+
+        relevant_facts = self.relevant_facts(slot)
+        if relevant_facts:
+            lines.append(
+                "- Relevant repo facts: "
+                + "; ".join(fact.render() for fact in relevant_facts)
+            )
+        elif self.repo_facts:
+            lines.append(
+                "- Observed repo facts: "
+                + "; ".join(fact.render() for fact in self.repo_facts)
+            )
+
+        relevant_paths = self.relevant_paths(slot)
+        if relevant_paths:
+            lines.append(
+                "- Relevant paths: " + ", ".join(relevant_paths)
+            )
+        elif self.existing_references:
+            lines.append(
+                "- Referenced paths that exist: "
+                + ", ".join(self.existing_references)
+            )
+
+        if self.missing_references:
+            lines.append(
+                "- Referenced paths not found: "
+                + ", ".join(self.missing_references)
+            )
+        if not lines:
+            return self.prompt_block()
+        return "\n".join(lines)
+
     def primary_touchpoint(self) -> str | None:
         """Return the best available repo anchor for a focused question."""
 
@@ -153,6 +196,15 @@ class ClarifyGrounding:
             return self.existing_references[0]
         if self.candidate_touchpoints:
             return self.candidate_touchpoints[0]
+        return None
+
+    def secondary_touchpoint(self) -> str | None:
+        """Return a nearby path that differs from the primary touchpoint."""
+
+        primary = self.primary_touchpoint()
+        for candidate in [*self.existing_references, *self.candidate_touchpoints]:
+            if candidate != primary:
+                return candidate
         return None
 
     def primary_fact(self) -> ClarifyRepoFact | None:
@@ -166,6 +218,47 @@ class ClarifyGrounding:
                 if fact.path == anchor:
                     return fact
         return self.repo_facts[0]
+
+    def secondary_fact(self) -> ClarifyRepoFact | None:
+        """Return a nearby repo fact that differs from the primary touchpoint."""
+
+        primary = self.primary_touchpoint()
+        for fact in self.repo_facts:
+            if fact.path != primary:
+                return fact
+        return None
+
+    def relevant_facts(
+        self,
+        focus_slot: ClarifySlot | str | None,
+    ) -> list[ClarifyRepoFact]:
+        """Return the repo facts most useful for the requested clarify slot."""
+
+        slot = _resolve_slot(focus_slot)
+        primary = self.primary_fact()
+        secondary = self.secondary_fact()
+        if slot == ClarifySlot.LIKELY_TOUCHPOINTS:
+            return [fact for fact in [primary] if fact is not None]
+        if slot in {ClarifySlot.NON_GOALS, ClarifySlot.DECISION_BOUNDARIES}:
+            return [fact for fact in [primary, secondary] if fact is not None]
+        if slot == ClarifySlot.CONSTRAINTS and secondary is not None:
+            return [secondary]
+        return [fact for fact in [primary] if fact is not None]
+
+    def relevant_paths(
+        self,
+        focus_slot: ClarifySlot | str | None,
+    ) -> list[str]:
+        """Return the paths most useful for the requested clarify slot."""
+
+        slot = _resolve_slot(focus_slot)
+        primary = self.primary_touchpoint()
+        secondary = self.secondary_touchpoint()
+        if slot == ClarifySlot.LIKELY_TOUCHPOINTS:
+            return [path for path in [primary] if path is not None]
+        if slot in {ClarifySlot.NON_GOALS, ClarifySlot.DECISION_BOUNDARIES}:
+            return [path for path in [primary, secondary] if path is not None]
+        return [path for path in [primary] if path is not None]
 
 
 class ClarifyGroundingProbe:
@@ -447,18 +540,12 @@ def build_grounded_clarify_question(
 ) -> str | None:
     """Return a repo-grounded clarify question when local evidence is strong."""
 
+    slot = _resolve_slot(focus_slot)
     anchor = grounding.primary_touchpoint()
     if anchor is None:
         return None
     fact = grounding.primary_fact()
-
-    slot = (
-        focus_slot
-        if isinstance(focus_slot, ClarifySlot)
-        else ClarifySlot(focus_slot)
-        if focus_slot
-        else ClarifySlot.DESIRED_OUTCOME
-    )
+    nearby_fact = grounding.secondary_fact()
     pressure = (
         pressure_kind
         if isinstance(pressure_kind, ClarifyPressureKind)
@@ -490,18 +577,53 @@ def build_grounded_clarify_question(
             "or is there a different file or subsystem you want me to prioritize?"
         )
 
-    if slot in {ClarifySlot.NON_GOALS, ClarifySlot.DECISION_BOUNDARIES}:
+    if slot == ClarifySlot.NON_GOALS:
+        nearby_clause = _render_nearby_repo_fact_clause(
+            nearby_fact,
+            anchor=anchor,
+        )
         if pressure == ClarifyPressureKind.TRADEOFF:
             return (
-                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause} "
-                "Should I keep the change scoped there even if broader edits would be easier?"
+                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+                f"{nearby_clause} Should I keep the change scoped there and leave that nearby "
+                "surface unchanged, even if broader edits would be easier?"
             )
         return (
-            f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause} "
-            "Should I keep the change scoped there, and what nearby surface should stay unchanged?"
+            f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+            f"{nearby_clause} Should I keep the change scoped there, and what nearby surface "
+            "should stay unchanged?"
+        )
+
+    if slot == ClarifySlot.DECISION_BOUNDARIES:
+        nearby_clause = _render_nearby_repo_fact_clause(
+            nearby_fact,
+            anchor=anchor,
+        )
+        if pressure == ClarifyPressureKind.TRADEOFF:
+            return (
+                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+                f"{nearby_clause} If the fix starts pulling in that nearby surface, "
+                "should that be a stop-and-confirm boundary?"
+            )
+        return (
+            f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause}"
+            f"{nearby_clause} If the work starts expanding beyond `{anchor}`, "
+            "what should count as the boundary where I stop and confirm?"
         )
 
     return None
+
+
+def _resolve_slot(
+    focus_slot: ClarifySlot | str | None,
+) -> ClarifySlot:
+    return (
+        focus_slot
+        if isinstance(focus_slot, ClarifySlot)
+        else ClarifySlot(focus_slot)
+        if focus_slot
+        else ClarifySlot.DESIRED_OUTCOME
+    )
 
 
 def _render_repo_fact_clause(
@@ -514,3 +636,13 @@ def _render_repo_fact_clause(
     if fact.path != anchor:
         return f" Nearby, `{fact.path}` currently contains `{fact.summary}`."
     return f" It currently contains `{fact.summary}`."
+
+
+def _render_nearby_repo_fact_clause(
+    fact: ClarifyRepoFact | None,
+    *,
+    anchor: str,
+) -> str:
+    if fact is None or fact.path == anchor:
+        return ""
+    return f" Nearby, `{fact.path}` currently contains `{fact.summary}`."
