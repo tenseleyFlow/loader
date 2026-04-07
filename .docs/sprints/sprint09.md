@@ -152,3 +152,34 @@ The goal is to make Loader's runtime choices debuggable before and after a turn,
 - OMX-style multi-iteration consensus planning
 - AST-aware, LSP-aware, or symbol-aware editing
 - multi-agent or team orchestration
+
+## Audit
+
+### Landed
+
+- Loader now has a validated turn-state machine in `src/loader/runtime/phases.py` instead of phase bookkeeping only; allowed transitions are explicit, invalid transitions fail loudly, and transition metadata now captures reason code, human summary, and whether the move was normal, retry, reroute, recovery, or terminal
+- turn-transition metadata is now persisted in session state and surfaced through typed runtime events and `TurnSummary`, so Loader can explain the latest transition outcome instead of only exposing the current phase label
+- workflow routing now uses a richer typed `ModeDecision` contract in `src/loader/runtime/workflow.py`, including reason code, reason summary, decision kind, ambiguity/complexity scores, and optional scheduled-next-mode hints
+- verify/fix loop handoffs now use the same workflow-decision contract as initial routing, so verify entry and execute reentry are persisted and inspectable instead of living as partial special cases
+- `ConversationRuntime` now treats workflow decisions more like contracts than loose labels: it sets workflow state from typed decisions, records reason metadata into session state, and keeps `conversation.py` more coordinator-like than before Sprint 09
+- `loader status`, `loader session list`, and `loader session show` now surface the latest workflow-decision reason, decision kind, and last validated transition summary when those fields are present
+- Loader now has `loader prompt show [task]`, implemented through `runtime.inspection.collect_prompt_preview(...)`, which renders the current prompt contract without issuing a model request and reports workflow mode, permission mode, prompt format, dynamic sections, and the full prompt body
+- prompt preview reuses the typed prompt builder and capability resolution rather than duplicating prompt strings in the CLI, so the operator surface stays aligned with the runtime contract it is previewing
+
+### Verification
+
+- `uv run pytest -q` is green: `180 passed`
+- `tests/test_turn_state_machine.py` covers valid/invalid turn transitions and terminal transition metadata
+- `tests/test_runtime_phases.py` now covers persisted transition metadata in runtime events, session state, and final turn summaries
+- `tests/test_workflow_runtime.py` now covers persisted workflow-decision reason codes and handoff kinds for clarify/plan/verify flows
+- `tests/test_session_state.py` now covers round-tripping workflow-decision metadata and transition metadata through persisted session snapshots
+- `tests/test_inspection.py` now covers workflow-reason/transition rendering in status/session surfaces plus `loader prompt show`
+- targeted `ruff` checks are green for `src/loader/runtime/inspection.py` and `tests/test_inspection.py`
+
+### Residual debt
+
+- Loader now has a real turn state machine, but workflow routing itself is still heuristic-only and materially lighter than OMX's deeper route discipline
+- `src/loader/runtime/conversation.py` is slimmer and more contract-driven than before Sprint 09, but it still coordinates several heuristic completion/repair paths that could be decomposed further
+- `loader prompt show` gives operators a real preview surface, but Loader still does not support prompt diffs, historical prompt snapshots, or richer side-by-side comparison workflows
+- workflow reasons and transitions are now inspectable, but the product still does not offer a richer workflow trace/timeline surface or stronger workflow-authoring controls
+- Sprint 09 strengthens state and inspection contracts, but it does not add deeper consensus planning, AST/LSP-aware editing, or a richer permission-rule authoring UX

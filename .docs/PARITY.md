@@ -36,11 +36,13 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - unified tool execution for native and extracted tool calls through `runtime.executor.ToolExecutor`
 - typed tool-result messages backed by `Message.tool_results`
 - typed prompt construction in `runtime.prompting`, with explicit dynamic sections, a static/dynamic boundary marker, and persisted prompt-format / prompt-section metadata in session state
-- explicit turn phases (`prepare`, `assistant`, `repair`, `tools`, `critique`, `completion`, `finalize`) persisted in session state, emitted as runtime events, and surfaced in the CLI/TUI while a turn is in flight
+- validated turn-state transitions (`prepare`, `assistant`, `repair`, `tools`, `critique`, `completion`, `finalize`) with typed transition metadata, persisted session state, and emitted runtime events
+- typed workflow-decision metadata persisted in session/runtime state, including reason codes, summaries, decision kind, workflow scores, and scheduled-next-mode hints
 - `loader doctor` for backend, capability, workspace, command, state, and permission health checks outside the main runtime loop
 - `loader status` plus `loader session list/show/resume` for inspecting persisted runtime state without invoking the LLM
+- `loader prompt show [task]` for previewing the current prompt contract, workflow mode, permission mode, dynamic sections, and prompt body without a live model request
 - `loader explore <prompt>` as a one-shot read-only lookup lane with its own prompt, constrained registry, and no DoD or workflow routing
-- CLI and TUI status surfaces for model, capability profile, mode, workflow mode, permission mode, explicit turn phase, prompt format/sections, DoD phase, pending items, last verification result, and active session id
+- CLI and TUI status surfaces for model, capability profile, mode, workflow mode, workflow reason, last transition summary, permission mode, explicit turn phase, prompt format/sections, DoD phase, pending items, last verification result, and active session id
 - CLI and TUI workflow-mode visibility plus artifact notifications
 - CLI and TUI permission-mode visibility with color-coded status
 - workspace-bound file operations with canonicalized boundary checks, binary detection, size limits, and structured patch metadata
@@ -61,8 +63,8 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - project-memory capture on finalized DoD evidence is still lightweight and command-summary oriented, not semantically curated memory extraction
 - rule syntax is intentionally narrow and workspace-local; Loader still does not have claw-code's richer rule model or broader prompt/allow operator surface
 - policy state is inspectable in doctor/status/session surfaces and dry-runnable through `loader permissions show/check`, but there is not yet a richer UX for editing, previewing multiple candidate rule sets, or temporarily overriding rules from the product surface
-- prompt assembly is now typed and sectioned, but Loader still does not expose prompt previews/diffs or a richer prompt-contract test harness beyond the current unit coverage
-- turn phases are explicit now, but the phase coordinator still rides on heuristic branching rather than a more formal state machine
+- prompt assembly is now typed and previewable, but Loader still does not expose prompt diffs, prompt snapshots over multiple candidate configurations, or a richer prompt-contract parity harness beyond the current unit coverage
+- Loader now has a validated turn state machine, but workflow routing is still heuristic-only and does not yet match OMX's deeper route pressure, ambiguity analysis, or branch-specific routing policy
 - shell safety is still heuristic and command-based; Loader does not yet have a richer shell sandbox or argument-aware mutability model
 - explore mode is a one-shot read-only lane, not yet a richer interactive inspection workflow with deeper repo navigation affordances
 - the read-only `git` helper is intentionally narrow compared with claw-code and OMX's broader repo/product surfaces, and the `patch` tool still stops short of AST/LSP-aware editing
@@ -115,19 +117,20 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-07:
 
-- `uv run pytest -q`: 176 passed
+- `uv run pytest -q`: 180 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_prompt_builder.py` covers section rendering, native-vs-ReAct formatting, and prompt metadata persistence
-- `tests/test_runtime_phases.py` covers repair/completion phase transitions and runtime phase event/session bookkeeping
+- `tests/test_turn_state_machine.py` covers allowed/disallowed turn transitions and terminal transition metadata
+- `tests/test_runtime_phases.py` covers repair/completion phase transitions plus persisted transition metadata in runtime events and session state
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers router heuristics, clarify/plan artifact round trips, DoD workflow links, and todo-to-DoD syncing
-- `tests/test_workflow_runtime.py` covers clarify routing, plan routing, and verify-fix workflow handoff
+- `tests/test_workflow_runtime.py` covers clarify routing, plan routing, verify-fix workflow handoff, and persisted workflow-decision metadata
 - `tests/test_workflow_tools.py` and `tests/test_workflow_runtime_tools.py` cover `TodoWrite`, `AskUserQuestion`, and runtime callback plumbing
 - `tests/test_session_state.py` covers session persistence, resume, rotation, compaction persistence, cumulative usage rollups, and persisted permission-policy metadata
 - `tests/test_compaction.py` covers claw-style line compression and compacted continuation-message behavior
 - `tests/test_memory_tools.py` covers project-memory writes, notepad writes, lifecycle-hook mirroring, and DoD-summary capture into project memory
 - `tests/test_cli_resume.py` covers `--resume` argument rewriting for latest and named-session restore
-- `tests/test_inspection.py` covers `loader doctor`, `loader status`, `loader session list/show`, `loader permissions show/check`, and session-resume CLI dispatch
+- `tests/test_inspection.py` covers `loader doctor`, `loader status`, `loader session list/show`, `loader permissions show/check`, `loader prompt show`, and workflow-reason/transition inspection surfaces
 - `tests/test_explore_runtime.py` covers the direct explore lane contract and forced read-only behavior outside the parity harness
 - `tests/test_expanded_tools.py` covers structured patch application, read-only git helpers, `notepad_append`, and richer structured user questions
 - `tests/test_permissions.py` covers prompt/allow mode parsing, rule precedence, policy-backed prompting behavior, and hook lifecycle ordering
@@ -148,3 +151,4 @@ As of 2026-04-07:
 - Sprint 06 adds inspectable product surfaces, a constrained explore lane, and a broader tool registry, but it still stops short of interactive explore workflows, richer git ergonomics, AST/LSP-aware editing, or any multi-agent/team runtime.
 - Sprint 07 is complete: Loader now has prompt/allow modes, rule-based permission policy, policy-backed prompting, persisted policy inspection state, and smaller assistant-turn/tool-batch/finalization runtime seams, but it still stops short of a richer rule UX, deeper policy sandboxing, and the more opinionated workflow/runtime contracts in the refs.
 - Sprint 08 is complete: Loader now has a typed prompt builder, explicit runtime turn phases, first-class `loader permissions show/check` operator surfaces, and more coherent prompt/policy observability in doctor/status/session output, but it still stops short of a richer rule editor, formal state-machine routing, prompt-preview tooling, or the deeper workflow rigor in the refs.
+- Sprint 09 is complete: Loader now has a validated turn state machine, typed persisted workflow decisions, `loader prompt show`, and richer workflow-reason/transition inspection surfaces, but it still stops short of deeper workflow routing policy, prompt diffing/versioning, and the more opinionated planning discipline used by the refs.
