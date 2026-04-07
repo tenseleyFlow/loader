@@ -18,8 +18,9 @@ from .compaction import (
     compact_session_messages,
     estimate_message_tokens,
 )
+from .workflow_policy import WorkflowTimelineEntry
 
-SESSION_VERSION = 4
+SESSION_VERSION = 5
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -101,6 +102,18 @@ def normalize_optional_float(value: Any) -> float | None:
     return float(value)
 
 
+def normalize_workflow_timeline(value: Any) -> list[WorkflowTimelineEntry]:
+    """Coerce persisted workflow timeline items."""
+
+    if not isinstance(value, list):
+        return []
+    entries: list[WorkflowTimelineEntry] = []
+    for item in value:
+        if isinstance(item, dict):
+            entries.append(WorkflowTimelineEntry.from_dict(item))
+    return entries
+
+
 @dataclass(slots=True)
 class SessionCompaction:
     """Metadata describing the latest transcript compaction."""
@@ -161,6 +174,7 @@ class SessionSnapshot:
     last_turn_transition_summary: str | None = None
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
+    workflow_timeline: list[WorkflowTimelineEntry] = field(default_factory=list)
     compaction: SessionCompaction | None = None
     version: int = SESSION_VERSION
 
@@ -191,6 +205,7 @@ class SessionSnapshot:
             "last_turn_transition_summary": self.last_turn_transition_summary,
             "last_turn_transition_kind": self.last_turn_transition_kind,
             "last_turn_transition_reason_code": self.last_turn_transition_reason_code,
+            "workflow_timeline": [entry.to_dict() for entry in self.workflow_timeline],
             "compaction": self.compaction.to_dict() if self.compaction else None,
         }
 
@@ -246,6 +261,9 @@ class SessionSnapshot:
             ),
             last_turn_transition_reason_code=normalize_optional_text(
                 data.get("last_turn_transition_reason_code")
+            ),
+            workflow_timeline=normalize_workflow_timeline(
+                data.get("workflow_timeline")
             ),
             compaction=(
                 SessionCompaction.from_dict(data["compaction"])
@@ -388,6 +406,7 @@ class ConversationSession:
     last_turn_transition_summary: str | None = None
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
+    workflow_timeline: list[WorkflowTimelineEntry] = field(default_factory=list)
     compaction: SessionCompaction | None = None
     rotate_after_bytes: int = DEFAULT_ROTATE_AFTER_BYTES
     max_rotated_files: int = MAX_ROTATED_FILES
@@ -447,6 +466,7 @@ class ConversationSession:
         self.last_turn_transition_summary = None
         self.last_turn_transition_kind = None
         self.last_turn_transition_reason_code = None
+        self.workflow_timeline = []
         self.compaction = None
         self.usage_totals = {}
         self.touch()
@@ -541,6 +561,20 @@ class ConversationSession:
         self.touch()
         self.persist()
 
+    def append_workflow_timeline_entry(
+        self,
+        entry: WorkflowTimelineEntry,
+        *,
+        max_entries: int = 24,
+    ) -> None:
+        """Append one workflow timeline item and persist it."""
+
+        self.workflow_timeline.append(entry)
+        if len(self.workflow_timeline) > max_entries:
+            self.workflow_timeline[:] = self.workflow_timeline[-max_entries:]
+        self.touch()
+        self.persist()
+
     def maybe_compact(self) -> SessionCompactionResult | None:
         """Compact the transcript when the current request grows too large."""
 
@@ -620,6 +654,7 @@ class ConversationSession:
             last_turn_transition_summary=self.last_turn_transition_summary,
             last_turn_transition_kind=self.last_turn_transition_kind,
             last_turn_transition_reason_code=self.last_turn_transition_reason_code,
+            workflow_timeline=list(self.workflow_timeline),
             compaction=self.compaction,
         )
         return self.store.save(snapshot)
@@ -679,6 +714,7 @@ class ConversationSession:
         instance.last_turn_transition_reason_code = (
             snapshot.last_turn_transition_reason_code
         )
+        instance.workflow_timeline = list(snapshot.workflow_timeline)
         instance.compaction = snapshot.compaction
         instance.rotate_after_bytes = rotate_after_bytes
         instance.max_rotated_files = max_rotated_files

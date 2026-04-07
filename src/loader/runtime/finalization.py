@@ -300,6 +300,7 @@ class TurnFinalizer:
         summary.last_turn_transition_summary = (
             self.agent.session.last_turn_transition_summary
         )
+        summary.workflow_timeline = list(self.agent.session.workflow_timeline)
         if summary.definition_of_done and summary.definition_of_done.status == "done":
             MemoryStore(self.agent.project_root).capture_definition_of_done(
                 build_verification_summary(summary.definition_of_done.evidence)

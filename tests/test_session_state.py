@@ -9,6 +9,7 @@ import pytest
 from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, Message, Role, ToolCall
 from loader.runtime.session import ConversationSession
+from loader.runtime.workflow_policy import WorkflowTimelineEntry
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -158,6 +159,23 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
         last_turn_transition_kind="terminal",
         last_turn_transition_reason_code="turn_complete",
     )
+    session.append_workflow_timeline_entry(
+        WorkflowTimelineEntry(
+            timestamp="2026-04-07T12:00:00Z",
+            kind="route",
+            mode="plan",
+            reason_code="task_is_complex",
+            summary="plan: workflow pressure favors a persisted plan before execution",
+            decision_kind="initial_route",
+            route_score=0.72,
+            runner_up_mode="clarify",
+            runner_up_score=0.61,
+            scheduled_next_mode="execute",
+            unresolved_questions=["Scope is still broad."],
+            prompt_format="native",
+            prompt_sections=["Runtime Config", "Workflow Context", "Project Context"],
+        )
+    )
 
     reloaded = ConversationSession.load(
         project_root=temp_dir,
@@ -192,6 +210,12 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     )
     assert reloaded.last_turn_transition_kind == "terminal"
     assert reloaded.last_turn_transition_reason_code == "turn_complete"
+    assert len(reloaded.workflow_timeline) == 1
+    assert reloaded.workflow_timeline[0].mode == "plan"
+    assert reloaded.workflow_timeline[0].route_score == pytest.approx(0.72)
+    assert reloaded.workflow_timeline[0].unresolved_questions == [
+        "Scope is still broad."
+    ]
 
 
 @pytest.mark.asyncio

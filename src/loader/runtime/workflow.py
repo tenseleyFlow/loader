@@ -5,10 +5,41 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 
 from .dod import slugify
+from .workflow_policy import (
+    ArtifactFreshness,
+    ClarifyReview,
+    ModeDecision,
+    ModeRouter,
+    WorkflowDecisionKind,
+    WorkflowMode,
+    WorkflowPolicy,
+    WorkflowTimelineEntry,
+    WorkflowTimelineEntryKind,
+)
+
+__all__ = [
+    "ArtifactFreshness",
+    "ClarifyBrief",
+    "ClarifyReview",
+    "ModeDecision",
+    "ModeRouter",
+    "PlanningArtifacts",
+    "VERIFICATION_SEPARATOR",
+    "WorkflowArtifactStore",
+    "WorkflowDecisionKind",
+    "WorkflowMode",
+    "WorkflowPolicy",
+    "WorkflowTimelineEntry",
+    "WorkflowTimelineEntryKind",
+    "build_execute_bridge",
+    "extract_verification_commands_from_markdown",
+    "load_brief",
+    "load_planning_artifacts",
+    "sync_todos_to_definition_of_done",
+]
 
 VERIFICATION_SEPARATOR = "<<<VERIFICATION>>>"
 
@@ -33,99 +64,6 @@ _SECTION_ALIASES = {
     "commands": "verification_commands",
     "notes": "notes",
 }
-
-
-class WorkflowMode(StrEnum):
-    """High-level runtime modes for one Loader task turn."""
-
-    CLARIFY = "clarify"
-    PLAN = "plan"
-    EXECUTE = "execute"
-    VERIFY = "verify"
-
-    @classmethod
-    def from_str(cls, value: str | None) -> WorkflowMode | None:
-        if value is None:
-            return None
-        normalized = value.strip().lower()
-        for mode in cls:
-            if mode.value == normalized:
-                return mode
-        raise ValueError(f"Unknown workflow mode: {value}")
-
-
-class WorkflowDecisionKind(StrEnum):
-    """Classification for why a workflow mode was selected."""
-
-    INITIAL_ROUTE = "initial_route"
-    REQUESTED = "requested"
-    ARTIFACT_REUSE = "artifact_reuse"
-    HANDOFF = "handoff"
-    REENTRY = "reentry"
-    FORCED = "forced"
-
-
-@dataclass(slots=True)
-class ModeDecision:
-    """Router output for the entry point of a task turn."""
-
-    mode: WorkflowMode
-    reason_code: str
-    reason_summary: str
-    decision_kind: WorkflowDecisionKind = WorkflowDecisionKind.INITIAL_ROUTE
-    ambiguity_score: float = 0.0
-    complexity_score: float = 0.0
-    scheduled_next_mode: WorkflowMode | None = None
-
-    @property
-    def reason(self) -> str:
-        return self.reason_summary
-
-    @classmethod
-    def transition(
-        cls,
-        mode: WorkflowMode,
-        *,
-        reason_code: str,
-        reason_summary: str,
-        decision_kind: WorkflowDecisionKind = WorkflowDecisionKind.HANDOFF,
-        ambiguity_score: float = 0.0,
-        complexity_score: float = 0.0,
-        scheduled_next_mode: WorkflowMode | None = None,
-    ) -> ModeDecision:
-        """Build a non-router workflow decision for handoffs and reentry."""
-
-        return cls(
-            mode=mode,
-            reason_code=reason_code,
-            reason_summary=reason_summary,
-            decision_kind=decision_kind,
-            ambiguity_score=ambiguity_score,
-            complexity_score=complexity_score,
-            scheduled_next_mode=scheduled_next_mode,
-        )
-
-    def with_context(
-        self,
-        *,
-        reason_code: str | None = None,
-        reason_summary: str | None = None,
-        decision_kind: WorkflowDecisionKind | None = None,
-        scheduled_next_mode: WorkflowMode | None = None,
-    ) -> ModeDecision:
-        """Return a copy with updated contextual routing metadata."""
-
-        return ModeDecision(
-            mode=self.mode,
-            reason_code=reason_code or self.reason_code,
-            reason_summary=reason_summary or self.reason_summary,
-            decision_kind=decision_kind or self.decision_kind,
-            ambiguity_score=self.ambiguity_score,
-            complexity_score=self.complexity_score,
-            scheduled_next_mode=scheduled_next_mode,
-        )
-
-
 @dataclass(slots=True)
 class ClarifyBrief:
     """Execution-ready brief created from one clarify round."""
@@ -370,150 +308,6 @@ class WorkflowArtifactStore:
         implementation_path.write_text(artifacts.implementation_markdown.rstrip() + "\n")
         verification_path.write_text(artifacts.verification_markdown.rstrip() + "\n")
         return implementation_path, verification_path
-
-
-class ModeRouter:
-    """Simple heuristic router for clarify/plan/execute entry modes."""
-
-    clarify_threshold = 0.55
-    plan_threshold = 0.45
-
-    def route(
-        self,
-        task: str,
-        *,
-        requested_mode: WorkflowMode | None = None,
-        has_brief: bool = False,
-        has_plan: bool = False,
-        allow_clarify: bool = True,
-    ) -> ModeDecision:
-        if requested_mode is not None:
-            return ModeDecision(
-                mode=requested_mode,
-                reason_code="explicit_request",
-                reason_summary=f"explicit {requested_mode.value} request",
-                decision_kind=WorkflowDecisionKind.REQUESTED,
-            )
-
-        if has_plan:
-            return ModeDecision(
-                mode=WorkflowMode.EXECUTE,
-                reason_code="existing_plan_artifacts",
-                reason_summary="reusing existing plan artifacts",
-                decision_kind=WorkflowDecisionKind.ARTIFACT_REUSE,
-            )
-
-        ambiguity = self._ambiguity_score(task)
-        complexity = self._complexity_score(task)
-
-        if allow_clarify and not has_brief and ambiguity >= self.clarify_threshold:
-            return ModeDecision(
-                mode=WorkflowMode.CLARIFY,
-                reason_code="task_is_ambiguous",
-                reason_summary="prompt is broad or missing boundaries",
-                ambiguity_score=ambiguity,
-                complexity_score=complexity,
-                scheduled_next_mode=WorkflowMode.EXECUTE,
-            )
-
-        if complexity >= self.plan_threshold:
-            return ModeDecision(
-                mode=WorkflowMode.PLAN,
-                reason_code="task_is_complex",
-                reason_summary=(
-                    "task looks complex enough to benefit from a persisted plan"
-                ),
-                ambiguity_score=ambiguity,
-                complexity_score=complexity,
-                scheduled_next_mode=WorkflowMode.EXECUTE,
-            )
-
-        return ModeDecision(
-            mode=WorkflowMode.EXECUTE,
-            reason_code="task_is_concrete",
-            reason_summary="task appears concrete enough for direct execution",
-            ambiguity_score=ambiguity,
-            complexity_score=complexity,
-        )
-
-    def _ambiguity_score(self, task: str) -> float:
-        lowered = task.lower()
-        words = re.findall(r"\w+", lowered)
-        score = 0.0
-
-        if (
-            "--clarify" in lowered
-            or "don't assume" in lowered
-            or "do not assume" in lowered
-            or "not sure" in lowered
-            or "figure out" in lowered
-            or "interview me" in lowered
-            or "ask me" in lowered
-            or lowered.startswith("clarify ")
-        ):
-            score += 0.65
-
-        if any(
-            phrase in lowered
-            for phrase in (
-                "something",
-                "somehow",
-                "better",
-                "improve",
-                "fix this",
-                "make it",
-                "more like",
-                "feels more like",
-            )
-        ):
-            score += 0.2
-
-        if not _has_concrete_anchor(task):
-            score += 0.2
-
-        if len(words) <= 12 and any(
-            verb in lowered
-            for verb in ("build", "add", "improve", "refactor", "implement")
-        ):
-            score += 0.15
-
-        return min(score, 1.0)
-
-    def _complexity_score(self, task: str) -> float:
-        lowered = task.lower()
-        words = re.findall(r"\w+", lowered)
-        score = 0.0
-
-        if len(words) >= 18:
-            score += 0.2
-        if len(words) >= 30:
-            score += 0.15
-
-        if any(
-            phrase in lowered
-            for phrase in (
-                "refactor",
-                "architecture",
-                "migrate",
-                "persistent",
-                "workflow",
-                "deep dive",
-                "report",
-                "implementation plan",
-                "verification plan",
-            )
-        ):
-            score += 0.3
-
-        if lowered.count(" and ") >= 2 or lowered.count(",") >= 2:
-            score += 0.15
-
-        if _has_concrete_anchor(task):
-            score += 0.1
-
-        return min(score, 1.0)
-
-
 def load_brief(path: Path) -> ClarifyBrief:
     """Load a clarify brief from disk."""
 

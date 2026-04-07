@@ -18,6 +18,7 @@ from ..agent.reasoning import (
 from ..llm.base import Message
 from .dod import DefinitionOfDone
 from .tracing import RuntimeTraceEvent
+from .workflow_policy import WorkflowTimelineEntry
 
 
 @dataclass
@@ -76,4 +77,5 @@ class TurnSummary:
     workflow_reason_summary: str | None = None
     workflow_decision_kind: str | None = None
     last_turn_transition_summary: str | None = None
+    workflow_timeline: list[WorkflowTimelineEntry] = field(default_factory=list)
     session_id: str | None = None

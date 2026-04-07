@@ -28,11 +28,13 @@ from .workflow import (
     VERIFICATION_SEPARATOR,
     ClarifyBrief,
     ModeDecision,
-    ModeRouter,
     PlanningArtifacts,
     WorkflowArtifactStore,
     WorkflowDecisionKind,
     WorkflowMode,
+    WorkflowPolicy,
+    WorkflowTimelineEntry,
+    WorkflowTimelineEntryKind,
     build_execute_bridge,
     sync_todos_to_definition_of_done,
 )
@@ -50,7 +52,7 @@ class ConversationRuntime:
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
         self.dod_store = DefinitionOfDoneStore(agent.project_root)
-        self.router = ModeRouter()
+        self.workflow_policy = WorkflowPolicy()
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
         self.turn_requester = AssistantTurnRequester(agent, self.tracer)
         self.tool_batches = ToolBatchRunner(agent, self.dod_store)
@@ -474,7 +476,7 @@ class ConversationRuntime:
         requested_mode: str | None,
     ) -> str:
         requested = WorkflowMode.from_str(requested_mode)
-        decision = self.router.route(
+        decision = self.workflow_policy.route(
             task,
             requested_mode=requested,
             has_brief=self._artifact_exists(dod.clarify_brief),
@@ -496,7 +498,7 @@ class ConversationRuntime:
                 summary=summary,
                 on_user_question=on_user_question,
             )
-            decision = self.router.route(
+            decision = self.workflow_policy.route(
                 task,
                 has_brief=self._artifact_exists(dod.clarify_brief),
                 has_plan=self._artifact_exists(dod.implementation_plan)
@@ -587,6 +589,27 @@ class ConversationRuntime:
         summary.workflow_reason_code = decision.reason_code
         summary.workflow_reason_summary = decision.reason_summary
         summary.workflow_decision_kind = decision.decision_kind.value
+        timeline_kind = {
+            WorkflowDecisionKind.HANDOFF: WorkflowTimelineEntryKind.HANDOFF,
+            WorkflowDecisionKind.REENTRY: WorkflowTimelineEntryKind.REENTRY,
+        }.get(decision.decision_kind, WorkflowTimelineEntryKind.ROUTE)
+        timeline_entry = WorkflowTimelineEntry.from_decision(
+            decision,
+            kind=timeline_kind,
+            prompt_format=self.agent.prompt_format,
+            prompt_sections=self.agent.prompt_sections,
+            artifact_paths=[
+                path
+                for path in (
+                    dod.clarify_brief,
+                    dod.implementation_plan,
+                    dod.verification_plan,
+                )
+                if path
+            ],
+        )
+        self.agent.session.append_workflow_timeline_entry(timeline_entry)
+        summary.workflow_timeline = list(self.agent.session.workflow_timeline)
         summary.definition_of_done = dod
         self.dod_store.save(dod)
         await emit(

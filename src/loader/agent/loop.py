@@ -215,6 +215,10 @@ class Agent:
                     final_response="",
                     definition_of_done=dod,
                     workflow_mode=session.workflow_mode,
+                    workflow_reason_code=session.workflow_reason_code,
+                    workflow_reason_summary=session.workflow_reason_summary,
+                    workflow_decision_kind=session.workflow_decision_kind,
+                    workflow_timeline=list(session.workflow_timeline),
                     session_id=session.session_id,
                     cumulative_usage=dict(session.usage_totals),
                 )

@@ -119,6 +119,10 @@ async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
     assert run.agent.last_turn_summary.workflow_mode == "execute"
     assert run.agent.last_turn_summary.workflow_reason_code == "post_clarify_task_is_concrete"
     assert run.agent.last_turn_summary.workflow_decision_kind == "handoff"
+    assert [entry.mode for entry in run.agent.last_turn_summary.workflow_timeline[:2]] == [
+        "clarify",
+        "execute",
+    ]
 
 
 @pytest.mark.asyncio
@@ -199,6 +203,11 @@ async def test_complex_prompt_routes_to_plan_and_uses_verification_artifact(
         "definition_of_done_requires_verification"
     )
     assert run.agent.last_turn_summary.workflow_decision_kind == "handoff"
+    assert [entry.mode for entry in run.agent.last_turn_summary.workflow_timeline[:3]] == [
+        "plan",
+        "execute",
+        "verify",
+    ]
     verify_calls = [
         event
         for event in run.events
