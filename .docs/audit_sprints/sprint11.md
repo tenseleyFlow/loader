@@ -3,7 +3,7 @@
 ## Status on `cleanup-audit-plan`
 
 - repo verification is currently `210 passed`
-- `src/loader/agent/loop.py` is down to `818` lines from the Sprint 09 baseline of `1111`
+- `src/loader/agent/loop.py` is down to `815` lines from the Sprint 09 baseline of `1111`
 - the sprint has already deleted:
   - the post-action follow-up suffix
   - the first-turn `[` prefill trick
@@ -18,9 +18,9 @@
   - `src/loader/agent/loop.py` no longer carries `_extract_raw_json_tool_calls(...)`
   - `src/loader/runtime/repair.py` and `src/loader/runtime/explore.py` use the shared parser
   - `src/loader/llm/ollama.py` now routes both complete-mode and streaming final text parsing through the shared parser
-- the sprint is not complete yet
-  - the hard subtraction target is now missed by only `7` lines
-  - the remaining gap is legacy-surface subtraction, not another inline bailout decision
+- the sprint's explicit deletion and subtraction goals are now met
+  - the hard subtraction target is now met by `4` lines
+  - the remaining gap belongs to broader legacy-tree retirement, not another inline bailout decision
 
 ## Prerequisites
 
@@ -100,9 +100,9 @@ Set a hard subtraction target:
 Current score:
 
 - baseline: `1111`
-- current: `818`
-- net: `-293`
-- remaining to target: `7`
+- current: `815`
+- net: `-296`
+- remaining to target: `-4`
 
 If a target is missed, document exactly which remaining behaviors blocked deletion and move them into the next sprint explicitly instead of silently carrying them forward.
 

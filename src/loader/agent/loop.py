@@ -266,17 +266,6 @@ class Agent:
 
         return self.permission_policy.rule_counts()
 
-    def _drain_steering_queue(self) -> list[str]:
-        """Get all pending steering messages without blocking."""
-        messages = []
-        while True:
-            try:
-                msg = self._steering_queue.get_nowait()
-                messages.append(msg)
-            except asyncio.QueueEmpty:
-                break
-        return messages
-
     @property
     def use_react(self) -> bool:
         """Determine whether to use ReAct prompting or native tools."""
@@ -342,6 +331,14 @@ class Agent:
 
         context_holder: dict[str, RuntimeContext] = {}
 
+        def drain_steering_queue() -> list[str]:
+            messages = []
+            while True:
+                try:
+                    messages.append(self._steering_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    return messages
+
         def queue_steering_message(message: str) -> None:
             self._steering_queue.put_nowait(message)
 
@@ -373,7 +370,7 @@ class Agent:
             safeguards=self.safeguards,
             legacy=RuntimeLegacyServices(
                 message_history=lambda: self.messages,
-                drain_steering_queue=self._drain_steering_queue,
+                drain_steering_queue=drain_steering_queue,
                 queue_steering_message=queue_steering_message,
                 set_workflow_mode=set_workflow_mode,
                 refresh_capability_profile=refresh_capability_profile,
