@@ -476,7 +476,7 @@ class WorkflowLaneRunner:
         focus_label = describe_clarify_slot(focus_slot)
         stage_label = describe_clarify_stage(stage)
         pressure_label = describe_clarify_pressure_kind(pressure_kind)
-        evidence_block = grounding.prompt_block()
+        evidence_block = grounding.slot_prompt_block(focus_slot)
         return (
             "Clarify the task before planning or implementation.\n\n"
             f"Task: {task}\n"
@@ -488,7 +488,7 @@ class WorkflowLaneRunner:
             "Use the unresolved questions and prior answers to tighten scope.\n"
             "If a pressure pass is active, prefer examples, tradeoffs, or "
             "challenged assumptions over generic restatement.\n\n"
-            "Workspace evidence:\n"
+            "Relevant workspace evidence:\n"
             f"{evidence_block}\n\n"
             "Do not ask the user to restate repo facts Loader can already inspect "
             "locally; use the workspace evidence to anchor the question.\n\n"
