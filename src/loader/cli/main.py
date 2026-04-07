@@ -1817,6 +1817,14 @@ def _format_workflow_timeline_context(entry) -> str:
         parts.append(f"code={entry.reason_code}")
     if entry.decision_kind:
         parts.append(entry.decision_kind)
+    if entry.clarify_stage:
+        parts.append(f"stage={entry.clarify_stage}")
+    if entry.clarify_pressure_kind:
+        parts.append(f"pressure={entry.clarify_pressure_kind}")
+    if entry.pressure_pass_complete:
+        parts.append("pressure-pass=done")
+    if entry.missing_readiness_gates:
+        parts.append(f"gates={','.join(entry.missing_readiness_gates)}")
     if entry.scheduled_next_mode:
         parts.append(f"next={entry.scheduled_next_mode}")
     if entry.runner_up_mode:

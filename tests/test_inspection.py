@@ -172,11 +172,15 @@ def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
                 timestamp="2026-04-06T15:01:00Z",
                 kind="clarify_continue",
                 mode="clarify",
-                reason_code="clarify_follow_up_needed",
-                summary="clarify: concrete touchpoints are still unresolved",
+                reason_code="clarify_pressure_pass_required",
+                summary="clarify: Loader still needs a tradeoff pass around non-goals",
                 decision_kind="forced",
                 unresolved_questions=["Concrete files or subsystems are still not pinned down."],
                 signal_summary=["ambiguity=0.82", "open_questions=1"],
+                clarify_stage="readiness",
+                clarify_pressure_kind="tradeoff",
+                pressure_pass_complete=False,
+                missing_readiness_gates=["non_goals", "decision_boundaries"],
             ),
             WorkflowTimelineEntry(
                 timestamp="2026-04-06T15:02:00Z",
@@ -399,6 +403,12 @@ def test_collect_workflow_timeline_supports_filters_and_highlights(
     assert snapshot.entry_limit == 1
     assert len(snapshot.entries) == 1
     assert snapshot.entries[0].kind == "clarify_continue"
+    assert snapshot.entries[0].clarify_stage == "readiness"
+    assert snapshot.entries[0].clarify_pressure_kind == "tradeoff"
+    assert snapshot.entries[0].missing_readiness_gates == [
+        "non_goals",
+        "decision_boundaries",
+    ]
     assert any(item.startswith("Asked again:") for item in snapshot.highlights)
 
 
@@ -483,6 +493,16 @@ def test_workflow_show_command_supports_filters_and_highlights(
     assert "Workflow Answers" in result.output
     assert "Recovered workflow:" in result.output
     assert "full_replan_required" in result.output
+
+    clarify_result = runner.invoke(
+        cli_main_module.workflow_cli,
+        ["show", "--mode", "clarify", "--limit", "1", session_id],
+    )
+
+    assert clarify_result.exit_code == 0
+    assert "stage=readiness" in clarify_result.output
+    assert "pressure=tradeoff" in clarify_result.output
+    assert "gates=non_goals,decision_boundaries" in clarify_result.output
 
 
 def test_collect_prompt_preview_uses_persisted_runtime_state(temp_dir: Path) -> None:

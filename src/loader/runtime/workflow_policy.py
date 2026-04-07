@@ -77,6 +77,10 @@ class ModeDecision:
     unresolved_questions: list[str] = field(default_factory=list)
     pressure_summary: list[str] = field(default_factory=list)
     signal_summary: list[str] = field(default_factory=list)
+    clarify_stage: str | None = None
+    clarify_pressure_kind: str | None = None
+    pressure_pass_complete: bool = False
+    missing_readiness_gates: list[str] = field(default_factory=list)
 
     @property
     def reason(self) -> str:
@@ -99,6 +103,10 @@ class ModeDecision:
         unresolved_questions: list[str] | None = None,
         pressure_summary: list[str] | None = None,
         signal_summary: list[str] | None = None,
+        clarify_stage: str | None = None,
+        clarify_pressure_kind: str | None = None,
+        pressure_pass_complete: bool = False,
+        missing_readiness_gates: list[str] | None = None,
     ) -> ModeDecision:
         """Build a non-router workflow decision for handoffs and reentry."""
 
@@ -116,6 +124,10 @@ class ModeDecision:
             unresolved_questions=list(unresolved_questions or []),
             pressure_summary=list(pressure_summary or []),
             signal_summary=list(signal_summary or []),
+            clarify_stage=clarify_stage,
+            clarify_pressure_kind=clarify_pressure_kind,
+            pressure_pass_complete=pressure_pass_complete,
+            missing_readiness_gates=list(missing_readiness_gates or []),
         )
 
     def with_context(
@@ -131,6 +143,10 @@ class ModeDecision:
         unresolved_questions: list[str] | None = None,
         pressure_summary: list[str] | None = None,
         signal_summary: list[str] | None = None,
+        clarify_stage: str | None = None,
+        clarify_pressure_kind: str | None = None,
+        pressure_pass_complete: bool | None = None,
+        missing_readiness_gates: list[str] | None = None,
     ) -> ModeDecision:
         """Return a copy with updated contextual routing metadata."""
 
@@ -163,6 +179,24 @@ class ModeDecision:
             ),
             signal_summary=list(
                 self.signal_summary if signal_summary is None else signal_summary
+            ),
+            clarify_stage=(
+                self.clarify_stage if clarify_stage is None else clarify_stage
+            ),
+            clarify_pressure_kind=(
+                self.clarify_pressure_kind
+                if clarify_pressure_kind is None
+                else clarify_pressure_kind
+            ),
+            pressure_pass_complete=(
+                self.pressure_pass_complete
+                if pressure_pass_complete is None
+                else pressure_pass_complete
+            ),
+            missing_readiness_gates=list(
+                self.missing_readiness_gates
+                if missing_readiness_gates is None
+                else missing_readiness_gates
             ),
         )
 
@@ -214,6 +248,10 @@ class WorkflowTimelineEntry:
     scheduled_next_mode: str | None = None
     unresolved_questions: list[str] = field(default_factory=list)
     signal_summary: list[str] = field(default_factory=list)
+    clarify_stage: str | None = None
+    clarify_pressure_kind: str | None = None
+    pressure_pass_complete: bool = False
+    missing_readiness_gates: list[str] = field(default_factory=list)
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
     artifact_paths: list[str] = field(default_factory=list)
@@ -232,6 +270,10 @@ class WorkflowTimelineEntry:
             "scheduled_next_mode": self.scheduled_next_mode,
             "unresolved_questions": list(self.unresolved_questions),
             "signal_summary": list(self.signal_summary),
+            "clarify_stage": self.clarify_stage,
+            "clarify_pressure_kind": self.clarify_pressure_kind,
+            "pressure_pass_complete": self.pressure_pass_complete,
+            "missing_readiness_gates": list(self.missing_readiness_gates),
             "prompt_format": self.prompt_format,
             "prompt_sections": list(self.prompt_sections),
             "artifact_paths": list(self.artifact_paths),
@@ -252,6 +294,10 @@ class WorkflowTimelineEntry:
             scheduled_next_mode=_optional_text(data.get("scheduled_next_mode")),
             unresolved_questions=_string_list(data.get("unresolved_questions")),
             signal_summary=_string_list(data.get("signal_summary")),
+            clarify_stage=_optional_text(data.get("clarify_stage")),
+            clarify_pressure_kind=_optional_text(data.get("clarify_pressure_kind")),
+            pressure_pass_complete=bool(data.get("pressure_pass_complete", False)),
+            missing_readiness_gates=_string_list(data.get("missing_readiness_gates")),
             prompt_format=_optional_text(data.get("prompt_format")),
             prompt_sections=_string_list(data.get("prompt_sections")),
             artifact_paths=_string_list(data.get("artifact_paths")),
@@ -289,6 +335,10 @@ class WorkflowTimelineEntry:
             ),
             unresolved_questions=list(decision.unresolved_questions),
             signal_summary=list(decision.signal_summary),
+            clarify_stage=decision.clarify_stage,
+            clarify_pressure_kind=decision.clarify_pressure_kind,
+            pressure_pass_complete=decision.pressure_pass_complete,
+            missing_readiness_gates=list(decision.missing_readiness_gates),
             prompt_format=prompt_format,
             prompt_sections=list(prompt_sections or []),
             artifact_paths=list(artifact_paths or []),

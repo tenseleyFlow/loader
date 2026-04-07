@@ -810,6 +810,12 @@ def _workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
     parts = [entry.summary]
     if entry.reason_code:
         parts.append(f"code={entry.reason_code}")
+    if entry.clarify_stage:
+        parts.append(f"stage={entry.clarify_stage}")
+    if entry.clarify_pressure_kind:
+        parts.append(f"pressure={entry.clarify_pressure_kind}")
+    if entry.missing_readiness_gates:
+        parts.append("gates=" + ",".join(entry.missing_readiness_gates))
     if entry.unresolved_questions:
         parts.append(entry.unresolved_questions[0])
     if entry.signal_summary:

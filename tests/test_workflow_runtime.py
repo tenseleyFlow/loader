@@ -223,6 +223,12 @@ async def test_clarify_can_continue_for_a_second_round_when_scope_stays_ambiguou
         entry.reason_code == "clarify_follow_up_needed"
         for entry in run.agent.last_turn_summary.workflow_timeline
     )
+    clarify_continue = next(
+        entry
+        for entry in run.agent.last_turn_summary.workflow_timeline
+        if entry.kind == "clarify_continue"
+    )
+    assert clarify_continue.clarify_stage == "readiness"
 
 
 @pytest.mark.asyncio
