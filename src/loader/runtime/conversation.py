@@ -12,10 +12,7 @@ from ..agent.reasoning import (
     get_token_budget,
 )
 from ..llm.base import Message, Role
-from .artifact_invalidation import (
-    ArtifactInvalidationAssessor,
-    WorkflowRecoveryStrategy,
-)
+from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
 from .completion_policy import CompletionPolicy
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
@@ -28,7 +25,6 @@ from .repair import ResponseRepairer
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .workflow import (
-    ArtifactFreshness,
     ClarifyReview,
     ModeDecision,
     WorkflowArtifactStore,
@@ -41,6 +37,7 @@ from .workflow import (
     build_execute_bridge,
 )
 from .workflow_lanes import WorkflowLaneRunner
+from .workflow_recovery import WorkflowRecoveryController
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
@@ -66,6 +63,16 @@ class ConversationRuntime:
             artifact_store=self.artifact_store,
             dod_store=self.dod_store,
             workflow_policy=self.workflow_policy,
+        )
+        self.workflow_recovery = WorkflowRecoveryController(
+            agent,
+            artifact_invalidation=self.artifact_invalidation,
+            workflow_policy=self.workflow_policy,
+            workflow_signals=self.workflow_signals,
+            workflow_lanes=self.workflow_lanes,
+            set_workflow_mode=self._set_workflow_mode,
+            append_timeline=self._append_workflow_timeline_from_decision,
+            append_execute_bridge=self._maybe_append_execute_bridge,
         )
         self.repairer = ResponseRepairer(agent)
         self.completion_policy = CompletionPolicy(agent)
@@ -186,13 +193,13 @@ class ConversationRuntime:
                     )
                 )
 
-            if await self._maybe_refresh_plan_for_drift(
+            if await self.workflow_recovery.maybe_refresh_plan_for_drift(
                 task=original_task or task,
                 dod=dod,
                 emit=emit,
                 summary=summary,
-                on_confirmation=on_confirmation,
                 on_user_question=on_user_question,
+                executor=self.executor,
             ):
                 continue
 
@@ -656,80 +663,6 @@ class ConversationRuntime:
         if summary is not None:
             summary.workflow_timeline = list(self.agent.session.workflow_timeline)
 
-    async def _maybe_refresh_plan_for_drift(
-        self,
-        *,
-        task: str,
-        dod: DefinitionOfDone,
-        emit: EventSink,
-        summary: TurnSummary,
-        on_confirmation: ConfirmationHandler,
-        on_user_question: UserQuestionHandler,
-    ) -> bool:
-        if self.agent.workflow_mode != WorkflowMode.EXECUTE.value:
-            return False
-        if not (
-            self._artifact_exists(dod.implementation_plan)
-            and self._artifact_exists(dod.verification_plan)
-        ):
-            return False
-
-        freshness = self._plan_freshness(dod)
-        if not freshness.requires_refresh:
-            return False
-
-        strategy = WorkflowRecoveryStrategy(freshness.recovery_strategy)
-        if strategy == WorkflowRecoveryStrategy.PLAN_REFRESH:
-            return await self._run_plan_refresh_reentry(
-                task=task,
-                dod=dod,
-                freshness=freshness,
-                emit=emit,
-                summary=summary,
-                on_confirmation=on_confirmation,
-                on_user_question=on_user_question,
-            )
-        if strategy == WorkflowRecoveryStrategy.CLARIFY_REENTRY:
-            return await self._run_clarify_reentry_for_drift(
-                task=task,
-                dod=dod,
-                freshness=freshness,
-                emit=emit,
-                summary=summary,
-                on_confirmation=on_confirmation,
-                on_user_question=on_user_question,
-                force_plan_after_clarify=False,
-            )
-        if strategy == WorkflowRecoveryStrategy.FULL_REPLAN:
-            return await self._run_clarify_reentry_for_drift(
-                task=task,
-                dod=dod,
-                freshness=freshness,
-                emit=emit,
-                summary=summary,
-                on_confirmation=on_confirmation,
-                on_user_question=on_user_question,
-                force_plan_after_clarify=True,
-            )
-        return False
-
-    def _plan_freshness(self, dod: DefinitionOfDone) -> ArtifactFreshness:
-        return self.artifact_invalidation.assess(
-            task_statement=dod.task_statement,
-            clarify_text=self._artifact_text(dod.clarify_brief),
-            implementation_text=self._artifact_text(dod.implementation_plan),
-            verification_text=self._artifact_text(dod.verification_plan),
-            acceptance_criteria=list(dod.acceptance_criteria),
-            touched_files=list(dod.touched_files),
-            last_verification_result=dod.last_verification_result,
-        )
-
-    def _artifact_text(self, path_str: str | None) -> str | None:
-        if not self._artifact_exists(path_str):
-            return None
-        assert path_str is not None
-        return Path(path_str).read_text().strip()
-
     def _maybe_append_execute_bridge(self, dod: DefinitionOfDone) -> None:
         bridge = build_execute_bridge(
             Path(dod.clarify_brief) if dod.clarify_brief else None,
@@ -751,183 +684,6 @@ class ConversationRuntime:
                     ),
                 )
             )
-
-    async def _run_plan_refresh_reentry(
-        self,
-        *,
-        task: str,
-        dod: DefinitionOfDone,
-        freshness: ArtifactFreshness,
-        emit: EventSink,
-        summary: TurnSummary,
-        on_confirmation: ConfirmationHandler,
-        on_user_question: UserQuestionHandler,
-    ) -> bool:
-        decision = self.workflow_policy.route_from_signals(
-            self.workflow_signals.extract_route_signals(
-                task,
-                has_brief=self._artifact_exists(dod.clarify_brief),
-                has_plan=True,
-                allow_clarify=False,
-                stale_plan=True,
-                verification_pressure=bool(
-                    dod.retry_count or dod.last_verification_result == "failed"
-                ),
-                unresolved_questions=freshness.reasons,
-                timeline=self.agent.session.workflow_timeline,
-            )
-        )
-        await self._set_workflow_mode(
-            decision,
-            dod=dod,
-            emit=emit,
-            summary=summary,
-        )
-        await self.workflow_lanes.run_plan_mode(
-            task=task,
-            dod=dod,
-            emit=emit,
-            refresh_reasons=freshness.reasons,
-            executor=self.executor,
-        )
-        await self._set_workflow_mode(
-            ModeDecision.transition(
-                WorkflowMode.EXECUTE,
-                reason_code="plan_refresh_completed",
-                reason_summary="plan artifacts refreshed; returning to execute",
-                decision_kind=WorkflowDecisionKind.HANDOFF,
-                unresolved_questions=freshness.reasons,
-            ),
-            dod=dod,
-            emit=emit,
-            summary=summary,
-        )
-        self._maybe_append_execute_bridge(dod)
-        return True
-
-    async def _run_clarify_reentry_for_drift(
-        self,
-        *,
-        task: str,
-        dod: DefinitionOfDone,
-        freshness: ArtifactFreshness,
-        emit: EventSink,
-        summary: TurnSummary,
-        on_confirmation: ConfirmationHandler,
-        on_user_question: UserQuestionHandler,
-        force_plan_after_clarify: bool,
-    ) -> bool:
-        clarify_reason_code = (
-            "full_replan_requires_clarify"
-            if force_plan_after_clarify
-            else "clarify_reentry_required"
-        )
-        clarify_reason_summary = (
-            "clarify and plan artifacts drifted; revisit requirements before replanning"
-            if force_plan_after_clarify
-            else "clarify artifacts drifted; revisit requirements before continuing"
-        )
-        await self._set_workflow_mode(
-            ModeDecision.transition(
-                WorkflowMode.CLARIFY,
-                reason_code=clarify_reason_code,
-                reason_summary=clarify_reason_summary,
-                decision_kind=WorkflowDecisionKind.REENTRY,
-                unresolved_questions=freshness.reasons,
-            ),
-            dod=dod,
-            emit=emit,
-            summary=summary,
-        )
-        clarify_review = await self.workflow_lanes.run_clarify_mode(
-            task=task,
-            dod=dod,
-            emit=emit,
-            summary=summary,
-            on_user_question=on_user_question,
-            append_timeline=self._append_workflow_timeline_from_decision,
-        )
-        recovery_reasons = freshness.reasons + clarify_review.unresolved_questions
-
-        if force_plan_after_clarify:
-            await self._set_workflow_mode(
-                ModeDecision.transition(
-                    WorkflowMode.PLAN,
-                    reason_code="full_replan_required",
-                    reason_summary="clarify and plan artifacts drifted; rebuilding the plan",
-                    decision_kind=WorkflowDecisionKind.REENTRY,
-                    unresolved_questions=recovery_reasons,
-                ),
-                dod=dod,
-                emit=emit,
-                summary=summary,
-            )
-            await self.workflow_lanes.run_plan_mode(
-                task=task,
-                dod=dod,
-                emit=emit,
-                refresh_reasons=recovery_reasons,
-                executor=self.executor,
-            )
-            await self._set_workflow_mode(
-                ModeDecision.transition(
-                    WorkflowMode.EXECUTE,
-                    reason_code="full_replan_completed",
-                    reason_summary="clarify and plan artifacts refreshed; returning to execute",
-                    decision_kind=WorkflowDecisionKind.HANDOFF,
-                    unresolved_questions=recovery_reasons,
-                ),
-                dod=dod,
-                emit=emit,
-                summary=summary,
-            )
-            self._maybe_append_execute_bridge(dod)
-            return True
-
-        decision = self.workflow_policy.route_from_signals(
-            self.workflow_signals.extract_route_signals(
-                task,
-                has_brief=self._artifact_exists(dod.clarify_brief),
-                has_plan=self._artifact_exists(dod.implementation_plan)
-                and self._artifact_exists(dod.verification_plan),
-                allow_clarify=False,
-                unresolved_questions=recovery_reasons,
-                timeline=self.agent.session.workflow_timeline,
-            )
-        )
-        await self._set_workflow_mode(
-            decision.with_context(
-                reason_code=f"post_drift_{decision.reason_code}",
-                reason_summary=f"clarify reentry handoff: {decision.reason_summary}",
-                decision_kind=WorkflowDecisionKind.HANDOFF,
-                unresolved_questions=recovery_reasons,
-            ),
-            dod=dod,
-            emit=emit,
-            summary=summary,
-        )
-        if decision.mode == WorkflowMode.PLAN:
-            await self.workflow_lanes.run_plan_mode(
-                task=task,
-                dod=dod,
-                emit=emit,
-                refresh_reasons=recovery_reasons,
-                executor=self.executor,
-            )
-            await self._set_workflow_mode(
-                ModeDecision.transition(
-                    WorkflowMode.EXECUTE,
-                    reason_code="clarify_reentry_plan_created",
-                    reason_summary="plan refreshed after clarify reentry; returning to execute",
-                    decision_kind=WorkflowDecisionKind.HANDOFF,
-                    unresolved_questions=recovery_reasons,
-                ),
-                dod=dod,
-                emit=emit,
-                summary=summary,
-            )
-        self._maybe_append_execute_bridge(dod)
-        return True
 
     async def _prepare_runtime_capabilities(self) -> None:
         describe_model = getattr(self.agent.backend, "describe_model", None)
