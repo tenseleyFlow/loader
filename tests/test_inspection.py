@@ -14,7 +14,9 @@ from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.inspection import (
     CheckStatus,
     collect_doctor_report,
+    collect_permission_snapshot,
     collect_status_snapshot,
+    dry_run_permission_check,
     list_session_summaries,
     load_session_detail,
 )
@@ -215,6 +217,9 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
     assert snapshot.permission_prompting_enabled is True
     assert snapshot.permission_rules_valid is True
+    assert snapshot.permission_rules_source == str(
+        temp_dir / ".loader" / "permission-rules.json"
+    )
     assert snapshot.prompt_format == "native"
     assert snapshot.prompt_sections == [
         "Runtime Config",
@@ -228,6 +233,9 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert sessions[0].dod_status == "fixing"
     assert sessions[0].permission_prompting_enabled is True
     assert sessions[0].permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
+    assert sessions[0].permission_rules_source == str(
+        temp_dir / ".loader" / "permission-rules.json"
+    )
     assert sessions[0].prompt_format == "native"
 
     assert detail.snapshot.session_id == session_id
@@ -260,12 +268,14 @@ def test_status_and_session_commands_render_persisted_state(
     assert "1 allow / 2 deny / 1 ask" in status_result.output
     assert "native" in status_result.output
     assert "Runtime Config, Workflow Context, Mode Guidance" in status_result.output
+    assert "Rules Source" in status_result.output
 
     assert list_result.exit_code == 0
     assert session_id in list_result.output
     assert "1 allow / 2 deny / 1 ask" in list_result.output
     assert "prompting enabled" in list_result.output
     assert "native" in list_result.output
+    assert "Rules Source" in list_result.output
 
     assert show_result.exit_code == 0
     assert session_id in show_result.output
@@ -273,6 +283,48 @@ def test_status_and_session_commands_render_persisted_state(
     assert "1 allow / 2 deny / 1 ask" in show_result.output
     assert "enabled" in show_result.output
     assert "Runtime Config, Workflow Context, Mode Guidance" in show_result.output
+    assert "Rules Source" in show_result.output
+
+
+def test_permission_snapshot_and_dry_run_reflect_rules(temp_dir: Path) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    (temp_dir / ".loader" / "permission-rules.json").write_text(
+        "\n".join(
+            [
+                "{",
+                '  "allow": [{"tool": "write", "contains": "safe change"}],',
+                '  "deny": [{"tool": "write", "path_contains": "secrets"}],',
+                '  "ask": [{"tool": "write", "path_contains": "README"}]',
+                "}",
+            ]
+        )
+        + "\n"
+    )
+
+    snapshot = collect_permission_snapshot(temp_dir, permission_mode="allow")
+    check = dry_run_permission_check(
+        "write",
+        {
+            "file_path": str(temp_dir / "README.md"),
+            "content": "safe change\n",
+        },
+        project_root=temp_dir,
+        permission_mode="allow",
+    )
+
+    assert snapshot.active_mode == "allow"
+    assert snapshot.prompting_enabled is True
+    assert snapshot.rules_valid is True
+    assert snapshot.rule_counts == {"allow": 1, "deny": 1, "ask": 1}
+    assert snapshot.normalized_rules["allow"][0].tool_name == "write"
+    assert snapshot.normalized_rules["allow"][0].contains == "safe change"
+
+    assert check.required_mode == "workspace-write"
+    assert check.decision == "ask"
+    assert check.matched_disposition == "ask"
+    assert check.matched_rule == "tool=write, path_contains=README"
+    assert "file_path=" in check.input_summary
 
 
 def test_status_snapshot_reports_invalid_permission_rules(temp_dir: Path) -> None:
@@ -284,6 +336,97 @@ def test_status_snapshot_reports_invalid_permission_rules(temp_dir: Path) -> Non
 
     assert snapshot.permission_rules_valid is False
     assert snapshot.permission_prompting_enabled is True
+    assert snapshot.permission_rules_source.endswith(".loader/permission-rules.json")
+
+
+def test_permissions_show_and_check_commands_render_policy(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    (temp_dir / ".loader" / "permission-rules.json").write_text(
+        "\n".join(
+            [
+                "{",
+                '  "allow": [{"tool": "write", "contains": "safe change"}],',
+                '  "ask": [{"tool": "write", "path_contains": "README"}]',
+                "}",
+            ]
+        )
+        + "\n"
+    )
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    show_result = runner.invoke(
+        cli_main_module.permissions_cli,
+        ["show", "--permission-mode", "allow"],
+    )
+    check_result = runner.invoke(
+        cli_main_module.permissions_cli,
+        [
+            "check",
+            "--permission-mode",
+            "allow",
+            "--args",
+            '{"content":"safe change\\n"}',
+            "write",
+            "README.md",
+        ],
+    )
+
+    assert show_result.exit_code == 0
+    assert "Loader Permissions" in show_result.output
+    assert "Permission Mode" in show_result.output
+    assert "Rules Source" in show_result.output
+    assert "safe change" in show_result.output
+    assert "README" in show_result.output
+
+    assert check_result.exit_code == 0
+    assert "Permission Check" in check_result.output
+    assert "workspace-write" in check_result.output
+    assert "ask" in check_result.output
+    assert "tool=write, path_contains=README" in check_result.output
+
+
+def test_permissions_check_rejects_invalid_json_args(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(
+        cli_main_module.permissions_cli,
+        ["check", "bash", "--args", "{broken json", "ls"],
+    )
+
+    assert result.exit_code != 0
+    assert "`--args` must be valid JSON" in result.output
+
+
+def test_permissions_show_surfaces_invalid_rule_file(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    (temp_dir / ".loader" / "permission-rules.json").write_text("{broken json")
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(cli_main_module.permissions_cli, ["show"])
+
+    assert result.exit_code == 0
+    assert "invalid" in result.output.lower()
+    assert "Rule Error" in result.output
+    assert "Rules Source" in result.output
 
 
 def test_root_help_lists_special_commands() -> None:
@@ -292,6 +435,7 @@ def test_root_help_lists_special_commands() -> None:
     assert "loader doctor" in help_text
     assert "loader status" in help_text
     assert "loader explore <prompt>" in help_text
+    assert "loader permissions show" in help_text
     assert "loader session resume <id>" in help_text
 
 
