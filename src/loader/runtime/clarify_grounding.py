@@ -80,6 +80,19 @@ _TEXT_SUFFIXES = {
 
 
 @dataclass(slots=True)
+class ClarifyRepoFact:
+    """One concise fact Loader extracted from a matching workspace file."""
+
+    path: str
+    summary: str
+
+    def render(self) -> str:
+        """Render one repo fact for prompt display."""
+
+        return f"`{self.path}`: {self.summary}"
+
+
+@dataclass(slots=True)
 class ClarifyGrounding:
     """Cheap workspace evidence that clarify mode can reference."""
 
@@ -88,6 +101,7 @@ class ClarifyGrounding:
     existing_references: list[str] = field(default_factory=list)
     missing_references: list[str] = field(default_factory=list)
     candidate_touchpoints: list[str] = field(default_factory=list)
+    repo_facts: list[ClarifyRepoFact] = field(default_factory=list)
 
     def has_evidence(self) -> bool:
         return any(
@@ -96,6 +110,7 @@ class ClarifyGrounding:
                 self.existing_references,
                 self.missing_references,
                 self.candidate_touchpoints,
+                self.repo_facts,
             )
         )
 
@@ -119,6 +134,11 @@ class ClarifyGrounding:
                 "- Nearby repo touchpoints: "
                 + ", ".join(self.candidate_touchpoints)
             )
+        if self.repo_facts:
+            lines.append(
+                "- Observed repo facts: "
+                + "; ".join(fact.render() for fact in self.repo_facts)
+            )
         if self.missing_references:
             lines.append(
                 "- Referenced paths not found: "
@@ -134,6 +154,18 @@ class ClarifyGrounding:
         if self.candidate_touchpoints:
             return self.candidate_touchpoints[0]
         return None
+
+    def primary_fact(self) -> ClarifyRepoFact | None:
+        """Return the best extracted repo fact for grounding a question."""
+
+        if not self.repo_facts:
+            return None
+        anchor = self.primary_touchpoint()
+        if anchor is not None:
+            for fact in self.repo_facts:
+                if fact.path == anchor:
+                    return fact
+        return self.repo_facts[0]
 
 
 class ClarifyGroundingProbe:
@@ -169,6 +201,10 @@ class ClarifyGroundingProbe:
             keywords=keywords,
             excluded=set(existing_references),
         )
+        repo_facts = self._collect_repo_facts(
+            paths=[*existing_references, *candidate_touchpoints],
+            keywords=keywords,
+        )
         project_type, _ = detect_project_type(self.workspace_root)
         return ClarifyGrounding(
             project_type=project_type,
@@ -179,6 +215,7 @@ class ClarifyGroundingProbe:
             existing_references=existing_references,
             missing_references=missing_references,
             candidate_touchpoints=candidate_touchpoints,
+            repo_facts=repo_facts,
         )
 
     def _resolve_references(
@@ -307,6 +344,99 @@ class ClarifyGroundingProbe:
             return False
         return True
 
+    def _collect_repo_facts(
+        self,
+        *,
+        paths: list[str],
+        keywords: list[str],
+    ) -> list[ClarifyRepoFact]:
+        facts: list[ClarifyRepoFact] = []
+        seen: set[str] = set()
+
+        for rendered_path in paths:
+            normalized = rendered_path.rstrip("/")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            candidate = self.workspace_root / normalized
+            if not candidate.exists() or candidate.is_dir():
+                continue
+            if candidate.suffix and candidate.suffix not in _TEXT_SUFFIXES:
+                continue
+            summary = self._extract_fact_summary(candidate, keywords)
+            if not summary:
+                continue
+            facts.append(ClarifyRepoFact(path=normalized, summary=summary))
+            if len(facts) >= self.max_candidates:
+                break
+
+        return facts
+
+    def _extract_fact_summary(
+        self,
+        path: Path,
+        keywords: list[str],
+    ) -> str | None:
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                text = handle.read(8000)
+        except OSError:
+            return None
+
+        best_line: str | None = None
+        best_score = 0
+
+        for raw_line in text.splitlines()[:120]:
+            summary = self._normalize_fact_line(raw_line)
+            if not summary:
+                continue
+            score = self._score_fact_line(summary, keywords)
+            if score > best_score:
+                best_score = score
+                best_line = summary
+
+        return best_line
+
+    @staticmethod
+    def _normalize_fact_line(raw_line: str) -> str | None:
+        line = raw_line.strip()
+        if not line:
+            return None
+        if line.startswith(("import ", "from ")):
+            return None
+
+        for prefix in ('"""', "'''", "#", "-", "*"):
+            if line.startswith(prefix):
+                line = line.removeprefix(prefix).strip()
+        for suffix in ('"""', "'''"):
+            if line.endswith(suffix):
+                line = line.removesuffix(suffix).strip()
+
+        if not line or len(line) < 4:
+            return None
+        if line in {"{", "}", "[", "]"}:
+            return None
+        if len(line) > 120:
+            line = line[:117].rstrip() + "..."
+        return line
+
+    @staticmethod
+    def _score_fact_line(line: str, keywords: list[str]) -> int:
+        lowered = line.lower()
+        score = 1
+        if lowered.startswith("class "):
+            score += 4
+        elif lowered.startswith("def "):
+            score += 3
+        elif lowered.startswith(("## ", "# ", "[", "export ", "function ")):
+            score += 2
+
+        for keyword in keywords:
+            if keyword in lowered:
+                score += 2
+
+        return score
+
 
 def build_grounded_clarify_question(
     *,
@@ -320,6 +450,7 @@ def build_grounded_clarify_question(
     anchor = grounding.primary_touchpoint()
     if anchor is None:
         return None
+    fact = grounding.primary_fact()
 
     slot = (
         focus_slot
@@ -335,37 +466,51 @@ def build_grounded_clarify_question(
         if pressure_kind
         else None
     )
+    fact_clause = _render_repo_fact_clause(fact, anchor=anchor)
 
     if slot == ClarifySlot.LIKELY_TOUCHPOINTS:
         if pressure == ClarifyPressureKind.EXAMPLE:
             return (
-                f"I found `{anchor}` in the repo. Should that be the first concrete "
+                f"I found `{anchor}` in the repo.{fact_clause} Should that be the first concrete "
                 "touchpoint, or is there a different file or subsystem I should use instead?"
             )
         if pressure == ClarifyPressureKind.TRADEOFF:
             return (
-                f"I found `{anchor}` in the repo. Should I keep the work scoped there, "
+                f"I found `{anchor}` in the repo.{fact_clause} "
+                "Should I keep the work scoped there, "
                 "and what nearby file or surface should stay unchanged?"
             )
         if pressure == ClarifyPressureKind.ASSUMPTION:
             return (
-                f"I found `{anchor}` in the repo. What assumption about the right "
+                f"I found `{anchor}` in the repo.{fact_clause} What assumption about the right "
                 "touchpoint would be risky for me to make without checking first?"
             )
         return (
-            f"I found `{anchor}` in the repo. Should I keep this task scoped there, "
+            f"I found `{anchor}` in the repo.{fact_clause} Should I keep this task scoped there, "
             "or is there a different file or subsystem you want me to prioritize?"
         )
 
     if slot in {ClarifySlot.NON_GOALS, ClarifySlot.DECISION_BOUNDARIES}:
         if pressure == ClarifyPressureKind.TRADEOFF:
             return (
-                f"I can already see `{anchor}` in the workspace for `{task}`. "
+                f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause} "
                 "Should I keep the change scoped there even if broader edits would be easier?"
             )
         return (
-            f"I can already see `{anchor}` in the workspace for `{task}`. "
+            f"I can already see `{anchor}` in the workspace for `{task}`.{fact_clause} "
             "Should I keep the change scoped there, and what nearby surface should stay unchanged?"
         )
 
     return None
+
+
+def _render_repo_fact_clause(
+    fact: ClarifyRepoFact | None,
+    *,
+    anchor: str,
+) -> str:
+    if fact is None:
+        return ""
+    if fact.path != anchor:
+        return f" Nearby, `{fact.path}` currently contains `{fact.summary}`."
+    return f" It currently contains `{fact.summary}`."
