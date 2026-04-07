@@ -1,6 +1,7 @@
 """Main CLI entry point."""
 
 import asyncio
+import json
 import re
 import sys
 
@@ -11,16 +12,20 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from ..runtime.permissions import PermissionMode
 from ..runtime.inspection import (
     CheckStatus,
     DoctorReport,
+    PermissionCheckResult,
+    PermissionSnapshot,
     StatusSnapshot,
     collect_doctor_report,
+    collect_permission_snapshot,
     collect_status_snapshot,
-    load_session_detail,
+    dry_run_permission_check,
     list_session_summaries,
+    load_session_detail,
 )
+from ..runtime.permissions import PermissionMode
 from .options import inject_resume_target
 from .rendering import (
     format_dod_status,
@@ -29,7 +34,7 @@ from .rendering import (
 )
 
 console = Console()
-SPECIAL_COMMANDS = {"doctor", "status", "session", "explore"}
+SPECIAL_COMMANDS = {"doctor", "status", "session", "explore", "permissions"}
 
 try:
     import httpx
@@ -817,6 +822,11 @@ def session_cli() -> None:
     """Inspect persisted Loader sessions."""
 
 
+@click.group(name="permissions")
+def permissions_cli() -> None:
+    """Inspect and dry-run Loader permission policy."""
+
+
 @session_cli.command("list")
 def session_list_cli() -> None:
     """List persisted sessions."""
@@ -832,6 +842,58 @@ def session_show_cli(session_id: str) -> None:
     _session_show_main(session_id)
 
 
+@permissions_cli.command("show")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(
+        ["read-only", "workspace-write", "danger-full-access", "prompt", "allow"],
+        case_sensitive=False,
+    ),
+    default="workspace-write",
+    show_default=True,
+    help="Permission mode to inspect",
+)
+def permissions_show_cli(permission_mode: str) -> None:
+    """Show the active permission rules and normalized policy state."""
+
+    _permissions_show_main(permission_mode=permission_mode)
+
+
+@permissions_cli.command("check")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(
+        ["read-only", "workspace-write", "danger-full-access", "prompt", "allow"],
+        case_sensitive=False,
+    ),
+    default="workspace-write",
+    show_default=True,
+    help="Permission mode to dry-run against",
+)
+@click.option(
+    "--args",
+    "args_json",
+    default=None,
+    help="JSON object of tool arguments to dry-run",
+)
+@click.argument("tool_name")
+@click.argument("input_value", required=False)
+def permissions_check_cli(
+    permission_mode: str,
+    args_json: str | None,
+    tool_name: str,
+    input_value: str | None,
+) -> None:
+    """Dry-run one hypothetical tool request against the active permission policy."""
+
+    _permissions_check_main(
+        tool_name=tool_name,
+        input_value=input_value,
+        args_json=args_json,
+        permission_mode=permission_mode,
+    )
+
+
 def _run_special_command(argv: list[str]) -> None:
     command = argv[0]
     if command == "doctor":
@@ -842,6 +904,12 @@ def _run_special_command(argv: list[str]) -> None:
         return
     if command == "explore":
         explore_cli.main(args=argv[1:], prog_name="loader explore")
+        return
+    if command == "permissions":
+        if len(argv) == 1:
+            click.echo(_permissions_help_text())
+            return
+        permissions_cli.main(args=argv[1:], prog_name="loader permissions")
         return
     if command == "session":
         if len(argv) == 1:
@@ -861,12 +929,26 @@ def _loader_help_text() -> str:
             "  loader doctor              Inspect backend, workspace, and state health",
             "  loader status              Show persisted runtime status",
             "  loader explore <prompt>    Run a fast read-only lookup query",
+            "  loader permissions show    Display normalized permission rules",
+            "  loader permissions check   Dry-run one permission decision",
             "  loader session list        List persisted sessions",
             "  loader session show <id>   Show one persisted session",
             "  loader session resume <id> Resume a persisted session through the main runtime",
         ]
     )
     return base_help + extra
+
+
+def _permissions_help_text() -> str:
+    return "\n".join(
+        [
+            "Usage: loader permissions [COMMAND]",
+            "",
+            "Commands:",
+            "  show                 Display normalized permission rules and source metadata",
+            "  check <tool> [input] Dry-run one permission decision for a tool request",
+        ]
+    )
 
 
 def _session_help_text() -> str:
@@ -1005,13 +1087,18 @@ def _print_doctor_report(report: DoctorReport) -> None:
                     f"[bold]Model:[/bold] {report.model}",
                     f"[bold]Workspace:[/bold] {report.project_root}",
                     f"[bold]Capabilities:[/bold] {report.capability_profile.model_name} / {report.capability_profile.preferred_tool_call_format}",
-                    f"[bold]Permissions:[/bold] {report.permission_mode}",
+                    f"[bold]Permission Mode:[/bold] {report.permission_mode}",
                     (
-                        "[bold]Policy:[/bold] "
+                        "[bold]Permission Prompting:[/bold] "
+                        + ("enabled" if report.permission_prompting_enabled else "disabled")
+                    ),
+                    (
+                        "[bold]Permission Rules:[/bold] "
                         f"{report.permission_rule_counts['allow']} allow / "
                         f"{report.permission_rule_counts['deny']} deny / "
                         f"{report.permission_rule_counts['ask']} ask"
                     ),
+                    f"[bold]Rules Source:[/bold] {report.permission_rules_source}",
                     f"[bold]Overall:[/bold] [{overall_color}]{report.overall_status.value}[/{overall_color}]",
                 ]
             ),
@@ -1069,14 +1156,14 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Session", snapshot.active_session_id or "none")
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Phase", snapshot.active_turn_phase or "idle")
-    table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row("Permission Mode", snapshot.permission_mode)
     table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
     table.add_row(
         "Prompt Sections",
         ", ".join(snapshot.prompt_sections) if snapshot.prompt_sections else "none",
     )
     table.add_row(
-        "Policy",
+        "Permission Rules",
         (
             f"{snapshot.permission_rule_counts['allow']} allow / "
             f"{snapshot.permission_rule_counts['deny']} deny / "
@@ -1084,13 +1171,14 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
         ),
     )
     table.add_row(
-        "Prompting",
+        "Permission Prompting",
         "enabled" if snapshot.permission_prompting_enabled else "disabled",
     )
     table.add_row(
-        "Rules",
+        "Rules Status",
         "valid" if snapshot.permission_rules_valid else "invalid",
     )
+    table.add_row("Rules Source", snapshot.permission_rules_source)
     table.add_row("Task", snapshot.current_task or "none")
     table.add_row("Messages", str(snapshot.message_count))
     table.add_row("DoD", snapshot.dod_status or "none")
@@ -1149,9 +1237,10 @@ def _session_list_main() -> None:
         table.add_row("Messages", str(entry.message_count))
         table.add_row("Workflow", entry.workflow_mode)
         table.add_row("Phase", entry.active_turn_phase or "idle")
-        table.add_row("Permissions", entry.permission_mode)
+        table.add_row("Permission Mode", entry.permission_mode)
         table.add_row("Prompt", entry.prompt_format or "unknown")
-        table.add_row("Policy", policy_summary)
+        table.add_row("Permission Rules", policy_summary)
+        table.add_row("Rules Source", entry.permission_rules_source or "none")
         table.add_row("DoD", entry.dod_status or "none")
         table.add_row("Task", entry.current_task or "none")
         console.print(
@@ -1183,18 +1272,18 @@ def _session_show_main(session_id: str) -> None:
     table.add_row("Messages", str(len(snapshot.messages)))
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Phase", snapshot.active_turn_phase or "idle")
-    table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row("Permission Mode", snapshot.permission_mode)
     table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
     table.add_row(
         "Prompt Sections",
         ", ".join(snapshot.prompt_sections) if snapshot.prompt_sections else "none",
     )
     table.add_row(
-        "Prompting",
+        "Permission Prompting",
         "enabled" if snapshot.permission_prompting_enabled else "disabled",
     )
     table.add_row(
-        "Policy Rules",
+        "Permission Rules",
         (
             f"{snapshot.permission_rule_counts['allow']} allow / "
             f"{snapshot.permission_rule_counts['deny']} deny / "
@@ -1232,6 +1321,221 @@ def _session_show_main(session_id: str) -> None:
             detail.definition_of_done.last_verification_result or "none",
         )
         console.print(dod_table)
+
+
+def _permissions_show_main(*, permission_mode: str) -> None:
+    snapshot = collect_permission_snapshot(permission_mode=permission_mode)
+    _print_permission_snapshot(snapshot)
+
+
+def _permissions_check_main(
+    *,
+    tool_name: str,
+    input_value: str | None,
+    args_json: str | None,
+    permission_mode: str,
+) -> None:
+    from ..tools.base import create_default_registry
+
+    registry = create_default_registry()
+    registry.configure_workspace_root(".")
+    tool = registry.get(tool_name)
+    if tool is None:
+        available = ", ".join(sorted(item.name for item in registry.list_tools()))
+        raise click.ClickException(
+            f"Unknown tool `{tool_name}`. Available tools: {available}"
+        )
+
+    arguments = _coerce_permission_check_arguments(
+        tool,
+        input_value=input_value,
+        args_json=args_json,
+    )
+    try:
+        result = dry_run_permission_check(
+            tool_name,
+            arguments,
+            permission_mode=permission_mode,
+            registry=registry,
+        )
+    except ValueError as exc:
+        raise click.ClickException(
+            f"{exc}. Run `loader permissions show` after repairing the rule file."
+        ) from exc
+    _print_permission_check_result(result)
+
+
+def _print_permission_snapshot(snapshot: PermissionSnapshot) -> None:
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Workspace", str(snapshot.project_root))
+    table.add_row("Permission Mode", snapshot.active_mode)
+    table.add_row(
+        "Permission Prompting",
+        "enabled" if snapshot.prompting_enabled else "disabled",
+    )
+    table.add_row(
+        "Permission Rules",
+        (
+            f"{snapshot.rule_counts['allow']} allow / "
+            f"{snapshot.rule_counts['deny']} deny / "
+            f"{snapshot.rule_counts['ask']} ask"
+        ),
+    )
+    table.add_row("Rules Status", "valid" if snapshot.rules_valid else "invalid")
+    table.add_row("Rules Source", snapshot.rules_source)
+
+    border_style = "blue" if snapshot.rules_valid else "red"
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Loader Permissions[/bold blue]",
+            border_style=border_style,
+        )
+    )
+
+    if snapshot.rules_error:
+        console.print(
+            Panel(
+                snapshot.rules_error,
+                title="[bold red]Rule Error[/bold red]",
+                border_style="red",
+            )
+        )
+
+    rules_table = Table(show_header=True, header_style="bold cyan")
+    rules_table.add_column("Disposition", style="white")
+    rules_table.add_column("Tool", style="white")
+    rules_table.add_column("Contains", style="white")
+    rules_table.add_column("Path Contains", style="white")
+
+    has_rules = False
+    for disposition in ("allow", "deny", "ask"):
+        color = {
+            "allow": "green",
+            "deny": "red",
+            "ask": "magenta",
+        }[disposition]
+        for item in snapshot.normalized_rules.get(disposition, []):
+            has_rules = True
+            rules_table.add_row(
+                f"[{color}]{disposition}[/{color}]",
+                item.tool_name or "*",
+                item.contains or "-",
+                item.path_contains or "-",
+            )
+
+    if has_rules:
+        console.print(rules_table)
+    else:
+        console.print("[dim]No allow/deny/ask rules configured.[/dim]")
+
+
+def _print_permission_check_result(result: PermissionCheckResult) -> None:
+    decision = {
+        "allow": "[green]allow[/green]",
+        "deny": "[red]deny[/red]",
+        "ask": "[magenta]ask[/magenta]",
+    }.get(result.decision, result.decision)
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Workspace", str(result.project_root))
+    table.add_row("Tool", result.tool_name)
+    table.add_row("Permission Mode", result.active_mode)
+    table.add_row(
+        "Permission Prompting",
+        "enabled" if result.prompting_enabled else "disabled",
+    )
+    table.add_row("Required Mode", result.required_mode)
+    table.add_row("Decision", decision)
+    table.add_row("Input Summary", result.input_summary)
+    table.add_row("Path Hint", result.path_hint or "none")
+    table.add_row("Matched Rule", result.matched_rule or "none")
+    table.add_row("Rule Disposition", result.matched_disposition or "none")
+    table.add_row("Reason", result.reason or "none")
+    table.add_row("Rules Source", result.rules_source)
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Permission Check[/bold blue]",
+            border_style="blue",
+        )
+    )
+
+
+def _coerce_permission_check_arguments(
+    tool,
+    *,
+    input_value: str | None,
+    args_json: str | None,
+) -> dict[str, object]:
+    arguments = _parse_permission_args_json(args_json)
+    if input_value is not None:
+        target_key = _simple_permission_input_key(tool)
+        if target_key is None:
+            raise click.ClickException(
+                "This tool does not support a simple positional input. "
+                "Provide structured arguments with `--args`."
+            )
+        if target_key in arguments:
+            raise click.ClickException(
+                f"`{target_key}` was provided twice; use either the positional input or `--args`."
+            )
+        arguments[target_key] = input_value
+
+    required_fields = list(tool.parameters.get("required", []))
+    missing = [field for field in required_fields if field not in arguments]
+    if missing:
+        raise click.ClickException(
+            f"Tool `{tool.name}` is missing required arguments: {', '.join(missing)}. "
+            "Provide them with `--args` as a JSON object."
+        )
+    return arguments
+
+
+def _parse_permission_args_json(args_json: str | None) -> dict[str, object]:
+    if not args_json:
+        return {}
+    try:
+        payload = json.loads(args_json)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(
+            f"`--args` must be valid JSON: {exc.msg}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise click.ClickException("`--args` must decode to a JSON object.")
+    return payload
+
+
+def _simple_permission_input_key(tool) -> str | None:
+    explicit_keys = {
+        "bash": "command",
+        "read": "file_path",
+        "write": "file_path",
+        "edit": "file_path",
+        "patch": "file_path",
+        "glob": "pattern",
+        "grep": "pattern",
+        "git": "action",
+        "project_memory_read": "section",
+        "notepad_read": "section",
+    }
+    if tool.name in explicit_keys:
+        return explicit_keys[tool.name]
+
+    parameters = tool.parameters
+    properties = parameters.get("properties", {})
+    required_fields = list(parameters.get("required", []))
+    if len(required_fields) != 1:
+        return None
+    candidate = required_fields[0]
+    schema = properties.get(candidate, {})
+    if schema.get("type") == "string":
+        return candidate
+    return None
 
 
 if __name__ == "__main__":
