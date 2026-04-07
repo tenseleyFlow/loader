@@ -533,6 +533,13 @@ class ActionTracker:
         sig = self._make_edit_signature(old_string, new_string)
         return sig in self._files_edited.get(norm_path, [])
 
+    def would_duplicate_patch(self, file_path: str, hunks: list[dict]) -> bool:
+        """Check if this structured patch would be a duplicate."""
+
+        norm_path = self._normalize_path(file_path)
+        sig = str(hash(str(hunks)))
+        return sig in self._files_edited.get(norm_path, [])
+
     def would_duplicate_command(self, command: str) -> bool:
         """Check if this command would be a duplicate."""
         # Normalize whitespace
@@ -594,6 +601,12 @@ class ActionTracker:
             if self.would_duplicate_edit(file_path, old_string, new_string):
                 return True, f"Same edit already applied to: {file_path}"
 
+        elif tool_name == "patch":
+            file_path = arguments.get("file_path", "")
+            hunks = arguments.get("hunks", [])
+            if isinstance(hunks, list) and self.would_duplicate_patch(file_path, hunks):
+                return True, f"Same patch already applied to: {file_path}"
+
         elif tool_name == "bash":
             command = arguments.get("command", "")
             if self.would_duplicate_command(command):
@@ -620,6 +633,12 @@ class ActionTracker:
             new_string = arguments.get("new_string", "")
             if file_path:
                 self.record_edit(file_path, old_string, new_string)
+
+        elif tool_name == "patch":
+            file_path = arguments.get("file_path", "")
+            hunks = arguments.get("hunks", [])
+            if file_path:
+                self.record_edit(file_path, str(hunks), "structured_patch")
 
         elif tool_name == "bash":
             command = arguments.get("command", "")
@@ -774,6 +793,8 @@ class PreActionValidator:
             return self._validate_write(arguments)
         elif tool_name == "edit":
             return self._validate_edit(arguments)
+        elif tool_name == "patch":
+            return self._validate_patch(arguments)
         elif tool_name == "read":
             return self._validate_read(arguments)
         elif tool_name in ("glob", "grep"):
@@ -915,6 +936,34 @@ class PreActionValidator:
                 valid=False,
                 reason="old_string and new_string are identical - no change would occur",
                 suggestion="Provide different old and new strings",
+                severity="error",
+            )
+
+        return ValidationResult(valid=True)
+
+    def _validate_patch(self, arguments: dict) -> ValidationResult:
+        """Validate structured patch operation."""
+
+        file_path = arguments.get("file_path", "")
+        hunks = arguments.get("hunks", [])
+
+        if not file_path or not str(file_path).strip():
+            return ValidationResult(
+                valid=False,
+                reason="Empty file path",
+                suggestion="Provide a valid file path",
+                severity="error",
+            )
+
+        path_result = self._validate_path(str(file_path))
+        if not path_result.valid:
+            return path_result
+
+        if not isinstance(hunks, list) or not hunks:
+            return ValidationResult(
+                valid=False,
+                reason="Patch hunks are missing",
+                suggestion="Provide one or more structured patch hunks",
                 severity="error",
             )
 

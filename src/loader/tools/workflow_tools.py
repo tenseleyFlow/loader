@@ -191,14 +191,39 @@ class AskUserQuestionTool(Tool):
         return {
             "type": "object",
             "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Optional short title for the question block.",
+                },
                 "question": {
                     "type": "string",
                     "description": "The exact question to present to the user.",
                 },
+                "context": {
+                    "type": "string",
+                    "description": "Optional supporting context shown before the question.",
+                },
                 "options": {
                     "type": "array",
                     "description": "Optional short answer choices.",
-                    "items": {"type": "string"},
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "description": {"type": "string"},
+                                },
+                                "required": ["label"],
+                            },
+                        ]
+                    },
+                },
+                "allow_freeform": {
+                    "type": "boolean",
+                    "description": "Whether the user may answer outside the provided options.",
+                    "default": True,
                 },
             },
             "required": ["question"],
@@ -207,16 +232,17 @@ class AskUserQuestionTool(Tool):
     async def execute(
         self,
         question: str,
-        options: list[str] | None = None,
+        title: str | None = None,
+        context: str | None = None,
+        options: list[str | dict[str, Any]] | None = None,
+        allow_freeform: bool = True,
         user_response_handler: UserQuestionHandler | None = None,
         **kwargs: Any,
     ) -> ToolResult:
+        normalized_title = str(title or "").strip()
         normalized_question = question.strip()
-        normalized_options = [
-            str(option).strip()
-            for option in (options or [])
-            if str(option).strip()
-        ]
+        normalized_context = str(context or "").strip()
+        normalized_options = self._normalize_options(options or [])
 
         if not normalized_question:
             return ToolResult("question must not be empty", is_error=True)
@@ -226,16 +252,24 @@ class AskUserQuestionTool(Tool):
                 is_error=True,
             )
 
+        rendered_question = self._render_question(
+            title=normalized_title,
+            context=normalized_context,
+            question=normalized_question,
+        )
         answer = (
             await user_response_handler(
-                normalized_question,
+                rendered_question,
                 normalized_options or None,
             )
         ).strip()
         resolved_answer = self._resolve_answer(answer, normalized_options or None)
         payload = {
+            "title": normalized_title or None,
             "question": normalized_question,
+            "context": normalized_context or None,
             "options": normalized_options or None,
+            "allow_freeform": allow_freeform,
             "answer": resolved_answer,
             "status": "answered",
         }
@@ -243,6 +277,34 @@ class AskUserQuestionTool(Tool):
             output=json.dumps(payload, indent=2, sort_keys=True),
             metadata=payload,
         )
+
+    @staticmethod
+    def _normalize_options(options: list[str | dict[str, Any]]) -> list[str]:
+        normalized: list[str] = []
+        for option in options:
+            if isinstance(option, dict):
+                label = str(option.get("label", "")).strip()
+                description = str(option.get("description", "")).strip()
+                if not label:
+                    continue
+                normalized.append(
+                    f"{label} - {description}" if description else label
+                )
+                continue
+            label = str(option).strip()
+            if label:
+                normalized.append(label)
+        return normalized
+
+    @staticmethod
+    def _render_question(
+        *,
+        title: str,
+        context: str,
+        question: str,
+    ) -> str:
+        parts = [part for part in (title, context, question) if part]
+        return "\n\n".join(parts)
 
     @staticmethod
     def _resolve_answer(answer: str, options: list[str] | None) -> str:

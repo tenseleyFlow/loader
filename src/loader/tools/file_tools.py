@@ -7,6 +7,8 @@ from typing import Any
 from ..runtime.permissions import PermissionMode
 from .base import ConfirmationRequired, Tool, ToolResult
 from .fs_safety import (
+    StructuredPatchHunk,
+    apply_structured_patch,
     ensure_safe_to_read,
     ensure_safe_to_write,
     make_structured_patch,
@@ -237,7 +239,10 @@ class EditTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Edit a file by replacing old_string with new_string. The old_string must match exactly."
+        return (
+            "Edit a file by replacing old_string with new_string. "
+            "The old_string must match exactly."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -310,7 +315,8 @@ class EditTool(Tool):
             count = content.count(old_string)
             if count > 1:
                 return ToolResult(
-                    f"old_string appears {count} times. Please provide more context to make it unique.",
+                    "old_string appears "
+                    f"{count} times. Please provide more context to make it unique.",
                     is_error=True,
                 )
 
@@ -334,6 +340,130 @@ class EditTool(Tool):
             )
         except Exception as e:
             return ToolResult(f"Error editing file: {e}", is_error=True)
+
+
+class PatchTool(Tool):
+    """Edit a file by applying structured patch hunks."""
+
+    required_permission = PermissionMode.WORKSPACE_WRITE
+
+    def __init__(self, workspace_root: Path | str | None = None) -> None:
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
+
+    @property
+    def name(self) -> str:
+        return "patch"
+
+    def set_workspace_root(self, workspace_root: Path | None) -> None:
+        self.workspace_root = workspace_root
+
+    @property
+    def description(self) -> str:
+        return (
+            "Apply structured patch hunks to a file. Prefer this for larger "
+            "or multi-line edits where exact old/new string replacement is brittle."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the file to patch",
+                },
+                "hunks": {
+                    "type": "array",
+                    "description": "Structured patch hunks to apply in order.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_start": {"type": "integer"},
+                            "old_lines": {"type": "integer"},
+                            "new_start": {"type": "integer"},
+                            "new_lines": {"type": "integer"},
+                            "lines": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": [
+                            "old_start",
+                            "old_lines",
+                            "new_start",
+                            "new_lines",
+                            "lines",
+                        ],
+                    },
+                },
+            },
+            "required": ["file_path", "hunks"],
+        }
+
+    @property
+    def is_destructive(self) -> bool:
+        return True
+
+    def check_confirmation(self, skip_confirmation: bool = False, **kwargs: Any) -> None:
+        if skip_confirmation:
+            return
+        file_path = kwargs.get("file_path", "")
+        raise ConfirmationRequired(
+            tool_name=self.name,
+            message=f"Patch file: {file_path}",
+            details="apply structured patch hunks",
+        )
+
+    async def execute(
+        self,
+        file_path: str,
+        hunks: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> ToolResult:
+        try:
+            parsed_hunks = [StructuredPatchHunk.from_dict(hunk) for hunk in hunks]
+            if not parsed_hunks:
+                raise ValueError("hunks must not be empty")
+        except Exception as exc:
+            return ToolResult(f"Invalid structured patch: {exc}", is_error=True)
+
+        try:
+            path = resolve_workspace_path(
+                file_path,
+                workspace_root=self.workspace_root,
+            )
+        except FileNotFoundError:
+            return ToolResult(f"File not found: {file_path}", is_error=True)
+        except PermissionError as exc:
+            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except Exception as exc:
+            return ToolResult(f"Error resolving file path: {exc}", is_error=True)
+
+        if not path.exists():
+            return ToolResult(f"File not found: {file_path}", is_error=True)
+
+        try:
+            ensure_safe_to_read(path)
+            original_content = await asyncio.to_thread(path.read_text)
+            updated_content = apply_structured_patch(original_content, parsed_hunks)
+            ensure_safe_to_write(updated_content)
+            await asyncio.to_thread(path.write_text, updated_content)
+            structured_patch = [hunk.to_dict() for hunk in parsed_hunks]
+            return ToolResult(
+                f"Successfully patched {path}",
+                metadata={
+                    "file_path": str(path),
+                    "original_file": original_content,
+                    "content": updated_content,
+                    "structured_patch": structured_patch,
+                    "bytes_written": len(updated_content.encode("utf-8")),
+                },
+            )
+        except Exception as exc:
+            return ToolResult(f"Error patching file: {exc}", is_error=True)
 
 
 class GlobTool(Tool):

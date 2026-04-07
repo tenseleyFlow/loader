@@ -12,6 +12,7 @@ from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.conversation import ConversationRuntime
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
+from ..runtime.explore import ExploreRuntime
 from ..runtime.permissions import PermissionMode, build_permission_policy
 from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
@@ -712,6 +713,25 @@ class Agent:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+
+    async def run_explore(
+        self,
+        user_message: str,
+        on_event: Callable[[AgentEvent], None] | Callable[[AgentEvent], Awaitable[None]] | None = None,
+    ) -> str:
+        """Run one read-only explore query outside the main workflow runtime."""
+
+        import inspect
+
+        async def emit(event: AgentEvent) -> None:
+            if on_event:
+                result = on_event(event)
+                if inspect.iscoroutine(result):
+                    await result
+
+        runtime = ExploreRuntime(self)
+        self.last_turn_summary = await runtime.run_query(user_message, emit)
+        return self.last_turn_summary.final_response
 
     def _contains_unexecuted_code(self, content: str) -> bool:
         """Detect if response contains code blocks that should be tool calls.

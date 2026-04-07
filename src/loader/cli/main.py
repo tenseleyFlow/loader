@@ -29,7 +29,7 @@ from .rendering import (
 )
 
 console = Console()
-SPECIAL_COMMANDS = {"doctor", "status", "session"}
+SPECIAL_COMMANDS = {"doctor", "status", "session", "explore"}
 
 try:
     import httpx
@@ -752,6 +752,44 @@ def status_cli(
     _status_main(model=model, permission_mode=permission_mode)
 
 
+@click.command(name="explore")
+@click.option("--model", "-m", default=None, help="Model to use for explore mode")
+@click.option("--select-model", "-s", is_flag=True, help="Interactively select model")
+@click.option("--backend", "-b", default="ollama", help="LLM backend (ollama)")
+@click.option("--react", is_flag=True, help="Force ReAct mode")
+@click.option("--no-context", is_flag=True, help="Skip auto-detecting project context")
+@click.option("--ctx", type=int, default=8192, help="Context window size")
+@click.option("--gpu", type=int, default=-1, help="GPU layers (-1 = all, 0 = CPU only)")
+@click.option("--timeout", type=int, default=None, help="Request timeout in seconds")
+@click.argument("prompt")
+def explore_cli(
+    model: str | None,
+    select_model: bool,
+    backend: str,
+    react: bool,
+    no_context: bool,
+    ctx: int,
+    gpu: int,
+    timeout: int | None,
+    prompt: str,
+) -> None:
+    """Run a read-only lookup query through the explore lane."""
+
+    asyncio.run(
+        _explore_main(
+            model=model,
+            select_model=select_model,
+            backend=backend,
+            react=react,
+            no_context=no_context,
+            ctx=ctx,
+            gpu=gpu,
+            timeout=timeout,
+            prompt=prompt,
+        )
+    )
+
+
 @click.group(name="session")
 def session_cli() -> None:
     """Inspect persisted Loader sessions."""
@@ -780,6 +818,9 @@ def _run_special_command(argv: list[str]) -> None:
     if command == "status":
         status_cli.main(args=argv[1:], prog_name="loader status")
         return
+    if command == "explore":
+        explore_cli.main(args=argv[1:], prog_name="loader explore")
+        return
     if command == "session":
         if len(argv) == 1:
             click.echo(_session_help_text())
@@ -797,6 +838,7 @@ def _loader_help_text() -> str:
             "Additional Commands:",
             "  loader doctor              Inspect backend, workspace, and state health",
             "  loader status              Show persisted runtime status",
+            "  loader explore <prompt>    Run a fast read-only lookup query",
             "  loader session list        List persisted sessions",
             "  loader session show <id>   Show one persisted session",
             "  loader session resume <id> Resume a persisted session through the main runtime",
@@ -843,6 +885,89 @@ async def _doctor_main(
         permission_mode=permission_mode,
     )
     _print_doctor_report(report)
+
+
+async def _explore_main(
+    *,
+    model: str | None,
+    select_model: bool,
+    backend: str,
+    react: bool,
+    no_context: bool,
+    ctx: int,
+    gpu: int,
+    timeout: int | None,
+    prompt: str,
+) -> None:
+    from ..agent.loop import Agent, AgentConfig
+    from ..config import get_default_model, get_last_model, set_last_model
+    from ..llm.ollama import OllamaBackend
+    from ..runtime.permissions import PermissionMode
+
+    if select_model:
+        selected = await select_model_interactive()
+        if selected is None:
+            return
+        model = selected
+    elif model is None:
+        model = get_default_model()
+        if get_last_model():
+            console.print(f"[dim]Using saved model: {model}[/dim]")
+
+    llm = OllamaBackend(
+        model=model,
+        force_react=react,
+        num_ctx=ctx,
+        num_gpu=gpu,
+        timeout=timeout,
+    )
+    if not await llm.health_check():
+        console.print("[red]Error: Cannot connect to Ollama. Is it running?[/red]")
+        console.print("Start it with: ollama serve")
+        console.print(f"\nOr pull the model: [cyan]ollama pull {model}[/cyan]")
+        return
+
+    await llm.describe_model()
+    set_last_model(model)
+
+    agent = Agent(
+        backend=llm,
+        config=AgentConfig(
+            auto_context=not no_context,
+            force_react=react,
+            permission_mode=PermissionMode.READ_ONLY,
+            stream=False,
+        ),
+    )
+    mode_str = "ReAct" if agent.use_react else "Native"
+    console.print(
+        Panel.fit(
+            "[bold blue]Loader Explore[/bold blue]\n"
+            + " | ".join(
+                [
+                    f"Model: {model}",
+                    f"Mode: {mode_str}",
+                    "Lane: explore",
+                    "Permissions: read-only",
+                ]
+            ),
+            border_style="blue",
+        )
+    )
+
+    def on_event(event) -> None:
+        if event.type == "tool_call":
+            args_str = _format_tool_args(event.tool_args)
+            console.print(f"[cyan]> {event.tool_name}[/cyan]({args_str})")
+        elif event.type == "tool_result":
+            lines = event.content.splitlines()
+            preview = "\n".join(lines[:8])
+            if len(lines) > 8:
+                preview += f"\n[dim]... ({len(lines) - 8} more lines)[/dim]"
+            console.print(Panel(preview, border_style="dim"))
+
+    response = await agent.run_explore(prompt, on_event=on_event)
+    console.print(Markdown(clean_response(response)))
 
 
 def _print_doctor_report(report: DoctorReport) -> None:

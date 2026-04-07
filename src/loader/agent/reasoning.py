@@ -627,6 +627,15 @@ def estimate_confidence_quick(tool_name: str, tool_args: dict, context: str = ""
             return ConfidenceLevel.LOW
         return ConfidenceLevel.MEDIUM
 
+    if tool_name == "patch":
+        hunks = tool_args.get("hunks", [])
+        if not hunks:
+            return ConfidenceLevel.LOW
+        return ConfidenceLevel.MEDIUM
+
+    if tool_name == "git":
+        return ConfidenceLevel.HIGH
+
     if tool_name == "bash":
         command = tool_args.get("command", "")
         # Dangerous commands get low confidence
@@ -667,8 +676,14 @@ def quick_verify(tool_name: str, tool_args: dict, result: str) -> bool:
         # Edit should return success or diff
         return "edited" in result_lower or "+" in result or "-" in result
 
+    if tool_name == "patch":
+        return "patched" in result_lower or "+" in result or "-" in result
+
     if tool_name == "read":
         # Read should return file contents (non-empty)
+        return len(result.strip()) > 0
+
+    if tool_name == "git":
         return len(result.strip()) > 0
 
     if tool_name == "bash":
@@ -1009,6 +1024,9 @@ def is_destructive_tool(tool_name: str, tool_args: dict) -> bool:
     if tool_name == "edit":
         return True  # Modifying files
 
+    if tool_name == "patch":
+        return True  # Applying structured file edits
+
     if tool_name == "bash":
         command = tool_args.get("command", "").lower()
         destructive_patterns = [
@@ -1108,6 +1126,26 @@ async def create_rollback_plan_for_action(
             )
 
     if tool_name == "edit":
+        file_path = tool_args.get("file_path", "")
+        if not file_path:
+            return None
+
+        try:
+            original = await read_file_func(file_path)
+            return RollbackAction(
+                type=RollbackType.FILE_RESTORE,
+                description=f"Restore original: {file_path}",
+                file_path=file_path,
+                original_content=original,
+            )
+        except Exception:
+            return RollbackAction(
+                type=RollbackType.NO_ROLLBACK,
+                description=f"Could not backup: {file_path}",
+                file_path=file_path,
+            )
+
+    if tool_name == "patch":
         file_path = tool_args.get("file_path", "")
         if not file_path:
             return None

@@ -298,3 +298,59 @@ class NotepadWriteManualTool(MemoryTool):
     async def execute(self, content: str, **kwargs: Any) -> ToolResult:
         payload = self.store().append_notepad_manual(content)
         return ToolResult(output=payload, metadata={"content": payload})
+
+
+class NotepadAppendTool(MemoryTool):
+    """Append to one notepad section through a single tool surface."""
+
+    required_permission = PermissionMode.WORKSPACE_WRITE
+
+    @property
+    def name(self) -> str:
+        return "notepad_append"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Append to the Loader notepad. Use section=working for temporary notes "
+            "or section=manual for durable human-authored notes."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "section": {
+                    "type": "string",
+                    "enum": ["working", "manual", "priority"],
+                    "description": "Notepad section to update.",
+                    "default": "working",
+                },
+            },
+            "required": ["content"],
+        }
+
+    async def execute(
+        self,
+        content: str,
+        section: str = "working",
+        **kwargs: Any,
+    ) -> ToolResult:
+        normalized_section = (section or "working").strip().lower()
+        if normalized_section == "working":
+            payload = self.store().append_notepad_working(content)
+        elif normalized_section == "manual":
+            payload = self.store().append_notepad_manual(content)
+        elif normalized_section == "priority":
+            payload = self.store().write_notepad_priority(content)
+        else:
+            return ToolResult(
+                "section must be one of working, manual, or priority",
+                is_error=True,
+            )
+        return ToolResult(
+            output=payload,
+            metadata={"content": payload, "section": normalized_section},
+        )

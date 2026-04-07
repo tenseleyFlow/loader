@@ -178,8 +178,10 @@ def create_default_registry(
     workspace_root: Path | str | None = None,
 ) -> ToolRegistry:
     """Create a registry with default tools."""
-    from .file_tools import EditTool, GlobTool, ReadTool, WriteTool
+    from .file_tools import EditTool, GlobTool, PatchTool, ReadTool, WriteTool
+    from .git_tools import GitTool
     from .memory_tools import (
+        NotepadAppendTool,
         NotepadReadTool,
         NotepadWriteManualTool,
         NotepadWritePriorityTool,
@@ -197,9 +199,11 @@ def create_default_registry(
     registry.register(ReadTool())
     registry.register(WriteTool())
     registry.register(EditTool())
+    registry.register(PatchTool())
     registry.register(GlobTool())
     registry.register(BashTool())
     registry.register(GrepTool())
+    registry.register(GitTool())
     registry.register(TodoWriteTool())
     registry.register(AskUserQuestionTool())
     registry.register(ProjectMemoryReadTool())
@@ -207,8 +211,30 @@ def create_default_registry(
     registry.register(ProjectMemoryAddNoteTool())
     registry.register(ProjectMemoryAddDirectiveTool())
     registry.register(NotepadReadTool())
+    registry.register(NotepadAppendTool())
     registry.register(NotepadWritePriorityTool())
     registry.register(NotepadWriteWorkingTool())
     registry.register(NotepadWriteManualTool())
 
+    return registry
+
+
+def create_explore_registry(
+    workspace_root: Path | str | None = None,
+) -> ToolRegistry:
+    """Create the constrained read-only registry for explore mode."""
+
+    from .file_tools import GlobTool, ReadTool
+    from .git_tools import GitTool
+    from .memory_tools import NotepadReadTool, ProjectMemoryReadTool
+    from .search_tools import GrepTool
+
+    registry = ToolRegistry(workspace_root=workspace_root)
+    registry.skip_confirmation = True
+    registry.register(ReadTool())
+    registry.register(GlobTool())
+    registry.register(GrepTool())
+    registry.register(GitTool())
+    registry.register(ProjectMemoryReadTool())
+    registry.register(NotepadReadTool())
     return registry

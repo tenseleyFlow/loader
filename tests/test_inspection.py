@@ -224,6 +224,7 @@ def test_root_help_lists_special_commands() -> None:
 
     assert "loader doctor" in help_text
     assert "loader status" in help_text
+    assert "loader explore <prompt>" in help_text
     assert "loader session resume <id>" in help_text
 
 

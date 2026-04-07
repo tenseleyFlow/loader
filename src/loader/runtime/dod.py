@@ -134,7 +134,7 @@ def determine_task_size(file_count: int, line_changes: int) -> TaskSize:
 def is_state_mutating_tool_call(tool_call: ToolCall) -> bool:
     """Return whether a tool call likely mutates user-visible state."""
 
-    if tool_call.name in {"write", "edit"}:
+    if tool_call.name in {"write", "edit", "patch"}:
         return True
     if tool_call.name != "bash":
         return False
@@ -167,6 +167,16 @@ def record_successful_tool_call(
         if file_path:
             _append_unique(dod.touched_files, file_path)
         dod.line_changes += max(_count_lines(old_string), _count_lines(new_string))
+    elif tool_call.name == "patch":
+        file_path = str(tool_call.arguments.get("file_path", "")).strip()
+        if file_path:
+            _append_unique(dod.touched_files, file_path)
+        for hunk in tool_call.arguments.get("hunks", []):
+            if not isinstance(hunk, dict):
+                continue
+            old_lines = int(hunk.get("old_lines", 0))
+            new_lines = int(hunk.get("new_lines", 0))
+            dod.line_changes += max(old_lines, new_lines)
     elif tool_call.name == "bash":
         command = str(tool_call.arguments.get("command", "")).strip()
         if command:

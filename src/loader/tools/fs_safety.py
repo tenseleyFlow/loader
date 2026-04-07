@@ -24,6 +24,18 @@ class StructuredPatchHunk:
         """Serialize the patch hunk for tool metadata."""
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> StructuredPatchHunk:
+        """Deserialize one structured patch hunk."""
+
+        return cls(
+            old_start=int(data.get("old_start", 0)),
+            old_lines=int(data.get("old_lines", 0)),
+            new_start=int(data.get("new_start", 0)),
+            new_lines=int(data.get("new_lines", 0)),
+            lines=[str(line) for line in data.get("lines", [])],
+        )
+
 
 def resolve_workspace_path(
     raw_path: str,
@@ -109,3 +121,71 @@ def make_structured_patch(original: str, updated: str) -> list[StructuredPatchHu
             lines=lines,
         )
     ]
+
+
+def apply_structured_patch(
+    original: str,
+    hunks: list[StructuredPatchHunk],
+) -> str:
+    """Apply structured hunks to text content."""
+
+    original_has_trailing_newline = original.endswith("\n")
+    original_lines = original.splitlines()
+    updated_lines: list[str] = []
+    cursor = 1
+
+    for hunk in sorted(hunks, key=lambda item: item.old_start):
+        if hunk.old_start < cursor:
+            raise ValueError("structured patch hunks overlap or are out of order")
+
+        updated_lines.extend(original_lines[cursor - 1: hunk.old_start - 1])
+        original_index = hunk.old_start - 1
+        expected_old_end = original_index + hunk.old_lines
+
+        for raw_line in hunk.lines:
+            if not raw_line:
+                raise ValueError("structured patch line entries must include a prefix")
+            prefix = raw_line[0]
+            line = raw_line[1:]
+
+            if prefix == " ":
+                _expect_patch_line(original_lines, original_index, line)
+                updated_lines.append(line)
+                original_index += 1
+                continue
+            if prefix == "-":
+                _expect_patch_line(original_lines, original_index, line)
+                original_index += 1
+                continue
+            if prefix == "+":
+                updated_lines.append(line)
+                continue
+            raise ValueError(f"unsupported structured patch line prefix: {prefix!r}")
+
+        if original_index != expected_old_end:
+            raise ValueError(
+                "structured patch hunk consumed a different number of original lines "
+                f"than declared ({original_index - (hunk.old_start - 1)} vs {hunk.old_lines})"
+            )
+        cursor = original_index + 1
+
+    updated_lines.extend(original_lines[cursor - 1:])
+    updated = "\n".join(updated_lines)
+    if updated and original_has_trailing_newline:
+        updated += "\n"
+    return updated
+
+
+def _expect_patch_line(
+    original_lines: list[str],
+    index: int,
+    expected: str,
+) -> None:
+    if index >= len(original_lines):
+        raise ValueError("structured patch references lines past the end of the file")
+    actual = original_lines[index]
+    if actual != expected:
+        raise ValueError(
+            "structured patch context mismatch: "
+            f"expected {expected!r}, found {actual!r}"
+        )
