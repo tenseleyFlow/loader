@@ -11,6 +11,7 @@ from loader.ui.status_helpers import (
     format_definition_of_done_parts,
     format_permission_mode_part,
     format_session_part,
+    format_turn_phase_part,
     format_workflow_mode_part,
 )
 
@@ -52,6 +53,11 @@ def test_permission_mode_helpers_use_expected_colors() -> None:
 def test_workflow_mode_helpers_use_expected_colors() -> None:
     assert format_workflow_mode_part("plan") == "[cyan]flow plan[/cyan]"
     assert format_workflow_mode("verify") == "[green]verify[/green]"
+
+
+def test_turn_phase_helpers_use_expected_colors() -> None:
+    assert format_turn_phase_part("repair") == "[magenta]phase repair[/magenta]"
+    assert format_turn_phase_part("completion") == "[green]phase completion[/green]"
 
 
 def test_status_helpers_format_capability_and_session_parts() -> None:

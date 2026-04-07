@@ -8,6 +8,7 @@ from ..status_helpers import (
     format_definition_of_done_parts,
     format_permission_mode_part,
     format_session_part,
+    format_turn_phase_part,
     format_workflow_mode_part,
 )
 
@@ -20,6 +21,7 @@ class StatusLine(Static):
     capability_profile: reactive[str] = reactive("")
     session_id: reactive[str] = reactive("")
     workflow_mode: reactive[str] = reactive("")
+    turn_phase: reactive[str] = reactive("")
     permission_mode: reactive[str] = reactive("")
     activity: reactive[str] = reactive("")
     elapsed: reactive[float] = reactive(0.0)
@@ -65,6 +67,9 @@ class StatusLine(Static):
         workflow_mode = format_workflow_mode_part(self.workflow_mode)
         if workflow_mode:
             parts.append(workflow_mode)
+        turn_phase = format_turn_phase_part(self.turn_phase)
+        if turn_phase:
+            parts.append(turn_phase)
         permission_mode = format_permission_mode_part(self.permission_mode)
         if permission_mode:
             parts.append(permission_mode)
@@ -100,6 +105,10 @@ class StatusLine(Static):
 
     def watch_workflow_mode(self, workflow_mode: str) -> None:
         """React to workflow mode changes."""
+        self.refresh()
+
+    def watch_turn_phase(self, turn_phase: str) -> None:
+        """React to turn phase changes."""
         self.refresh()
 
     def watch_dod_status(self, dod_status: str) -> None:
@@ -145,6 +154,10 @@ class StatusLine(Static):
     def update_workflow_mode(self, workflow_mode: str) -> None:
         """Update the active workflow mode."""
         self.workflow_mode = workflow_mode
+
+    def update_turn_phase(self, turn_phase: str) -> None:
+        """Update the active turn phase."""
+        self.turn_phase = turn_phase
 
     def update_definition_of_done(
         self,

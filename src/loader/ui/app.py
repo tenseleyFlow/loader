@@ -35,6 +35,7 @@ from .adapter import (
     ThinkingStarted,
     ToolCallCompleted,
     ToolCallStarted,
+    TurnPhaseChanged,
     VerificationPerformed,
     WorkflowModeChanged,
 )
@@ -71,6 +72,7 @@ class LoaderApp(App):
         capability_profile: str = "",
         session_id: str = "",
         workflow_mode: str = "execute",
+        turn_phase: str = "",
         permission_mode: str = "",
         **kwargs,
     ) -> None:
@@ -81,6 +83,7 @@ class LoaderApp(App):
         self.capability_profile = capability_profile
         self.session_id = session_id
         self.workflow_mode = workflow_mode
+        self.turn_phase = turn_phase
         self.permission_mode = permission_mode
         self.adapter = EventAdapter(self)
         self._start_time: float = 0.0
@@ -120,6 +123,7 @@ class LoaderApp(App):
         status.capability_profile = self.capability_profile
         status.session_id = self.session_id
         status.workflow_mode = self.workflow_mode
+        status.turn_phase = self.turn_phase
         status.permission_mode = self.permission_mode
 
         # Focus input
@@ -515,6 +519,7 @@ class LoaderApp(App):
             self.is_generating = False
             self._stop_timer()
             self.query_one(StatusLine).set_generating(False)
+            self.query_one(StatusLine).update_turn_phase("")
 
     # Message handlers from adapter
     def on_thinking_started(self, message: ThinkingStarted) -> None:
@@ -689,6 +694,12 @@ class LoaderApp(App):
 
         self.workflow_mode = message.workflow_mode
         self.query_one(StatusLine).update_workflow_mode(message.workflow_mode)
+
+    def on_turn_phase_changed(self, message: TurnPhaseChanged) -> None:
+        """Handle turn phase changes."""
+
+        self.turn_phase = message.turn_phase
+        self.query_one(StatusLine).update_turn_phase(message.turn_phase)
 
     def on_artifact_created(self, message: ArtifactCreated) -> None:
         """Handle workflow artifact creation."""

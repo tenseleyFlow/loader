@@ -435,6 +435,7 @@ async def _main(
             ),
             session_id=agent.session.session_id,
             workflow_mode=agent.workflow_mode,
+            turn_phase=agent.session.active_turn_phase or "",
             permission_mode=agent.active_permission_mode,
         )
         await app.run_async()
@@ -1067,6 +1068,7 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Capabilities", f"{snapshot.capability_profile.preferred_tool_call_format} / {snapshot.capability_profile.verification_strictness}")
     table.add_row("Session", snapshot.active_session_id or "none")
     table.add_row("Workflow", snapshot.workflow_mode)
+    table.add_row("Phase", snapshot.active_turn_phase or "idle")
     table.add_row("Permissions", snapshot.permission_mode)
     table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
     table.add_row(
@@ -1146,6 +1148,7 @@ def _session_list_main() -> None:
         table.add_row("Updated", entry.updated_at)
         table.add_row("Messages", str(entry.message_count))
         table.add_row("Workflow", entry.workflow_mode)
+        table.add_row("Phase", entry.active_turn_phase or "idle")
         table.add_row("Permissions", entry.permission_mode)
         table.add_row("Prompt", entry.prompt_format or "unknown")
         table.add_row("Policy", policy_summary)
@@ -1179,6 +1182,7 @@ def _session_show_main(session_id: str) -> None:
     table.add_row("Updated", snapshot.updated_at)
     table.add_row("Messages", str(len(snapshot.messages)))
     table.add_row("Workflow", snapshot.workflow_mode)
+    table.add_row("Phase", snapshot.active_turn_phase or "idle")
     table.add_row("Permissions", snapshot.permission_mode)
     table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
     table.add_row(

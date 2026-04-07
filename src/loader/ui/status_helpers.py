@@ -78,3 +78,21 @@ def format_workflow_mode_part(mode: str) -> str | None:
         "verify": "green",
     }.get(mode, "white")
     return f"[{color}]flow {mode}[/{color}]"
+
+
+def format_turn_phase_part(phase: str) -> str | None:
+    """Format the active turn phase for the status line."""
+
+    if not phase:
+        return None
+
+    color = {
+        "prepare": "cyan",
+        "assistant": "blue",
+        "repair": "magenta",
+        "tools": "yellow",
+        "critique": "cyan",
+        "completion": "green",
+        "finalize": "white",
+    }.get(phase, "white")
+    return f"[{color}]phase {phase}[/{color}]"
