@@ -175,3 +175,30 @@ Implementation targets:
 - a first-class permission rule editor
 - AST-aware, LSP-aware, or symbol-aware editing
 - multi-agent or team orchestration
+
+## Audit
+
+### Landed
+
+- clarify now has explicit pressure-pass discipline instead of only slot-follow-up behavior: `src/loader/runtime/clarify_strategy.py`, `src/loader/runtime/workflow_policy.py`, and `src/loader/runtime/workflow_lanes.py` track readiness gates such as `non_goals`, `decision_boundaries`, and `pressure_pass`, and can drive later clarify rounds toward examples, tradeoffs, and challenged assumptions
+- brownfield clarify is now grounded in discovered workspace evidence instead of relying only on user answers and task text: `src/loader/runtime/clarify_grounding.py` feeds repo paths, repo facts, slot-aware evidence, pressure-aware evidence, and grounded brief hints into clarify prompts, fallback questions, and persisted brief synthesis
+- invalidation and recovery now use richer structured evidence than file drift alone: `src/loader/runtime/artifact_invalidation.py`, `src/loader/runtime/workflow_policy.py`, and `src/loader/runtime/workflow_recovery.py` now distinguish confirmed touchpoints, inferred touchpoints, acceptance anchors, contradicted assumptions, verification contradictions, and task-boundary drift, and that evidence is surfaced through workflow inspection
+- workflow/operator surfaces now explain clarify pressure and recovery evidence more directly: `src/loader/runtime/inspection.py` and `src/loader/cli/main.py` surface pressure metadata, recovery evidence, and the newer workflow history context instead of only route labels
+- the runtime shell is now genuinely controller-based instead of monolithic: `src/loader/runtime/workflow_recovery.py`, `src/loader/runtime/turn_preparation.py`, `src/loader/runtime/turn_completion.py`, `src/loader/runtime/turn_iteration.py`, `src/loader/runtime/turn_preamble.py`, `src/loader/runtime/workflow_state.py`, and `src/loader/runtime/turn_loop.py` now own distinct orchestration seams, and `src/loader/runtime/conversation.py` is down to a compact coordinator
+
+### Verification
+
+- `uv run pytest -q` is green: `231 passed`
+- `tests/test_clarify_strategy.py` covers pressure-pass reviews, readiness gates, and later-round clarify pressure selection
+- `tests/test_clarify_grounding.py` covers workspace evidence extraction, slot-aware evidence selection, pressure-aware grounding, and grounded brief hints
+- `tests/test_artifact_invalidation.py`, `tests/test_workflow_policy.py`, `tests/test_workflow_runtime.py`, and `tests/test_inspection.py` cover structured drift evidence, contradiction-driven recovery, workflow pressure metadata, and operator-facing recovery summaries
+- `tests/test_turn_preparation.py`, `tests/test_turn_completion.py`, `tests/test_turn_iteration.py`, `tests/test_turn_preamble.py`, `tests/test_workflow_state.py`, and `tests/test_turn_loop.py` give direct coverage to the new controller seams instead of relying only on large end-to-end runtime tests
+- targeted `ruff` checks stayed green on the touched runtime/controller modules and their new tests throughout the extraction work, and the full suite remained green after each slice
+
+### Residual debt
+
+- clarify is now pressure-aware and grounded, but it is still bounded and lighter than OMX's deeper interview style; Loader still does not adapt interview depth by task class or run richer challenge/consensus passes
+- the new invalidation evidence is a much better contract than text overlap alone, but it is still runtime-authored and heuristic; Loader still does not use deeper semantic reasoning over artifacts, symbols, or model-assisted contradiction analysis
+- `src/loader/runtime/conversation.py` is now a real coordinator, but `src/loader/runtime/turn_iteration.py` remains the heaviest seam and still carries a fair amount of repair/completion/tool-routing policy that claw-code spreads across even narrower runtime modules
+- workflow/operator surfaces explain more than they did at Sprint 11, but they still stop short of artifact diffs, prompt/history comparison, and richer timeline drill-down
+- Loader is much closer to a controller-based runtime than it was at the start of Sprint 12, but it still does not match claw-code or OMX on deeper planning rigor, semantic artifact discipline, or broader operator ergonomics
