@@ -1836,6 +1836,8 @@ def _format_workflow_timeline_context(entry) -> str:
     if entry.unresolved_questions:
         parts.append(f"open={len(entry.unresolved_questions)}")
         parts.append(f"next-question={entry.unresolved_questions[0]}")
+    if entry.evidence_summary:
+        parts.append(f"evidence={'; '.join(entry.evidence_summary[:2])}")
     if entry.signal_summary:
         parts.append(f"signals={'; '.join(entry.signal_summary[:2])}")
     if entry.artifact_paths:

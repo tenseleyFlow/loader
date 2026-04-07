@@ -148,8 +148,9 @@ class WorkflowRecoveryController:
                 timeline=self.agent.session.workflow_timeline,
             )
         )
+        recovery_evidence = self._recovery_evidence_summary(freshness)
         await self.set_workflow_mode(
-            decision,
+            decision.with_context(evidence_summary=recovery_evidence),
             dod=dod,
             emit=emit,
             summary=summary,
@@ -168,6 +169,7 @@ class WorkflowRecoveryController:
                 reason_summary="plan artifacts refreshed; returning to execute",
                 decision_kind=WorkflowDecisionKind.HANDOFF,
                 unresolved_questions=freshness.reasons,
+                evidence_summary=recovery_evidence,
             ),
             dod=dod,
             emit=emit,
@@ -198,6 +200,7 @@ class WorkflowRecoveryController:
             if force_plan_after_clarify
             else "clarify artifacts drifted; revisit requirements before continuing"
         )
+        recovery_evidence = self._recovery_evidence_summary(freshness)
         await self.set_workflow_mode(
             ModeDecision.transition(
                 WorkflowMode.CLARIFY,
@@ -205,6 +208,7 @@ class WorkflowRecoveryController:
                 reason_summary=clarify_reason_summary,
                 decision_kind=WorkflowDecisionKind.REENTRY,
                 unresolved_questions=freshness.reasons,
+                evidence_summary=recovery_evidence,
             ),
             dod=dod,
             emit=emit,
@@ -228,6 +232,7 @@ class WorkflowRecoveryController:
                     reason_summary="clarify and plan artifacts drifted; rebuilding the plan",
                     decision_kind=WorkflowDecisionKind.REENTRY,
                     unresolved_questions=recovery_reasons,
+                    evidence_summary=recovery_evidence,
                 ),
                 dod=dod,
                 emit=emit,
@@ -247,6 +252,7 @@ class WorkflowRecoveryController:
                     reason_summary="clarify and plan artifacts refreshed; returning to execute",
                     decision_kind=WorkflowDecisionKind.HANDOFF,
                     unresolved_questions=recovery_reasons,
+                    evidence_summary=recovery_evidence,
                 ),
                 dod=dod,
                 emit=emit,
@@ -272,6 +278,7 @@ class WorkflowRecoveryController:
                 reason_summary=f"clarify reentry handoff: {decision.reason_summary}",
                 decision_kind=WorkflowDecisionKind.HANDOFF,
                 unresolved_questions=recovery_reasons,
+                evidence_summary=recovery_evidence,
             ),
             dod=dod,
             emit=emit,
@@ -292,6 +299,7 @@ class WorkflowRecoveryController:
                     reason_summary="plan refreshed after clarify reentry; returning to execute",
                     decision_kind=WorkflowDecisionKind.HANDOFF,
                     unresolved_questions=recovery_reasons,
+                    evidence_summary=recovery_evidence,
                 ),
                 dod=dod,
                 emit=emit,
@@ -309,3 +317,7 @@ class WorkflowRecoveryController:
             return None
         assert path_str is not None
         return Path(path_str).read_text().strip()
+
+    @staticmethod
+    def _recovery_evidence_summary(freshness: ArtifactFreshness) -> list[str]:
+        return list(freshness.evidence_summary)

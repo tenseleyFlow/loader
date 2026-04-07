@@ -818,6 +818,8 @@ def _workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
         parts.append("gates=" + ",".join(entry.missing_readiness_gates))
     if entry.unresolved_questions:
         parts.append(entry.unresolved_questions[0])
+    if entry.evidence_summary:
+        parts.append("evidence=" + "; ".join(entry.evidence_summary[:2]))
     if entry.signal_summary:
         parts.append("; ".join(entry.signal_summary[:2]))
     return " | ".join(part for part in parts if part)

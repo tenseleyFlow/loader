@@ -191,6 +191,13 @@ def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
                 decision_kind="reentry",
                 scheduled_next_mode="execute",
                 unresolved_questions=["Touched files outside the current plan: notes.txt"],
+                evidence_summary=[
+                    "confirmed touchpoint: `notes.txt` was already touched during execution.",
+                    (
+                        "verification contradiction: Failed verification exposed "
+                        "missing brief coverage for `notes.txt exists`."
+                    ),
+                ],
                 signal_summary=["recent_reentry=1", "stale_plan=true"],
             ),
             WorkflowTimelineEntry(
@@ -493,6 +500,7 @@ def test_workflow_show_command_supports_filters_and_highlights(
     assert "Workflow Answers" in result.output
     assert "Recovered workflow:" in result.output
     assert "full_replan_required" in result.output
+    assert "evidence=confirmed touchpoint:" in result.output
 
     clarify_result = runner.invoke(
         cli_main_module.workflow_cli,

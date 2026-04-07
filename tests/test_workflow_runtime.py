@@ -1323,6 +1323,13 @@ async def test_stale_plan_artifacts_trigger_targeted_plan_refresh(
         entry.reason_code == "stale_plan_artifacts"
         for entry in run.agent.last_turn_summary.workflow_timeline
     )
+    stale_entry = next(
+        entry
+        for entry in run.agent.last_turn_summary.workflow_timeline
+        if entry.reason_code == "stale_plan_artifacts"
+    )
+    assert any("confirmed touchpoint" in item for item in stale_entry.evidence_summary)
+    assert any("acceptance anchor" in item for item in stale_entry.evidence_summary)
     assert any(
         entry.reason_code == "plan_refresh_completed"
         for entry in run.agent.last_turn_summary.workflow_timeline
