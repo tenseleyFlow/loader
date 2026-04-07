@@ -1,5 +1,13 @@
 # Sprint 10: Runtime Context and Ownership Inversion
 
+## Status on `cleanup-audit-plan`
+
+- `RuntimeContext` and `RuntimeLegacyServices` are now in place under `src/loader/runtime/context.py`
+- the core turn path helpers run on typed runtime context inputs instead of direct `self.agent.*` access
+- `src/loader/runtime/` direct `self.agent.` reach-ins are down to `0`
+- focused fake-context coverage landed for assistant turns, tool batches, completion policy, finalization, repair, and explore
+- repo-wide verification is green with `203 passed`
+
 ## Prerequisites
 
 Sprint 09

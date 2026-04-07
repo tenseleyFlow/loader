@@ -4,17 +4,17 @@ These sprints translate the 2026-04-07 audit in `.docs/audit.txt` into a post-Sp
 
 The repo has moved since the audit snapshot. On this planning branch:
 
-- `uv run pytest -q` is green with `191 passed`
+- `uv run pytest -q` is green with `203 passed`
 - Sprint 08's prompt builder, turn-phase tracking, and permission inspection surfaces are already present on `HEAD`
 - Sprint 09 interactive validation has started; `loader doctor` now distinguishes metadata reachability from live chat readiness, and both native-capable and `json_tag` Ollama lanes currently fail the live chat probe on `/api/chat` with HTTP 500
+- Sprint 10's runtime-ownership inversion is now materially in place: `src/loader/runtime/` no longer reaches into `Agent` directly, and the remaining legacy dependencies are explicit `RuntimeLegacyServices` seams
 - the central debt still remains:
-  - `runtime/*` still reaches into `Agent` directly instead of working through a typed runtime context
   - the runtime still repairs model misbehavior in-stream with retries, prefills, nudges, and fake-assistant continuations
   - raw-text tool extraction is still duplicated and still hardcodes a stale six-tool allowlist in `agent/loop.py`
   - clarify/plan workflows still persist artifacts without enforcing the deeper protocol the refs rely on
   - `agent/loop.py`, `agent/reasoning.py`, `agent/safeguards.py`, and `agent/recovery.py` are still the load-bearing legacy tree
 
-## Current baseline
+## Sprint 09 Ownership Baseline
 
 - `src/loader/runtime/conversation.py`: 881 lines, `49` `self.agent.` reach-ins
 - `src/loader/runtime/assistant_turns.py`: `23` `self.agent.` reach-ins
@@ -26,6 +26,12 @@ The repo has moved since the audit snapshot. On this planning branch:
 - `src/loader/agent/reasoning.py`: 1235 lines
 - `src/loader/agent/safeguards.py`: 1142 lines
 - `src/loader/agent/recovery.py`: 648 lines
+
+## Current runtime ownership status
+
+- `src/loader/runtime/` direct `self.agent.` reach-ins: `0`
+- runtime ownership now flows through `RuntimeContext` plus explicit `RuntimeLegacyServices` adapters
+- the next contract work is deletion, not more ownership reshuffling
 
 ## Phase 1: Validate Before Deleting
 
