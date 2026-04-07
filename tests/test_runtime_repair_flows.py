@@ -1,0 +1,109 @@
+"""Deterministic coverage for current runtime repair heuristics."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from loader.agent.loop import AgentConfig
+from loader.llm.base import CompletionResponse, Role, ToolCall
+from tests.helpers.runtime_harness import ScriptedBackend, run_scenario
+
+
+def non_streaming_config() -> AgentConfig:
+    """Shared deterministic config for repair-flow tests."""
+
+    config = AgentConfig(auto_context=False, stream=False, max_iterations=8)
+    config.reasoning.completion_check = False
+    return config
+
+
+def tool_event_names(run) -> list[str]:
+    """Return non-verification tool events in order."""
+
+    return [
+        event.tool_name
+        for event in run.events
+        if event.type == "tool_call" and event.tool_name and event.phase != "verification"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_empty_response_repair_injects_retry_prompt_and_recovers(
+    temp_dir: Path,
+) -> None:
+    fixture = temp_dir / "fixture.txt"
+    fixture.write_text("repair baseline\n")
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="I'll inspect the file now.",
+                tool_calls=[
+                    ToolCall(
+                        id="read-1",
+                        name="read",
+                        arguments={"file_path": str(fixture)},
+                    )
+                ],
+            ),
+            CompletionResponse(content="Recovered after the empty response."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Read the fixture file.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read"]
+    assert "Recovered after the empty response." in run.response
+    assert any(
+        message.role == Role.ASSISTANT
+        and "Great! Now let me proceed with the task." in message.content
+        for message in backend.invocations[1].messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_narration_repair_injects_scolding_prompt(
+    temp_dir: Path,
+) -> None:
+    fixture = temp_dir / "fixture.txt"
+    fixture.write_text("repair baseline\n")
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I ran the command and created the file."
+            ),
+            CompletionResponse(
+                content="I'll inspect the real tool result now.",
+                tool_calls=[
+                    ToolCall(
+                        id="read-1",
+                        name="read",
+                        arguments={"file_path": str(fixture)},
+                    )
+                ],
+            ),
+            CompletionResponse(content="Recovered after fake tool narration."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Read the fixture file.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read"]
+    assert "Recovered after fake tool narration." in run.response
+    assert any(
+        message.role == Role.USER
+        and "CRITICAL ERROR: You are PRETENDING to use tools" in message.content
+        for message in backend.invocations[1].messages
+    )
