@@ -47,6 +47,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 12](sprint12.md) — Interview Pressure, Semantic Evidence, and Turn Orchestration
 
+## Phase 11: Semantic Change and Operator Diffs
+
+- [Sprint 13](sprint13.md) — Turn Policy Narrowing, Assumption Ledger, and Artifact Diffs
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
