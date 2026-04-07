@@ -145,3 +145,36 @@ The goal is to make Loader easier to reason about in live use, not just in code 
 - a richer shell sandbox than the current command-based model
 - interactive multi-step explore workflows
 - multi-agent or team orchestration
+
+## Audit
+
+### Landed
+
+- Loader's prompt construction now lives in `src/loader/runtime/prompting.py` as a typed builder with explicit sections, a static/dynamic boundary marker, and thin native-vs-ReAct formatting differences instead of one mostly hand-built string blob
+- prompt metadata now persists in session state, so `loader status`, `loader session list/show`, and the live agent state can explain the active prompt format and which dynamic sections were actually included for the current workspace/task
+- the remaining coordinator heuristics are now split into explicit runtime components: phase tracking in `runtime.phases`, response repair in `runtime.repair`, and completion/self-critique policy in `runtime.completion_policy`
+- `ConversationRuntime.run_turn(...)` now advances explicit turn phases (`prepare`, `assistant`, `repair`, `tools`, `critique`, `completion`, `finalize`) and persists the active phase into session state while also emitting runtime events for the CLI/TUI
+- the TUI status line and CLI/session inspection surfaces now expose the active turn phase while a turn is in flight, which makes Loader's mid-turn behavior much easier to debug than the earlier implicit branch structure
+- Loader now has first-class permission operator commands:
+  - `loader permissions show` displays the active mode, prompting state, rules source, validity, counts, and normalized allow/deny/ask rules
+  - `loader permissions check` dry-runs one hypothetical tool request and reports the normalized input summary, required mode, allow/deny/ask decision, matched rule, and policy reason
+- `loader permissions check` supports both JSON object arguments and practical positional input mapping for common tools such as `bash`, `read`, `write`, `edit`, `patch`, `glob`, `grep`, `git`, and read-only memory/notepad lookups
+- `loader doctor` remediation now points operators toward `loader permissions show` / `loader permissions check` instead of leaving permission debugging as a code/JSON-reading exercise
+- doctor/status/session output now uses more consistent permission terminology around mode, prompting, rules, and source instead of mixing several labels for the same policy concepts
+
+### Verification
+
+- `uv run pytest -q` is green: `176 passed`
+- `tests/test_prompt_builder.py` covers section rendering, native-vs-ReAct formatting, and prompt-builder persistence metadata
+- `tests/test_runtime_phases.py` covers repair/completion phase transitions and active phase bookkeeping
+- `tests/test_inspection.py` now covers `loader permissions show`, `loader permissions check`, invalid JSON input handling, invalid-rule visibility, prompt/policy metadata in status/session surfaces, and the existing doctor/session inspection behavior
+- targeted `ruff` checks are green for `src/loader/runtime/inspection.py`, `tests/test_inspection.py`, and import ordering in `src/loader/cli/main.py`
+- the full Sprint 00-07 parity baseline stayed green through the prompt/phase split and permission CLI rollout
+
+### Residual debt
+
+- `src/loader/runtime/conversation.py` is slimmer than before Sprint 08, but it still coordinates workflow routing and phase transitions with a heuristic branch structure rather than a more formal state machine
+- prompt construction is now inspectable and sectioned, but Loader still does not offer prompt previews/diffs, a richer prompt-contract parity harness, or operator controls for temporarily adjusting prompt sections
+- `loader permissions show/check` make the policy operable, but authoring/editing rules is still file-based and there is still no first-class preview UX for comparing multiple rule sets or applying temporary session overrides
+- doctor/status/session terminology is more coherent now, but the product still stops short of the richer policy UX and sandbox semantics used by the references
+- the explicit turn phases improve observability, but they are still runtime bookkeeping around heuristics, not yet a deeper workflow-state contract on the level of OMX's more opinionated routing discipline
