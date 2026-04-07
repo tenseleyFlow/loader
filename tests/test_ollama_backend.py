@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 
 import pytest
 
-pytest.importorskip("httpx")
+try:
+    import httpx as _httpx  # noqa: F401
+except ModuleNotFoundError:
+    class _AsyncClientStub:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            return None
+
+    sys.modules["httpx"] = types.SimpleNamespace(AsyncClient=_AsyncClientStub)
 
 from loader.llm.base import StreamChunk
 from loader.llm.ollama import OllamaBackend
@@ -167,6 +179,49 @@ async def test_ollama_stream_response_defers_raw_json_detection_to_final_parse()
     assert [chunk.content for chunk in chunks[:-1]] == [raw_json[:30], raw_json[30:]]
     final_chunk = chunks[-1]
     assert final_chunk.full_content == ""
+    assert final_chunk.tool_calls[0].name == "AskUserQuestion"
+    assert final_chunk.tool_calls[0].arguments == {
+        "question": "Which path should we take?"
+    }
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_response_filters_tool_call_tags_and_parses_at_end() -> None:
+    backend = OllamaBackend()
+
+    chunks = [
+        chunk
+        async for chunk in backend._stream_response(
+            FakeStreamResponse(
+                [
+                    {
+                        "message": {
+                            "content": 'Before <tool_call>{"name": "AskUserQuestion", '
+                            '"arguments": {"question": "Which path should we take?"}}'
+                        },
+                        "done": False,
+                    },
+                    {
+                        "message": {"content": "</tool_call> After"},
+                        "done": False,
+                    },
+                    {
+                        "message": {"content": ""},
+                        "done": True,
+                        "prompt_eval_count": 4,
+                        "eval_count": 2,
+                    },
+                ]
+            ),
+            tools=[{"name": "AskUserQuestion"}, {"name": "TodoWrite"}],
+        )
+    ]
+
+    assert [chunk.pending_tool_call for chunk in chunks[:-1]] == [None, None]
+    assert [chunk.content for chunk in chunks[:-1]] == ["Before ", " After"]
+    final_chunk = chunks[-1]
+    assert final_chunk.full_content == "Before  After"
     assert final_chunk.tool_calls[0].name == "AskUserQuestion"
     assert final_chunk.tool_calls[0].arguments == {
         "question": "Which path should we take?"
