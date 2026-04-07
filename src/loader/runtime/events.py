@@ -39,6 +39,7 @@ class AgentEvent:
     pending_items_count: int | None = None
     last_verification_result: str | None = None
     workflow_mode: str | None = None
+    turn_phase: str | None = None
     artifact_kind: str | None = None
     artifact_path: str | None = None
 
