@@ -94,35 +94,35 @@ class ConversationRuntime:
 
         complexity = estimate_complexity(task)
         max_tokens, _ = get_token_budget(complexity)
-        effective_max_tokens = min(self.agent.config.max_tokens, max(max_tokens, 512))
+        effective_max_tokens = min(self.context.config.max_tokens, max(max_tokens, 512))
 
-        rollback_plan = RollbackPlan() if self.agent.config.reasoning.rollback else None
+        rollback_plan = RollbackPlan() if self.context.config.reasoning.rollback else None
         self.executor = ToolExecutor(
-            self.agent.registry,
+            self.context.registry,
             self.tracer,
-            self.agent.permission_policy,
+            self.context.permission_policy,
             hooks=build_default_tool_hooks(
-                action_tracker=self.agent.safeguards.action_tracker,
-                validator=self.agent.safeguards.validator,
-                registry=self.agent.registry,
+                action_tracker=self.context.safeguards.action_tracker,
+                validator=self.context.safeguards.validator,
+                registry=self.context.registry,
                 rollback_plan=rollback_plan,
             ),
         )
         summary = TurnSummary(final_response="")
-        summary.session_id = self.agent.session.session_id
+        summary.session_id = self.context.session.session_id
         dod = self.dod_store.create_or_resume(
             original_task or task,
-            retry_budget=self.agent.config.verification_retry_budget,
+            retry_budget=self.context.config.verification_retry_budget,
         )
         summary.definition_of_done = dod
-        self.agent.session.update_runtime_state(
+        self.context.session.update_runtime_state(
             active_dod_path=dod.storage_path,
             current_task=original_task or task,
-            workflow_mode=self.agent.workflow_mode,
-            permission_mode=self.agent.active_permission_mode,
-            permission_prompting_enabled=self.agent.permission_policy.prompting_enabled,
-            permission_rule_counts=self.agent.active_permission_rule_counts,
-            permission_rules_source=str(self.agent.permission_config_status.source_path),
+            workflow_mode=self.context.workflow_mode,
+            permission_mode=self.context.active_permission_mode,
+            permission_prompting_enabled=self.context.permission_policy.prompting_enabled,
+            permission_rule_counts=self.context.active_permission_rule_counts,
+            permission_rules_source=str(self.context.permission_config_status.source_path),
         )
         await self.finalizer.emit_dod_status(emit, dod)
 
@@ -136,7 +136,7 @@ class ConversationRuntime:
             requested_mode=requested_mode,
         )
 
-        while iterations < self.agent.config.max_iterations:
+        while iterations < self.context.config.max_iterations:
             iterations += 1
             summary.iterations = iterations
             self.tracer.record("turn.iteration_started", iteration=iterations)
@@ -160,12 +160,12 @@ class ConversationRuntime:
                     "fix",
                 ]
                 if any(keyword in task_lower for keyword in action_keywords):
-                    self.agent.session.append(Message(role=Role.ASSISTANT, content="["))
+                    self.context.session.append(Message(role=Role.ASSISTANT, content="["))
 
-            steering_messages = self.agent._drain_steering_queue()
+            steering_messages = self.context.legacy.drain_steering_queue()
             for steering_message in steering_messages:
                 await emit(AgentEvent(type="steering", content=steering_message))
-                self.agent.session.append(
+                self.context.session.append(
                     Message(
                         role=Role.USER,
                         content=f"[USER INTERRUPTION]: {steering_message}",
@@ -203,7 +203,7 @@ class ConversationRuntime:
                     max_empty_retries=max_empty_retries,
                 )
                 if empty_decision.should_continue and empty_decision.retry_prompt:
-                    self.agent.session.append(
+                    self.context.session.append(
                         Message(
                             role=Role.ASSISTANT,
                             content=empty_decision.retry_prompt,
@@ -239,7 +239,7 @@ class ConversationRuntime:
 
             if analysis.is_final_answer:
                 assistant_message = Message(role=Role.ASSISTANT, content=response_content)
-                self.agent.session.append(assistant_message)
+                self.context.session.append(assistant_message)
                 summary.assistant_messages.append(assistant_message)
                 final_response = analysis.final_response or content
                 summary.final_response = final_response
@@ -250,7 +250,7 @@ class ConversationRuntime:
             if tool_calls:
                 if analysis.should_stop:
                     assistant_message = Message(role=Role.ASSISTANT, content=response_content)
-                    self.agent.session.append(assistant_message)
+                    self.context.session.append(assistant_message)
                     summary.assistant_messages.append(assistant_message)
                     final_response = analysis.final_response or content
                     summary.final_response = final_response
@@ -269,7 +269,7 @@ class ConversationRuntime:
                     content=response_content,
                     tool_calls=tool_calls,
                 )
-                self.agent.session.append(assistant_message)
+                self.context.session.append(assistant_message)
                 summary.assistant_messages.append(assistant_message)
                 self.tracer.record(
                     "assistant.tool_batch",
@@ -300,7 +300,7 @@ class ConversationRuntime:
             repair_message = self.repairer.fake_tool_narration_message(
                 response_content=response_content,
                 iterations=iterations,
-                max_iterations=self.agent.config.max_iterations,
+                max_iterations=self.context.config.max_iterations,
             )
             if repair_message is not None:
                 await self.phase_tracker.enter(
@@ -308,15 +308,15 @@ class ConversationRuntime:
                     emit,
                     detail="Repairing fake tool narration",
                 )
-                self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-                self.agent.session.append(Message(role=Role.USER, content=repair_message))
+                self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                self.context.session.append(Message(role=Role.USER, content=repair_message))
                 continue
 
             deflection_message = self.repairer.deflection_message(
                 content=content,
                 actions_taken=actions_taken,
                 iterations=iterations,
-                max_iterations=self.agent.config.max_iterations,
+                max_iterations=self.context.config.max_iterations,
             )
             if deflection_message is not None:
                 await self.phase_tracker.enter(
@@ -324,13 +324,13 @@ class ConversationRuntime:
                     emit,
                     detail="Repairing execution deflection",
                 )
-                self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-                self.agent.session.append(
+                self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                self.context.session.append(
                     Message(role=Role.USER, content=deflection_message)
                 )
                 continue
 
-            cfg = self.agent.config.reasoning
+            cfg = self.context.config.reasoning
             if cfg.self_critique and len(content) > 100:
                 await self.phase_tracker.enter(
                     TurnPhase.CRITIQUE,
@@ -359,7 +359,7 @@ class ConversationRuntime:
             if text_loop_decision.should_stop:
                 return await self._finalize_turn(summary, emit)
 
-            self.agent.safeguards.record_response(content)
+            self.context.safeguards.record_response(content)
             effective_task = original_task or task
             if (
                 cfg.completion_check
@@ -386,7 +386,7 @@ class ConversationRuntime:
             )
 
             final_message = Message(role=Role.ASSISTANT, content=response_content)
-            self.agent.session.append(final_message)
+            self.context.session.append(final_message)
             summary.assistant_messages.append(final_message)
 
             gate_result = await self.finalizer.run_definition_of_done_gate(
@@ -505,7 +505,7 @@ class ConversationRuntime:
             message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
             for message in self.agent.messages[-4:]
         ):
-            self.agent.session.append(
+            self.context.session.append(
                 Message(
                     role=Role.USER,
                     content=(
@@ -527,8 +527,8 @@ class ConversationRuntime:
         summary: TurnSummary,
         reason: str,
     ) -> None:
-        self.agent.set_workflow_mode(mode.value)
-        self.agent.session.update_runtime_state(workflow_mode=mode.value)
+        self.context.legacy.set_workflow_mode(mode.value)
+        self.context.session.update_runtime_state(workflow_mode=mode.value)
         dod.current_mode = mode.value
         if not dod.mode_history or dod.mode_history[-1] != mode.value:
             dod.mode_history.append(mode.value)
@@ -569,8 +569,8 @@ class ConversationRuntime:
         max_tokens: int,
         temperature: float = 0.2,
     ):
-        return await self.agent.backend.complete(
-            messages=self.agent.session.build_request_messages()
+        return await self.context.backend.complete(
+            messages=self.context.session.build_request_messages()
             + [Message(role=Role.USER, content=prompt)],
             tools=tools,
             temperature=temperature,
@@ -586,7 +586,7 @@ class ConversationRuntime:
         summary: TurnSummary,
         on_user_question: UserQuestionHandler,
     ) -> None:
-        ask_tool = self.agent.registry.get("AskUserQuestion")
+        ask_tool = self.context.registry.get("AskUserQuestion")
         assert ask_tool is not None
         prompt = (
             "Clarify the task before planning or implementation.\n"
@@ -618,7 +618,7 @@ class ConversationRuntime:
             content=response.content or tool_call.arguments.get("question", ""),
             tool_calls=[tool_call],
         )
-        self.agent.session.append(assistant_message)
+        self.context.session.append(assistant_message)
         summary.assistant_messages.append(assistant_message)
 
         await emit(
@@ -649,7 +649,7 @@ class ConversationRuntime:
                 phase="clarify",
             )
         )
-        self.agent.session.append(outcome.message)
+        self.context.session.append(outcome.message)
         summary.tool_result_messages.append(outcome.message)
 
         question = str(tool_call.arguments.get("question", "")).strip()
