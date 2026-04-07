@@ -179,6 +179,16 @@ def create_default_registry(
 ) -> ToolRegistry:
     """Create a registry with default tools."""
     from .file_tools import EditTool, GlobTool, ReadTool, WriteTool
+    from .memory_tools import (
+        NotepadReadTool,
+        NotepadWriteManualTool,
+        NotepadWritePriorityTool,
+        NotepadWriteWorkingTool,
+        ProjectMemoryAddDirectiveTool,
+        ProjectMemoryAddNoteTool,
+        ProjectMemoryReadTool,
+        ProjectMemoryWriteTool,
+    )
     from .search_tools import GrepTool
     from .shell_tools import BashTool
     from .workflow_tools import AskUserQuestionTool, TodoWriteTool
@@ -192,5 +202,13 @@ def create_default_registry(
     registry.register(GrepTool())
     registry.register(TodoWriteTool())
     registry.register(AskUserQuestionTool())
+    registry.register(ProjectMemoryReadTool())
+    registry.register(ProjectMemoryWriteTool())
+    registry.register(ProjectMemoryAddNoteTool())
+    registry.register(ProjectMemoryAddDirectiveTool())
+    registry.register(NotepadReadTool())
+    registry.register(NotepadWritePriorityTool())
+    registry.register(NotepadWriteWorkingTool())
+    registry.register(NotepadWriteManualTool())
 
     return registry

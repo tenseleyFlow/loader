@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import sys
 
 import click
 import httpx
@@ -12,6 +13,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..runtime.permissions import PermissionMode
+from .options import inject_resume_target
 from .rendering import (
     format_dod_status,
     format_permission_mode,
@@ -155,6 +157,7 @@ def clean_response(text: str) -> str:
 @click.option("--no-context", is_flag=True, help="Skip auto-detecting project context")
 @click.option("--plan", is_flag=True, help="Start the task in plan mode")
 @click.option("--clarify", is_flag=True, help="Start the task in clarify mode")
+@click.option("--resume-target", hidden=True, default=None)
 @click.option("--no-recover", is_flag=True, help="Disable auto-recovery from tool errors")
 @click.option("--no-tui", is_flag=True, help="Use simple Rich output instead of full TUI")
 @click.option("--ctx", type=int, default=8192, help="Context window size (default: 8192, smaller = faster)")
@@ -167,7 +170,7 @@ def clean_response(text: str) -> str:
 @click.option("--verify", is_flag=True, help="Enable post-action verification (check results)")
 @click.option("--reason", is_flag=True, help="Enable all reasoning stages (decompose + critique + confidence + verify)")
 @click.argument("prompt", required=False)
-def main(
+def cli(
     model: str | None,
     select_model: bool,
     backend: str,
@@ -177,6 +180,7 @@ def main(
     no_context: bool,
     plan: bool,
     clarify: bool,
+    resume_target: str | None,
     no_recover: bool,
     no_tui: bool,
     ctx: int,
@@ -191,9 +195,15 @@ def main(
 ) -> None:
     """Loader - Local AI coding assistant."""
     asyncio.run(_main(
-        model, select_model, backend, yes, permission_mode, react, no_context, plan, clarify, no_recover,
+        model, select_model, backend, yes, permission_mode, react, no_context, plan, clarify, resume_target, no_recover,
         no_tui, ctx, gpu, timeout, decompose, critique, confidence, verify, reason, prompt
     ))
+
+
+def main() -> None:
+    """Entry-point wrapper that supports `--resume [session-id]` syntax."""
+
+    cli.main(args=inject_resume_target(sys.argv[1:]), prog_name="loader")
 
 
 async def _main(
@@ -206,6 +216,7 @@ async def _main(
     no_context: bool,
     plan: bool,
     clarify: bool,
+    resume_target: str | None,
     no_recover: bool,
     no_tui: bool,
     ctx: int | None,
@@ -289,6 +300,17 @@ async def _main(
         reasoning=reasoning_config,
     )
     agent = Agent(backend=llm, registry=registry, config=config)
+    resumed = False
+    if resume_target is not None:
+        session_id = None if resume_target == "__latest__" else resume_target
+        resumed = agent.resume_session(session_id)
+        if not resumed and session_id is None:
+            console.print("[yellow]No previous session found; starting a new session.[/yellow]")
+        elif not resumed:
+            console.print(f"[red]Session not found:[/red] {session_id}")
+            return
+        else:
+            console.print(f"[dim]Resumed session: {agent.session.session_id}[/dim]")
 
     # Show reasoning status if enabled
     reasoning_active = []
@@ -310,8 +332,8 @@ async def _main(
         status_parts = [
             f"Model: {model}",
             f"Mode: {mode_str}",
-            f"Workflow: {format_workflow_mode(config.workflow_mode_override or 'execute')}",
-            f"Permissions: {format_permission_mode(permission_mode)}",
+            f"Workflow: {format_workflow_mode(agent.workflow_mode)}",
+            f"Permissions: {format_permission_mode(agent.active_permission_mode)}",
         ]
         if agent.project_context:
             status_parts.append(f"Project: {agent.project_context.project_type}")
@@ -333,8 +355,8 @@ async def _main(
         status_parts = [
             f"Model: {model}",
             f"Mode: {mode_str}",
-            f"Workflow: {format_workflow_mode(config.workflow_mode_override or 'execute')}",
-            f"Permissions: {format_permission_mode(permission_mode)}",
+            f"Workflow: {format_workflow_mode(agent.workflow_mode)}",
+            f"Permissions: {format_permission_mode(agent.active_permission_mode)}",
         ]
         if agent.project_context:
             status_parts.append(f"Project: {agent.project_context.project_type}")
@@ -356,8 +378,8 @@ async def _main(
             agent=agent,
             model_name=model,
             mode=mode_str,
-            workflow_mode=config.workflow_mode_override or "execute",
-            permission_mode=permission_mode,
+            workflow_mode=agent.workflow_mode,
+            permission_mode=agent.active_permission_mode,
         )
         await app.run_async()
 

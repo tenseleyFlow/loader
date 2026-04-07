@@ -12,6 +12,7 @@ from ..agent.safeguards import ActionTracker, PreActionValidator
 from ..llm.base import ToolCall
 from ..tools.base import Tool, ToolRegistry
 from ..tools.base import ToolResult as RegistryToolResult
+from .memory import MemoryStore
 from .permissions import PermissionOverride, PermissionPolicy
 
 
@@ -258,6 +259,33 @@ class ActionHistoryHook(BaseToolHook):
         return HookResult()
 
 
+class MemoryLifecycleHook(BaseToolHook):
+    """Mirror durable memory updates into the session notepad."""
+
+    async def post_tool_use(self, context: HookContext) -> HookResult:
+        if context.result is None or context.result.is_error:
+            return HookResult()
+
+        store = MemoryStore(context.permission_policy.workspace_root)
+        if context.tool_call.name == "project_memory_add_note":
+            category = str(context.tool_call.arguments.get("category", "")).strip()
+            content = str(context.tool_call.arguments.get("content", "")).strip()
+            if category and content:
+                store.append_notepad_working(
+                    f"Remembered note [{category}]: {content}"
+                )
+        elif context.tool_call.name == "project_memory_add_directive":
+            directive = str(context.tool_call.arguments.get("directive", "")).strip()
+            priority = str(
+                context.tool_call.arguments.get("priority", "normal")
+            ).strip()
+            if directive:
+                store.append_notepad_working(
+                    f"Remembered directive [{priority}]: {directive}"
+                )
+        return HookResult()
+
+
 def build_default_tool_hooks(
     *,
     action_tracker: ActionTracker,
@@ -273,5 +301,6 @@ def build_default_tool_hooks(
             ActionValidationHook(validator),
             RollbackTrackingHook(registry, rollback_plan),
             ActionHistoryHook(action_tracker),
+            MemoryLifecycleHook(),
         ]
     )

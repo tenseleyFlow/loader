@@ -31,6 +31,7 @@ from .dod import (
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
 from .hooks import build_default_tool_hooks
+from .memory import MemoryStore
 from .session import normalize_usage
 from .tracing import RuntimeTracer
 from .workflow import (
@@ -1443,6 +1444,10 @@ class ConversationRuntime:
             iterations=summary.iterations,
         )
         summary.session_id = self.agent.session.session_id
+        if summary.definition_of_done and summary.definition_of_done.status == "done":
+            MemoryStore(self.agent.project_root).capture_definition_of_done(
+                build_verification_summary(summary.definition_of_done.evidence)
+            )
         summary.trace = list(self.tracer.events)
         return summary
 
