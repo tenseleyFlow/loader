@@ -126,6 +126,60 @@ def test_slot_prompt_block_adds_secondary_touchpoint_for_example_pressure() -> N
     assert "Relevant paths: src/loader/runtime/workflow_lanes.py" in block
 
 
+def test_brief_hints_seed_touchpoints_constraints_and_acceptance() -> None:
+    grounding = ClarifyGrounding(
+        existing_references=["src/loader/runtime/workflow_lanes.py"],
+        candidate_touchpoints=["src/loader/runtime/clarify_strategy.py"],
+        repo_facts=[
+            ClarifyRepoFact(
+                path="src/loader/runtime/workflow_lanes.py",
+                summary="class WorkflowLaneRunner:",
+            ),
+            ClarifyRepoFact(
+                path="src/loader/runtime/clarify_strategy.py",
+                summary="Intent-aware clarify strategy for runtime follow-up.",
+            ),
+        ],
+    )
+
+    hints = grounding.brief_hints()
+
+    assert hints.likely_touchpoints == [
+        "src/loader/runtime/workflow_lanes.py",
+        "src/loader/runtime/clarify_strategy.py",
+    ]
+    assert any("workflow_lanes.py" in item for item in hints.constraints)
+    assert any("clarify_strategy.py" in item for item in hints.constraints)
+    assert any("WorkflowLaneRunner" in item for item in hints.assumptions)
+    assert any("Primary work stays scoped" in item for item in hints.acceptance_criteria)
+
+
+def test_brief_prompt_block_renders_grounded_brief_hints() -> None:
+    grounding = ClarifyGrounding(
+        existing_references=["src/loader/runtime/workflow_lanes.py"],
+        candidate_touchpoints=["src/loader/runtime/clarify_strategy.py"],
+        repo_facts=[
+            ClarifyRepoFact(
+                path="src/loader/runtime/workflow_lanes.py",
+                summary="class WorkflowLaneRunner:",
+            ),
+            ClarifyRepoFact(
+                path="src/loader/runtime/clarify_strategy.py",
+                summary="Intent-aware clarify strategy for runtime follow-up.",
+            ),
+        ],
+    )
+
+    block = grounding.brief_prompt_block()
+
+    assert "Seed likely touchpoints" in block
+    assert "Preserve constraints" in block
+    assert "Grounded assumptions" in block
+    assert "Scope acceptance criteria" in block
+    assert "workflow_lanes.py" in block
+    assert "clarify_strategy.py" in block
+
+
 def test_build_grounded_question_anchors_touchpoint_tradeoff_with_repo_fact() -> None:
     question = build_grounded_clarify_question(
         task="Tighten Loader runtime clarify behavior.",

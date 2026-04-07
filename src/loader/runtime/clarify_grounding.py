@@ -93,6 +93,28 @@ class ClarifyRepoFact:
 
 
 @dataclass(slots=True)
+class ClarifyBriefHints:
+    """Grounded hints that can strengthen a persisted clarify brief."""
+
+    likely_touchpoints: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    acceptance_criteria: list[str] = field(default_factory=list)
+
+    def has_content(self) -> bool:
+        """Return whether any grounded hint is available."""
+
+        return any(
+            (
+                self.likely_touchpoints,
+                self.constraints,
+                self.assumptions,
+                self.acceptance_criteria,
+            )
+        )
+
+
+@dataclass(slots=True)
 class ClarifyGrounding:
     """Cheap workspace evidence that clarify mode can reference."""
 
@@ -189,6 +211,81 @@ class ClarifyGrounding:
             )
         if not lines:
             return self.prompt_block()
+        return "\n".join(lines)
+
+    def brief_hints(self) -> ClarifyBriefHints:
+        """Return grounded hints for clarify brief synthesis and fallback repair."""
+
+        primary_path = self.primary_touchpoint()
+        secondary_path = self.secondary_touchpoint()
+        primary_fact = self.primary_fact()
+        secondary_fact = self.secondary_fact()
+
+        likely_touchpoints = [
+            path for path in [primary_path, secondary_path] if path is not None
+        ][:2]
+
+        constraints: list[str] = []
+        if primary_path is not None:
+            constraints.append(
+                f"Keep the primary implementation scoped to `{primary_path}` "
+                "unless evidence requires a wider edit."
+            )
+        if secondary_path is not None:
+            constraints.append(
+                f"Preserve existing behavior in `{secondary_path}` unless the user broadens scope."
+            )
+
+        assumptions: list[str] = []
+        for fact in [primary_fact, secondary_fact]:
+            if fact is None:
+                continue
+            assumptions.append(
+                f"Workspace evidence: `{fact.path}` currently contains `{fact.summary}`."
+            )
+
+        acceptance_criteria: list[str] = []
+        if primary_path is not None:
+            acceptance_criteria.append(
+                f"Primary work stays scoped to `{primary_path}`."
+            )
+        if secondary_path is not None:
+            acceptance_criteria.append(
+                f"Nearby surface `{secondary_path}` stays unchanged unless "
+                "the user confirms otherwise."
+            )
+
+        return ClarifyBriefHints(
+            likely_touchpoints=likely_touchpoints,
+            constraints=constraints,
+            assumptions=assumptions,
+            acceptance_criteria=acceptance_criteria,
+        )
+
+    def brief_prompt_block(self) -> str:
+        """Render brief-oriented grounding hints for the brief synthesis prompt."""
+
+        hints = self.brief_hints()
+        if not hints.has_content():
+            return self.prompt_block()
+
+        lines: list[str] = []
+        if hints.likely_touchpoints:
+            lines.append(
+                "- Seed likely touchpoints: " + ", ".join(hints.likely_touchpoints)
+            )
+        if hints.constraints:
+            lines.append(
+                "- Preserve constraints: " + "; ".join(hints.constraints)
+            )
+        if hints.assumptions:
+            lines.append(
+                "- Grounded assumptions: " + "; ".join(hints.assumptions)
+            )
+        if hints.acceptance_criteria:
+            lines.append(
+                "- Scope acceptance criteria: " + "; ".join(hints.acceptance_criteria)
+            )
         return "\n".join(lines)
 
     def primary_touchpoint(self) -> str | None:
