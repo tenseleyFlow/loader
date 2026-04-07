@@ -125,6 +125,16 @@
     "description": "Conversational tasks skip the verify phase entirely and avoid DoD overhead."
   },
   {
+    "name": "explore_mode_skips_dod_and_router",
+    "category": "explore",
+    "description": "Explore mode answers lookup questions without entering workflow routing or creating DoD artifacts."
+  },
+  {
+    "name": "explore_mode_denies_write",
+    "category": "explore",
+    "description": "Explore mode stays read-only even when the broader session would otherwise allow workspace writes."
+  },
+  {
     "name": "completion_check_continuation",
     "category": "behavior",
     "description": "Premature completion triggers a continuation prompt and the task continues."

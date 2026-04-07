@@ -132,3 +132,34 @@ async def run_scenario(
         invocations=list(backend.invocations),
         agent=agent,
     )
+
+
+async def run_explore_scenario(
+    prompt: str,
+    backend: ScriptedBackend,
+    *,
+    config: AgentConfig | None = None,
+    project_root: Path | str | None = None,
+) -> ScenarioRun:
+    """Run a scripted explore query and collect emitted events."""
+
+    agent = Agent(
+        backend=backend,
+        config=config or AgentConfig(auto_context=False),
+        project_root=project_root,
+    )
+    events: list[AgentEvent] = []
+
+    async def capture(event: AgentEvent) -> None:
+        events.append(event)
+
+    response = await agent.run_explore(
+        prompt,
+        on_event=capture,
+    )
+    return ScenarioRun(
+        response=response,
+        events=events,
+        invocations=list(backend.invocations),
+        agent=agent,
+    )

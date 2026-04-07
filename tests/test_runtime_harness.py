@@ -11,7 +11,11 @@ from loader.agent.loop import Agent, AgentConfig
 from loader.llm.base import CompletionResponse, Role, StreamChunk, ToolCall
 from loader.runtime.capabilities import resolve_capability_profile
 from loader.runtime.permissions import PermissionMode
-from tests.helpers.runtime_harness import ScriptedBackend, run_scenario
+from tests.helpers.runtime_harness import (
+    ScriptedBackend,
+    run_explore_scenario,
+    run_scenario,
+)
 
 SCENARIO_NAMES = [
     "streaming_text",
@@ -39,6 +43,8 @@ SCENARIO_NAMES = [
     "complex_prompt_routes_to_plan",
     "verify_failure_fix_loop_does_not_reroute_workflow",
     "conversational_task_skips_verify_phase",
+    "explore_mode_skips_dod_and_router",
+    "explore_mode_denies_write",
     "completion_check_continuation",
     "tool_result_contract_regression",
 ]
@@ -1119,6 +1125,87 @@ async def test_conversational_task_skips_verify_phase() -> None:
     assert run.response == "Hello there."
     assert not dod_statuses(run)
     assert run.agent.last_turn_summary is None
+
+
+@pytest.mark.asyncio
+async def test_explore_mode_skips_dod_and_router(temp_dir: Path) -> None:
+    target = temp_dir / "feature.py"
+    target.write_text("def important_helper():\n    return 1\n")
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="grep-1",
+                    name="grep",
+                    arguments={
+                        "pattern": "important_helper",
+                        "path": str(temp_dir),
+                        "include": "*.py",
+                    },
+                ),
+                content="I'll search for that helper.",
+            ),
+            final_response("important_helper is defined in feature.py."),
+        ]
+    )
+
+    run = await run_explore_scenario(
+        "Where is important_helper defined?",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert "feature.py" in run.response
+    assert tool_event_names(run) == ["grep"]
+    assert not dod_statuses(run)
+    assert not workflow_modes(run)
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.definition_of_done is None
+    assert run.agent.last_turn_summary.workflow_mode == "explore"
+    assert "explore.completed" in trace_event_names(run)
+    assert not (temp_dir / ".loader" / "dod").exists()
+    assert run.invocations[0].tools is not None
+    assert "write" not in {tool["name"] for tool in run.invocations[0].tools or []}
+
+
+@pytest.mark.asyncio
+async def test_explore_mode_denies_write(temp_dir: Path) -> None:
+    target = temp_dir / "new.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.WORKSPACE_WRITE
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={
+                        "file_path": str(target),
+                        "content": "not allowed\n",
+                    },
+                ),
+                content="I'll write a file.",
+            ),
+            final_response("Explore mode is read-only, so I cannot make that change here."),
+        ]
+    )
+
+    run = await run_explore_scenario(
+        "Create a new file anyway.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert not target.exists()
+    assert tool_event_names(run) == ["write"]
+    assert any("read-only" in message.lower() for message in tool_result_messages(run))
+    assert "cannot make that change" in run.response.lower()
+    assert "tool.permission_denied" in trace_event_names(run)
+    assert not dod_statuses(run)
+    assert not workflow_modes(run)
+    assert not (temp_dir / ".loader" / "dod").exists()
 
 
 @pytest.mark.asyncio
