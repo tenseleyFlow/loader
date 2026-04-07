@@ -100,3 +100,32 @@ By this point Loader has accumulated a lot of CLI flags and TUI surfaces. Sprint
 - doctor / status / session surfaces reflect real state
 - Loader feels closer to a product and less like an experiment
 - the team / multi-agent / hook-ecosystem deferrals are still deferred (and that is the right call)
+
+## Audit
+
+### Landed
+
+- Loader now exposes `loader doctor`, `loader status`, `loader session list`, `loader session show`, and `loader session resume` as real product surfaces backed by persisted runtime state under `.loader/`, without entering the main LLM loop
+- `loader doctor` reports backend health, resolved capabilities, workspace and write access, command detection, runtime-state health, and permission-mode summaries with pass/warn/fail status plus remediation hints
+- the read-only explore lane is live through `loader explore <prompt>` and `Agent.run_explore(...)`, with its own system prompt, constrained read-only registry, forced `read-only` permission mode, and no workflow routing or DoD persistence
+- Loader's tool registry now includes a structured `patch` tool, a read-only `git` helper, `notepad_append`, and richer structured `AskUserQuestion` prompts with titles, context, options, and optional freeform answers
+- the CLI and TUI status surfaces now show model, capability profile, mode, workflow mode, permission mode, DoD state, and active session id in a single coherent surface, and `loader --help` reflects the new product entry points
+- Sprint 06 coverage now extends the deterministic parity harness with explore-mode scenarios, so the constrained lookup lane is measured alongside the earlier runtime contracts
+
+### Verification
+
+- `uv run pytest -q` is green: `153 passed`
+- `tests/test_inspection.py` covers doctor health reporting, persisted status/session inspection, root help text, and session-resume dispatch
+- `tests/test_explore_runtime.py` covers the direct explore-lane contract and forced read-only behavior
+- `tests/test_expanded_tools.py` covers structured patch application, read-only git tooling, `notepad_append`, and richer `AskUserQuestion` behavior
+- `tests/test_runtime_harness.py` remains green and now includes deterministic explore-mode parity scenarios in addition to the earlier runtime baseline
+- `tests/test_status_surfaces.py` covers the consolidated CLI/TUI capability-profile and session-id status formatting
+
+### Residual debt
+
+- explore mode is intentionally one-shot and read-only; Loader still does not have a richer interactive inspection lane or OMX-style repo-navigation ergonomics
+- the CLI surface is more coherent, but Sprint 06 does not fully deprecate every older entry path or simplify all historical flag combinations
+- the read-only `git` helper is still much narrower than claw-code and OMX's broader repo/product surfaces
+- the structured `patch` tool improves multi-line edits, but Loader still lacks AST-aware, LSP-aware, or symbol-aware editing semantics
+- `conversation.py` remains a large runtime module even though explore now bypasses it for simple lookup work
+- multi-agent and team-oriented surfaces remain intentionally deferred, and that continues to be the right tradeoff for Loader at this stage
