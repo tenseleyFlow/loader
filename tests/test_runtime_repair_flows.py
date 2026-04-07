@@ -68,7 +68,7 @@ async def test_first_turn_action_prompt_does_not_inject_prefill_message(
 
 
 @pytest.mark.asyncio
-async def test_empty_response_repair_injects_retry_prompt_and_recovers(
+async def test_empty_response_retry_injects_honest_user_reminder_and_recovers(
     temp_dir: Path,
 ) -> None:
     fixture = temp_dir / "fixture.txt"
@@ -100,10 +100,36 @@ async def test_empty_response_repair_injects_retry_prompt_and_recovers(
     assert tool_event_names(run) == ["read"]
     assert "Recovered after the empty response." in run.response
     assert any(
-        message.role == Role.ASSISTANT
-        and "Great! Now let me proceed with the task." in message.content
+        message.role == Role.USER
+        and "[EMPTY ASSISTANT RESPONSE]" in message.content
         for message in backend.invocations[1].messages
     )
+
+
+@pytest.mark.asyncio
+async def test_repeated_empty_responses_fail_honestly_after_one_retry(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=""),
+            CompletionResponse(content=""),
+        ]
+    )
+
+    run = await run_scenario(
+        "Read the fixture file.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == []
+    assert run.response == (
+        "I didn't get a usable response from the model after retrying once. "
+        "Please try again or switch to a different backend/model."
+    )
+    assert len(backend.invocations) == 2
 
 
 @pytest.mark.asyncio

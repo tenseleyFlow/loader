@@ -87,7 +87,7 @@ class ConversationRuntime:
         actions_taken: list[str] = []
         continuation_count = 0
         empty_retry_count = 0
-        max_empty_retries = 5
+        max_empty_retries = 1
         extracted_iterations = 0
         max_extracted_iterations = 3
         consecutive_errors = 0
@@ -181,11 +181,11 @@ class ConversationRuntime:
                     empty_retry_count=empty_retry_count,
                     max_empty_retries=max_empty_retries,
                 )
-                if empty_decision.should_continue and empty_decision.retry_prompt:
+                if empty_decision.should_continue and empty_decision.retry_message:
                     self.context.session.append(
                         Message(
-                            role=Role.ASSISTANT,
-                            content=empty_decision.retry_prompt,
+                            role=Role.USER,
+                            content=empty_decision.retry_message,
                         )
                     )
                     continue

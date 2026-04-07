@@ -14,7 +14,7 @@ class EmptyResponseDecision:
     """Decision for an empty assistant response."""
 
     should_continue: bool
-    retry_prompt: str | None = None
+    retry_message: str | None = None
     final_response: str | None = None
     failure: str | None = None
 
@@ -51,34 +51,22 @@ class ResponseRepairer:
     ) -> EmptyResponseDecision:
         """Return the next action when the assistant responds with empty content."""
 
+        _ = task, original_task
         if empty_retry_count <= max_empty_retries:
-            task_context = original_task or task
-            retry_prompts = [
-                "Great! Now let me proceed with the task. I'll start by using my tools.",
-                "I understand. Let me create that now using my tools (write, bash, etc.).",
-                (
-                    f"Proceeding with: {task_context[:80]}. "
-                    "I'll use the write tool to create the files."
-                ),
-                "Starting now. First step: create the necessary files and directories.",
-                (
-                    "Let me complete this task step by step. "
-                    f"The goal is: {task_context[:100]}"
-                ),
-            ]
-            retry_prompt = retry_prompts[
-                min(empty_retry_count - 1, len(retry_prompts) - 1)
-            ]
             return EmptyResponseDecision(
                 should_continue=True,
-                retry_prompt=retry_prompt,
+                retry_message=(
+                    "[EMPTY ASSISTANT RESPONSE]\n"
+                    "Your last response was empty. Respond directly to the task "
+                    "or call tools if needed. Do not return an empty response."
+                ),
             )
 
         return EmptyResponseDecision(
             should_continue=False,
             final_response=(
-                "I need a bit more direction. "
-                "What specifically would you like me to create or do?"
+                "I didn't get a usable response from the model after retrying once. "
+                "Please try again or switch to a different backend/model."
             ),
             failure="assistant returned empty output repeatedly",
         )
