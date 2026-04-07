@@ -27,7 +27,10 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - typed workflow-signal extraction with persisted `signal_summary` context for route pressure, recent workflow history, and unresolved questions
 - mode-specific system prompts for clarify, plan, execute, and verify
 - intent-aware bounded clarify follow-through with explicit focus slots and persisted unresolved-question carry-forward
+- pressure-pass clarify reviews with explicit readiness gates, challenged-assumption/tradeoff/example pressure kinds, and persisted clarify-pressure metadata
+- codebase-backed clarify grounding with workspace evidence, repo facts, slot-aware evidence selection, pressure-aware evidence selection, and grounded brief hints for persisted clarify artifacts
 - semantic artifact invalidation that can choose targeted plan refresh, clarify reentry, or full re-plan before execution continues
+- structured workflow drift evidence covering confirmed touchpoints, inferred touchpoints, acceptance anchors, contradicted assumptions, verification contradictions, and task-boundary drift
 - persisted workflow timeline entries for routes, handoffs, reentries, clarify outcomes, plan refreshes, and verify skips
 - explicit verify/fix loops for mutating tasks, with a bounded retry budget
 - verify/fix retries return to execute mode without re-triggering clarify or plan
@@ -53,15 +56,16 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - workspace-bound file operations with canonicalized boundary checks, binary detection, size limits, and structured patch metadata
 - shell mutability classification plus structured truncation and stderr/exit-code metadata
 - richer structured `AskUserQuestion` prompts with titles, context, options, and optional freeform responses
-- assistant-turn request handling now lives in `runtime.assistant_turns`, clarify/plan lane execution now lives in `runtime.workflow_lanes`, tool-batch execution/recovery now lives in `runtime.tool_batches`, and DoD/finalization logic now lives in `runtime.finalization` instead of accumulating further inside `conversation.py`
+- assistant-turn request handling now lives in `runtime.assistant_turns`, clarify/plan lane execution now lives in `runtime.workflow_lanes`, tool-batch execution/recovery now lives in `runtime.tool_batches`, DoD/finalization logic now lives in `runtime.finalization`, workflow-state/session mutation lives in `runtime.workflow_state`, and the main loop now runs through `runtime.turn_preparation`, `runtime.turn_preamble`, `runtime.turn_iteration`, and `runtime.turn_loop` instead of accumulating further inside `conversation.py`
+- `src/loader/runtime/conversation.py` now acts as a compact coordinator over dedicated runtime controllers rather than owning a monolithic turn loop
 
 ## Known weak spots
 
-- the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it still owns workflow routing, prompt repair, self-critique/completion heuristics, and other coordination logic that remains more heuristic-heavy than the reference runtime in `refs/claw-code`
+- [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py) is now much smaller and controller-based, but [`src/loader/runtime/turn_iteration.py`](../src/loader/runtime/turn_iteration.py) remains a relatively heavy seam with repair, tool-routing, and completion policy that is still more heuristic-heavy than the reference runtime in `refs/claw-code`
 - planning, decomposition, and several helper behaviors still live in [`src/loader/agent/loop.py`](../src/loader/agent/loop.py), so ownership is cleaner than Sprint 00 but not fully simplified yet
-- the workflow policy now consumes typed signals, but signal extraction is still heuristic and hand-tuned; Loader does not yet implement OMX's deeper ambiguity analysis, pressure-pass discipline, or branch-specific policy depth
-- clarify is now intent-aware and slot-driven, but it is still much shallower than OMX's deep-interview behavior and does not adapt its budget or questioning style by task class
-- plan freshness now handles broader semantic invalidation, but it is still text-based and lightweight; Loader does not yet reason deeply over richer artifact metadata, contradicting verification evidence, or larger task reframes
+- the workflow policy now consumes typed signals, but signal extraction is still heuristic and hand-tuned; Loader does not yet implement OMX's deeper ambiguity analysis, richer pressure-pass discipline, or branch-specific policy depth
+- clarify is now intent-aware, pressure-aware, and codebase-grounded, but it is still much shallower than OMX's deep-interview behavior and does not adapt its budget or questioning style by task class
+- plan freshness now handles broader semantic invalidation with typed evidence, but it is still lightweight and runtime-authored; Loader does not yet reason deeply over richer artifact metadata, contradicting verification evidence, or larger task reframes
 - plan mode is still a single-pass artifact generator, not a Planner/Architect/Critic consensus loop
 - DoD acceptance criteria and pending items are stronger than Sprint 02, but todo progress is still lightly structured compared with claw-code's richer workflow state
 - evidence summaries are deterministic runtime summaries of captured output, not model-written verification narratives
@@ -82,7 +86,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 
 ## Deterministic parity scenarios
 
-The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](../tests/fixtures/runtime_parity_manifest.json) and is exercised by [`tests/test_runtime_harness.py`](../tests/test_runtime_harness.py). Sprint 04 adds focused workflow integration coverage in [`tests/test_workflow_runtime.py`](../tests/test_workflow_runtime.py) and artifact/router unit coverage in [`tests/test_workflow.py`](../tests/test_workflow.py). Sprint 06 adds inspection/explore coverage in [`tests/test_inspection.py`](../tests/test_inspection.py), [`tests/test_explore_runtime.py`](../tests/test_explore_runtime.py), and [`tests/test_expanded_tools.py`](../tests/test_expanded_tools.py). Sprint 10 extends that workflow coverage in [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py), [`tests/test_workflow_runtime.py`](../tests/test_workflow_runtime.py), and [`tests/test_inspection.py`](../tests/test_inspection.py) for scored routing, clarify-budget behavior, plan refresh, and workflow timeline inspection. Sprint 11 adds [`tests/test_workflow_signals.py`](../tests/test_workflow_signals.py), [`tests/test_clarify_strategy.py`](../tests/test_clarify_strategy.py), [`tests/test_artifact_invalidation.py`](../tests/test_artifact_invalidation.py), and expanded inspection/runtime coverage for signal summaries, intent-aware clarify, semantic replan recovery, and workflow timeline filtering/highlights.
+The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](../tests/fixtures/runtime_parity_manifest.json) and is exercised by [`tests/test_runtime_harness.py`](../tests/test_runtime_harness.py). Sprint 04 adds focused workflow integration coverage in [`tests/test_workflow_runtime.py`](../tests/test_workflow_runtime.py) and artifact/router unit coverage in [`tests/test_workflow.py`](../tests/test_workflow.py). Sprint 06 adds inspection/explore coverage in [`tests/test_inspection.py`](../tests/test_inspection.py), [`tests/test_explore_runtime.py`](../tests/test_explore_runtime.py), and [`tests/test_expanded_tools.py`](../tests/test_expanded_tools.py). Sprint 10 extends that workflow coverage in [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py), [`tests/test_workflow_runtime.py`](../tests/test_workflow_runtime.py), and [`tests/test_inspection.py`](../tests/test_inspection.py) for scored routing, clarify-budget behavior, plan refresh, and workflow timeline inspection. Sprint 11 adds [`tests/test_workflow_signals.py`](../tests/test_workflow_signals.py), [`tests/test_clarify_strategy.py`](../tests/test_clarify_strategy.py), [`tests/test_artifact_invalidation.py`](../tests/test_artifact_invalidation.py), and expanded inspection/runtime coverage for signal summaries, intent-aware clarify, semantic replan recovery, and workflow timeline filtering/highlights. Sprint 12 adds [`tests/test_clarify_grounding.py`](../tests/test_clarify_grounding.py), [`tests/test_turn_preparation.py`](../tests/test_turn_preparation.py), [`tests/test_turn_completion.py`](../tests/test_turn_completion.py), [`tests/test_turn_iteration.py`](../tests/test_turn_iteration.py), [`tests/test_turn_preamble.py`](../tests/test_turn_preamble.py), [`tests/test_workflow_state.py`](../tests/test_workflow_state.py), and [`tests/test_turn_loop.py`](../tests/test_turn_loop.py) for grounded clarify, structured recovery evidence, and the controllerized turn runtime.
 
 - `streaming_text`: green
 - `read_file_roundtrip`: green
@@ -123,7 +127,7 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-07:
 
-- `uv run pytest -q`: 197 passed
+- `uv run pytest -q`: 231 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_prompt_builder.py` covers section rendering, native-vs-ReAct formatting, and prompt metadata persistence
 - `tests/test_turn_state_machine.py` covers allowed/disallowed turn transitions and terminal transition metadata
@@ -132,9 +136,11 @@ As of 2026-04-07:
 - `tests/test_workflow.py` covers workflow artifact round trips, scored-router expectations, DoD workflow links, and todo-to-DoD syncing
 - `tests/test_workflow_signals.py` covers typed signal extraction, recent timeline pressure, and persisted `signal_summary` context
 - `tests/test_clarify_strategy.py` covers clarify-slot prioritization and targeted follow-up question selection
+- `tests/test_clarify_grounding.py` covers workspace evidence extraction, slot-aware/pressure-aware clarify grounding, and grounded clarify-brief hints
 - `tests/test_workflow_policy.py` covers score breakdowns, clarify follow-up reviews, signal-summary persistence, artifact-freshness metadata, and workflow timeline serialization
 - `tests/test_artifact_invalidation.py` covers semantic invalidation triggers plus targeted recovery selection for plan refresh vs full re-plan
 - `tests/test_workflow_runtime.py` covers clarify routing, intent-aware clarify continuation, plan routing, targeted plan refresh, full re-plan through clarify reentry, verify-fix workflow handoff, and persisted workflow-decision metadata
+- `tests/test_turn_preparation.py`, `tests/test_turn_completion.py`, `tests/test_turn_iteration.py`, `tests/test_turn_preamble.py`, `tests/test_workflow_state.py`, and `tests/test_turn_loop.py` cover the controllerized turn-runtime seams directly instead of relying only on large end-to-end runtime tests
 - `tests/test_workflow_tools.py` and `tests/test_workflow_runtime_tools.py` cover `TodoWrite`, `AskUserQuestion`, and runtime callback plumbing
 - `tests/test_session_state.py` covers session persistence, resume, rotation, compaction persistence, cumulative usage rollups, and persisted permission-policy metadata
 - `tests/test_compaction.py` covers claw-style line compression and compacted continuation-message behavior
@@ -147,7 +153,7 @@ As of 2026-04-07:
 - `tests/test_tool_safety.py` covers workspace boundaries, binary/oversize guards, patch metadata, and shell truncation/classification
 - `tests/test_status_surfaces.py` covers the CLI/TUI DoD, workflow-mode, permission-mode, capability-profile, and session-id formatting helpers
 - native and extracted tool calls now record the same executor trace events, with source-specific metadata
-- turn startup can refine backend capability profiles before the first request, `run_streaming()` delegates into the main runtime path, mutating tasks route through persisted evidence-backed completion, workflow artifacts survive across turns, sessions compact safely, explore queries bypass DoD/router overhead safely, policy rules are enforced deterministically, operators can inspect/dry-run policy decisions without live turns, prompt construction is sectioned and persisted, explicit turn phases are visible while a turn runs, session inspection preserves effective policy state, typed workflow signals now feed routing directly, semantic invalidation can force targeted refresh vs full re-plan, and clarify/plan lane concerns now hang off smaller runtime modules instead of growing the conversation monolith further
+- turn startup can refine backend capability profiles before the first request, `run_streaming()` delegates into the main runtime path, mutating tasks route through persisted evidence-backed completion, workflow artifacts survive across turns, sessions compact safely, explore queries bypass DoD/router overhead safely, policy rules are enforced deterministically, operators can inspect/dry-run policy decisions without live turns, prompt construction is sectioned and persisted, explicit turn phases are visible while a turn runs, session inspection preserves effective policy state, typed workflow signals now feed routing directly, semantic invalidation can force targeted refresh vs full re-plan, brownfield clarify can ask evidence-backed questions from repo facts, and the turn runtime now hangs off dedicated controllers instead of a single conversation-loop monolith
 
 ## Definition of honesty
 
@@ -164,3 +170,4 @@ As of 2026-04-07:
 - Sprint 09 is complete: Loader now has a validated turn state machine, typed persisted workflow decisions, `loader prompt show`, and richer workflow-reason/transition inspection surfaces, but it still stops short of deeper workflow routing policy, prompt diffing/versioning, and the more opinionated planning discipline used by the refs.
 - Sprint 10 is complete: Loader now has a scored workflow policy, bounded clarify follow-through, targeted plan-refresh discipline, persisted workflow timeline inspection, and a greener workflow test contract, but it still stops short of deeper semantic routing/replanning, adaptive clarify depth, prompt-history diffing, or the fuller workflow rigor used by the refs.
 - Sprint 11 is complete: Loader now has typed workflow signals, intent-aware clarify slots, semantic invalidation with targeted recovery vs full re-plan, filtered workflow inspection, and dedicated clarify/plan lane execution in `runtime.workflow_lanes`, but it still stops short of OMX-style pressure-pass interviewing, richer semantic artifact reasoning, and the deeper end-to-end orchestration discipline in the refs.
+- Sprint 12 is complete: Loader now has pressure-pass clarify behavior, codebase-backed clarify grounding, structured recovery evidence, controllerized turn-runtime seams, and a genuinely coordinator-shaped `runtime.conversation`, but it still stops short of OMX-style deep interview depth, richer semantic artifact reasoning, artifact/prompt diff ergonomics, and the broader operator/runtime sophistication in the refs.
