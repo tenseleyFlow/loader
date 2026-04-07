@@ -956,6 +956,37 @@ async def test_raw_bracket_ask_user_question_tool_call_fallback(temp_dir: Path) 
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_bracket_ask_user_question_tool_call_fallback(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content='[calls askuserquestion tool with: question="Which path should we take?"]'
+            ),
+            final_response("We'll plan first."),
+        ]
+    )
+
+    async def answer(question: str, options: list[str] | None) -> str:
+        assert "Which path should we take?" in question
+        assert options is None
+        return "Plan first"
+
+    run = await run_scenario(
+        "Read the fixture file.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    assert tool_event_names(run) == ["AskUserQuestion"]
+    assert any('"answer": "Plan first"' in message for message in tool_result_messages(run))
+    assert "We'll plan first." in run.response
+
+
+@pytest.mark.asyncio
 async def test_native_and_raw_tool_paths_share_executor_trace(temp_dir: Path) -> None:
     native_fixture = temp_dir / "native.txt"
     native_fixture.write_text("native parity line\n")

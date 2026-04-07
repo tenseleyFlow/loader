@@ -168,7 +168,26 @@ class ConversationRuntime:
             tool_calls = list(assistant_turn.tool_calls)
             pending_tool_calls_seen = set(assistant_turn.pending_tool_calls_seen)
 
-            if not content.strip():
+            analysis = self.repairer.analyze_response(
+                content=content,
+                response_content=response_content,
+                tool_calls=tool_calls,
+                extracted_iterations=extracted_iterations,
+                max_extracted_iterations=max_extracted_iterations,
+            )
+            content = analysis.content
+            tool_calls = list(analysis.tool_calls)
+            tool_source = analysis.tool_source
+            extracted_iterations = analysis.extracted_iterations
+            if analysis.clear_stream:
+                await self.phase_tracker.enter(
+                    TurnPhase.REPAIR,
+                    emit,
+                    detail="Repairing raw-text tool fallback",
+                )
+                await emit(AgentEvent(type="clear_stream"))
+
+            if not content.strip() and not tool_calls and not analysis.is_final_answer:
                 await self.phase_tracker.enter(
                     TurnPhase.REPAIR,
                     emit,
@@ -196,25 +215,6 @@ class ConversationRuntime:
                     summary.failures.append(empty_decision.failure)
                 await emit(AgentEvent(type="response", content=final_response))
                 break
-
-            analysis = self.repairer.analyze_response(
-                content=content,
-                response_content=response_content,
-                tool_calls=tool_calls,
-                extracted_iterations=extracted_iterations,
-                max_extracted_iterations=max_extracted_iterations,
-            )
-            content = analysis.content
-            tool_calls = list(analysis.tool_calls)
-            tool_source = analysis.tool_source
-            extracted_iterations = analysis.extracted_iterations
-            if analysis.clear_stream:
-                await self.phase_tracker.enter(
-                    TurnPhase.REPAIR,
-                    emit,
-                    detail="Repairing raw-text tool fallback",
-                )
-                await emit(AgentEvent(type="clear_stream"))
 
             if analysis.is_final_answer:
                 assistant_message = Message(role=Role.ASSISTANT, content=response_content)
