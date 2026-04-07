@@ -129,3 +129,119 @@ async def test_turn_completion_marks_non_mutating_response_done(
         event.type == "dod_status" and event.dod_status == "done"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_handles_fake_tool_narration_without_reroute(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    config = non_streaming_config()
+    config.reasoning.completion_check = False
+    agent = Agent(
+        backend=backend,
+        config=config,
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task="Summarize the current test status.",
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+    await runtime.phase_tracker.enter(
+        TurnPhase.ASSISTANT,
+        capture,
+        detail="Requesting assistant response",
+        reason_code="request_assistant_response",
+    )
+
+    narrated = "Used bash tool with command `pytest -q` and everything passed."
+    decision = await runtime.turn_completion.handle_text_response(
+        content=narrated,
+        response_content=narrated,
+        task=prepared.task,
+        effective_task=prepared.effective_task,
+        iterations=1,
+        max_iterations=agent.config.max_iterations,
+        actions_taken=[],
+        continuation_count=0,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        executor=prepared.executor,
+        rollback_plan=prepared.rollback_plan,
+    )
+
+    assert decision.action == TurnCompletionAction.COMPLETE
+    assert prepared.summary.final_response == narrated
+    assert not any(
+        "PRETENDING to use tools" in message.content
+        for message in agent.session.messages
+    )
+    assert any(event.type == "response" and event.content == narrated for event in events)
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_handles_deflection_text_without_repair_prompt(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    config = non_streaming_config()
+    config.reasoning.completion_check = False
+    agent = Agent(
+        backend=backend,
+        config=config,
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task="What should I verify next?",
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+    await runtime.phase_tracker.enter(
+        TurnPhase.ASSISTANT,
+        capture,
+        detail="Requesting assistant response",
+        reason_code="request_assistant_response",
+    )
+
+    deflection = "You can run pytest -q to verify the current state."
+    decision = await runtime.turn_completion.handle_text_response(
+        content=deflection,
+        response_content=deflection,
+        task=prepared.task,
+        effective_task=prepared.effective_task,
+        iterations=1,
+        max_iterations=agent.config.max_iterations,
+        actions_taken=[],
+        continuation_count=0,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        executor=prepared.executor,
+        rollback_plan=prepared.rollback_plan,
+    )
+
+    assert decision.action == TurnCompletionAction.COMPLETE
+    assert prepared.summary.final_response == deflection
+    assert not any(
+        "Please use your tools to execute the task" in message.content
+        for message in agent.session.messages
+    )
+    assert any(event.type == "response" and event.content == deflection for event in events)
