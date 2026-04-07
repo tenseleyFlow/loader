@@ -17,6 +17,17 @@ def non_streaming_config() -> AgentConfig:
     return AgentConfig(auto_context=False, stream=False, max_iterations=8)
 
 
+def non_streaming_clarify_config() -> AgentConfig:
+    """Deterministic config that enters clarify mode directly."""
+
+    return AgentConfig(
+        auto_context=False,
+        stream=False,
+        max_iterations=8,
+        workflow_mode_override="clarify",
+    )
+
+
 def workflow_modes(run) -> list[str]:
     """Return emitted workflow modes in order."""
 
@@ -40,6 +51,21 @@ def artifact_kinds(run) -> list[str]:
 def workflow_timeline_kinds(run) -> list[str]:
     assert run.agent.last_turn_summary is not None
     return [entry.kind for entry in run.agent.last_turn_summary.workflow_timeline]
+
+
+def seed_runtime_workspace(root: Path) -> None:
+    """Create a small brownfield runtime workspace for clarify tests."""
+
+    (root / "pyproject.toml").write_text("[project]\nname='loader'\n")
+    (root / "src" / "loader" / "runtime").mkdir(parents=True)
+    (root / "src" / "loader" / "runtime" / "workflow_lanes.py").write_text(
+        '"""workflow lanes"""\n'
+    )
+    (root / "src" / "loader" / "runtime" / "clarify_strategy.py").write_text(
+        '"""clarify strategy"""\n'
+    )
+    (root / "tests").mkdir()
+    (root / "tests" / "test_workflow_runtime.py").write_text("pass\n")
 
 
 @pytest.mark.asyncio
@@ -126,6 +152,89 @@ async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
     assert run.agent.last_turn_summary.workflow_decision_kind == "handoff"
     assert run.agent.last_turn_summary.workflow_timeline[0].mode == "clarify"
     assert run.agent.last_turn_summary.workflow_timeline[-1].mode == "execute"
+
+
+@pytest.mark.asyncio
+async def test_clarify_prompt_and_brief_include_workspace_evidence(
+    temp_dir: Path,
+) -> None:
+    seed_runtime_workspace(temp_dir)
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before I proceed.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": (
+                                "Should I keep the work inside "
+                                "src/loader/runtime/workflow_lanes.py?"
+                            ),
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten clarify behavior around src/loader/runtime/workflow_lanes.py.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep clarify behavior tighter around one runtime seam.",
+                        "",
+                        "## In Scope",
+                        "- Narrow the change to workflow lane handling.",
+                        "",
+                        "## Non Goals",
+                        "- Do not broaden into unrelated CLI changes.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Escalate before changing other runtime modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the existing workspace.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Assumptions",
+                        "- The user wants a narrow brownfield change.",
+                        "",
+                        "## Acceptance Criteria",
+                        "- Clarify stays scoped to workflow_lanes.py.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="I can move forward now."),
+            CompletionResponse(content="Done."),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    async def answer(_: str, __: list[str] | None) -> str:
+        return "Yes, keep it there and avoid CLI churn."
+
+    run = await run_scenario(
+        "Tighten clarify behavior around src/loader/runtime/workflow_lanes.py.",
+        backend,
+        config=non_streaming_clarify_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    assert "Workspace evidence:" in backend.invocations[0].messages[-1].content
+    assert (
+        "Referenced paths that exist: src/loader/runtime/workflow_lanes.py"
+        in backend.invocations[0].messages[-1].content
+    )
+    assert "Observed workspace evidence:" in backend.invocations[1].messages[-1].content
+    assert (
+        "workflow_lanes.py"
+        in run.agent.last_turn_summary.definition_of_done.acceptance_criteria[0]
+    )
 
 
 @pytest.mark.asyncio
@@ -229,6 +338,93 @@ async def test_clarify_can_continue_for_a_second_round_when_scope_stays_ambiguou
         if entry.kind == "clarify_continue"
     )
     assert clarify_continue.clarify_stage == "readiness"
+
+
+@pytest.mark.asyncio
+async def test_second_round_fallback_question_uses_workspace_grounding(
+    temp_dir: Path,
+) -> None:
+    seed_runtime_workspace(temp_dir)
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before I proceed.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={"question": "What part should change most?"},
+                    )
+                ],
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep the clarify workflow more grounded.",
+                        "",
+                        "## In Scope",
+                        "- Stay inside workflow lane handling.",
+                        "",
+                        "## Non Goals",
+                        "- Do not broaden into the CLI surface.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Escalate before changing unrelated modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Assumptions",
+                        "- The user wants a narrow runtime behavior fix.",
+                        "",
+                        "## Acceptance Criteria",
+                        "- workflow_lanes.py stays the main touchpoint.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="I can move forward now."),
+            CompletionResponse(content="Done."),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    asked_questions: list[str] = []
+    answers = iter(
+        [
+            "Make it nicer.",
+            "Keep it scoped to src/loader/runtime/workflow_lanes.py and leave the CLI alone.",
+        ]
+    )
+
+    async def answer(question: str, _: list[str] | None) -> str:
+        asked_questions.append(question)
+        return next(answers)
+
+    run = await run_scenario(
+        "Tighten Loader runtime clarify behavior.",
+        backend,
+        config=non_streaming_clarify_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    assert len(asked_questions) == 2
+    assert "src/loader/runtime/" in asked_questions[1]
+    assert "scoped" in asked_questions[1].lower()
+    assert [
+        event.tool_name
+        for event in run.events
+        if event.type == "tool_call" and event.tool_name
+    ][:2] == ["AskUserQuestion", "AskUserQuestion"]
 
 
 @pytest.mark.asyncio
