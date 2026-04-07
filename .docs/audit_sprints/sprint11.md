@@ -12,6 +12,7 @@
   - self-critique rerouting
   - non-mutating completion nudges
   - text-loop bailout
+  - action-loop bailout on successful repeated tool patterns
 - empty-response handling has been tightened to one honest retry plus explicit failure
 - raw-text parsing has been unified onto `src/loader/agent/parsing.py`
   - `src/loader/agent/loop.py` no longer carries `_extract_raw_json_tool_calls(...)`
@@ -19,7 +20,7 @@
   - `src/loader/llm/ollama.py` now routes both complete-mode and streaming final text parsing through the shared parser
 - the sprint is not complete yet
   - the hard subtraction target is still missed by `115` lines
-  - action-loop bailout still needs an explicit keep/delete decision
+  - the remaining gap is legacy-surface subtraction, not another inline bailout decision
 
 ## Prerequisites
 

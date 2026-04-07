@@ -216,7 +216,7 @@ class ToolBatchRunner:
         emit: EventSink,
         summary: TurnSummary,
     ) -> str | None:
-        """Update DoD and loop safeguards after a successful tool execution."""
+        """Update DoD bookkeeping after a successful tool execution."""
 
         record_successful_tool_call(dod, tool_call)
         if tool_call.name == "TodoWrite" and outcome.registry_result is not None:
@@ -225,31 +225,7 @@ class ToolBatchRunner:
                 sync_todos_to_definition_of_done(dod, new_todos)
         self.dod_store.save(dod)
         self.context.legacy.set_recovery_context(None)
-
-        is_loop, loop_description = self.context.safeguards.detect_loop()
-        if not is_loop:
-            return None
-
-        final_response = (
-            "I noticed I was repeating the same actions. "
-            "Let me know what you'd like me to do differently."
-        )
-        summary.final_response = final_response
-        summary.failures.append(loop_description)
-        loop_message = Message(role=Role.ASSISTANT, content=final_response)
-        self.context.session.append(loop_message)
-        summary.assistant_messages.append(loop_message)
-        await emit(
-            AgentEvent(
-                type="error",
-                content=(
-                    f"Loop detected: {loop_description}. "
-                    "Stopping to prevent repetitive behavior."
-                ),
-            )
-        )
-        await emit(AgentEvent(type="response", content=final_response))
-        return final_response
+        return None
 
     async def _run_post_tool_verification(
         self,

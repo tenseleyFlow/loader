@@ -236,7 +236,7 @@ async def test_post_action_follow_up_suffix_is_not_appended_to_final_response(
 
 
 @pytest.mark.asyncio
-async def test_action_loop_bailout_stops_repeating_tool_pattern(
+async def test_repeated_tool_pattern_no_longer_triggers_action_loop_bailout(
     temp_dir: Path,
 ) -> None:
     first = temp_dir / "first.txt"
@@ -275,6 +275,7 @@ async def test_action_loop_bailout_stops_repeating_tool_pattern(
                     ),
                 ],
             ),
+            CompletionResponse(content="Finished reading both fixture files."),
         ]
     )
 
@@ -286,11 +287,8 @@ async def test_action_loop_bailout_stops_repeating_tool_pattern(
     )
 
     assert tool_event_names(run) == ["read", "read", "read", "read"]
-    assert run.response == (
-        "I noticed I was repeating the same actions. "
-        "Let me know what you'd like me to do differently."
-    )
-    assert any(
+    assert run.response == "Finished reading both fixture files."
+    assert not any(
         event.type == "error" and "Loop detected: Repeating pattern detected" in event.content
         for event in run.events
     )
