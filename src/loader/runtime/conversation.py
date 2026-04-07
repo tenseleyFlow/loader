@@ -280,15 +280,6 @@ class ConversationRuntime:
                 emit,
                 detail="Checking completion policy",
             )
-            cfg = self.context.config.reasoning
-            text_loop_decision = await self.completion_policy.maybe_stop_for_text_loop(
-                content=content,
-                emit=emit,
-                summary=summary,
-            )
-            if text_loop_decision.should_stop:
-                return await self._finalize_turn(summary, emit)
-
             self.context.safeguards.record_response(content)
 
             final_response = self.completion_policy.finalize_response_text(

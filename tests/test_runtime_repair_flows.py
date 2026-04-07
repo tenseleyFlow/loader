@@ -177,7 +177,7 @@ async def test_deflection_response_no_longer_injects_use_your_tools_prompt(
 
 
 @pytest.mark.asyncio
-async def test_non_mutating_completion_no_longer_loops_into_text_bailout(
+async def test_non_mutating_completion_returns_directly_without_text_bailout(
     temp_dir: Path,
 ) -> None:
     backend = ScriptedBackend(
