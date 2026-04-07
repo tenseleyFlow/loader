@@ -43,6 +43,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 11](sprint11.md) — Semantic Signals, Clarify Strategy, and Orchestrator Split
 
+## Phase 10: Interview Rigor and Recovery Evidence
+
+- [Sprint 12](sprint12.md) — Interview Pressure, Semantic Evidence, and Turn Orchestration
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
