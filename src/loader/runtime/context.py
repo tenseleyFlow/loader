@@ -14,7 +14,7 @@ from ..agent.reasoning import (
 )
 from ..agent.recovery import RecoveryContext
 from ..context.project import ProjectContext
-from ..llm.base import LLMBackend, Message, ToolCall
+from ..llm.base import LLMBackend, Message
 from ..tools.base import ToolRegistry
 from .capabilities import CapabilityProfile
 from .permissions import PermissionConfigStatus, PermissionPolicy
@@ -98,7 +98,6 @@ class RuntimeLegacyServices:
     assess_confidence: Callable[[str, dict[str, Any], str], Awaitable[ConfidenceAssessment]]
     verify_action: Callable[[str, dict[str, Any], str, str], Awaitable[ActionVerification]]
     contains_unexecuted_code: Callable[[str], bool]
-    extract_raw_json_tool_calls: Callable[[str], list[ToolCall]]
     get_recovery_context: Callable[[], RecoveryContext | None]
     set_recovery_context: Callable[[RecoveryContext | None], None]
 

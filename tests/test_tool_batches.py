@@ -140,7 +140,6 @@ def build_context(
             assess_confidence=assess_confidence,
             verify_action=verify_action,
             contains_unexecuted_code=lambda content: False,
-            extract_raw_json_tool_calls=lambda content: [],
             get_recovery_context=lambda: recovery_holder["value"],
             set_recovery_context=lambda value: recovery_holder.__setitem__("value", value),
         ),

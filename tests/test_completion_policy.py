@@ -117,7 +117,6 @@ def build_context(
             assess_confidence=lambda tool_name, tool_args, context: None,  # type: ignore[arg-type]
             verify_action=lambda tool_name, tool_args, result, expected: None,  # type: ignore[arg-type]
             contains_unexecuted_code=lambda content: False,
-            extract_raw_json_tool_calls=lambda content: [],
             get_recovery_context=lambda: None,
             set_recovery_context=lambda value: None,
         ),

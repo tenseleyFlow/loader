@@ -41,6 +41,11 @@ class ResponseRepairer:
     def __init__(self, context: RuntimeContext) -> None:
         self.context = context
 
+    def _allowed_tool_names(self) -> tuple[str, ...]:
+        """Return the registry-backed tool surface for raw-text parsing."""
+
+        return tuple(tool.name for tool in self.context.registry.list_tools())
+
     def handle_empty_response(
         self,
         *,
@@ -85,9 +90,10 @@ class ResponseRepairer:
         normalized_content = content
         normalized_tool_calls = list(tool_calls)
         tool_source = "native"
+        allowed_tool_names = self._allowed_tool_names()
 
         if self.context.use_react:
-            parsed = parse_tool_calls(content)
+            parsed = parse_tool_calls(content, allowed_tool_names=allowed_tool_names)
             normalized_tool_calls = parsed.tool_calls
             normalized_content = parsed.content
 
@@ -102,20 +108,15 @@ class ResponseRepairer:
         clear_stream = False
         next_extracted_iterations = extracted_iterations
         if not normalized_tool_calls:
-            parsed_raw = parse_tool_calls(response_content)
+            parsed_raw = parse_tool_calls(
+                response_content,
+                allowed_tool_names=allowed_tool_names,
+            )
             if parsed_raw.tool_calls:
                 normalized_tool_calls = parsed_raw.tool_calls
                 normalized_content = parsed_raw.content or normalized_content
                 tool_source = "raw_text"
                 clear_stream = True
-            else:
-                raw_tool_calls = self.context.legacy.extract_raw_json_tool_calls(
-                    response_content
-                )
-                if raw_tool_calls:
-                    normalized_tool_calls = raw_tool_calls
-                    tool_source = "raw_text"
-                    clear_stream = True
 
         if normalized_tool_calls and tool_source == "raw_text":
             next_extracted_iterations += 1

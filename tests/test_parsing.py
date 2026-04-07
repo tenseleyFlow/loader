@@ -204,6 +204,27 @@ Created the file.'''
         assert result.tool_calls[0].arguments["old_string"] == "foo"
         assert result.tool_calls[0].arguments["new_string"] == "bar"
 
+    def test_parse_bracketed_mixed_case_tool_uses_allowed_name(self):
+        text = '[calls askuserquestion tool with: question="Which path should we take?"]'
+        result = parse_tool_calls(
+            text,
+            allowed_tool_names=["AskUserQuestion", "TodoWrite", "read"],
+        )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "AskUserQuestion"
+        assert result.tool_calls[0].arguments == {
+            "question": "Which path should we take?"
+        }
+
+    def test_parse_bare_json_filters_unknown_tool_when_allowed_names_provided(self):
+        text = '{"name": "TotallyUnknownTool", "arguments": {"question": "ignored"}}'
+        result = parse_tool_calls(
+            text,
+            allowed_tool_names=["AskUserQuestion", "TodoWrite", "read"],
+        )
+        assert result.tool_calls == []
+        assert "TotallyUnknownTool" in result.content
+
 
 class TestFormatToolResult:
     """Tests for format_tool_result function."""

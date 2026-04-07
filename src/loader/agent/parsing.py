@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..llm.base import ToolCall
@@ -58,7 +59,33 @@ def _parse_bracket_args(args_str: str) -> dict:
     return args
 
 
-def _extract_json_tool_calls(text: str) -> tuple[list[ToolCall], list[tuple[int, int]]]:
+def _tool_name_map(
+    allowed_tool_names: Iterable[str] | None,
+) -> dict[str, str] | None:
+    """Build a case-insensitive map of allowed tool names."""
+
+    if allowed_tool_names is None:
+        return None
+    return {name.casefold(): name for name in allowed_tool_names}
+
+
+def _canonicalize_tool_name(
+    name: str,
+    tool_names: dict[str, str] | None,
+    *,
+    lowercase_default: bool = False,
+) -> str | None:
+    """Return the canonical tool name for parsing, if allowed."""
+
+    if tool_names is None:
+        return name.lower() if lowercase_default else name
+    return tool_names.get(name.casefold())
+
+
+def _extract_json_tool_calls(
+    text: str,
+    tool_names: dict[str, str] | None = None,
+) -> tuple[list[ToolCall], list[tuple[int, int]]]:
     """Extract bare JSON tool calls, including nested argument structures."""
 
     decoder = json.JSONDecoder()
@@ -81,14 +108,18 @@ def _extract_json_tool_calls(text: str) -> tuple[list[ToolCall], list[tuple[int,
         if isinstance(data, dict):
             name = data.get("name", "")
             arguments = _extract_arguments(data)
+            canonical_name = (
+                _canonicalize_tool_name(name, tool_names)
+                if isinstance(name, str)
+                else None
+            )
             if (
-                isinstance(name, str)
-                and name
+                canonical_name
                 and any(key in data for key in ("arguments", "parameters", "args", "params"))
             ):
                 tool_calls.append(ToolCall(
                     id=f"call_{len(tool_calls)}",
-                    name=name,
+                    name=canonical_name,
                     arguments=arguments,
                 ))
                 spans.append((start, end))
@@ -115,7 +146,11 @@ def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
     return "".join(parts)
 
 
-def parse_tool_calls(text: str) -> ParsedResponse:
+def parse_tool_calls(
+    text: str,
+    *,
+    allowed_tool_names: Iterable[str] | None = None,
+) -> ParsedResponse:
     """Parse tool calls from LLM text output.
 
     Supports multiple formats:
@@ -133,6 +168,7 @@ def parse_tool_calls(text: str) -> ParsedResponse:
     content = text
     is_final = False
     final_content = ""
+    tool_names = _tool_name_map(allowed_tool_names)
 
     # Check for Final Answer (ReAct pattern)
     final_match = re.search(
@@ -146,30 +182,33 @@ def parse_tool_calls(text: str) -> ParsedResponse:
 
     # Pattern 1: <tool_call>...</tool_call> blocks (also handle malformed </tool_call> at start)
     tool_call_pattern = r"(?:</tool_call>\s*)?<tool_call>\s*(\{.*?\})\s*</tool_call>"
-    matches = re.findall(tool_call_pattern, text, re.DOTALL)
-
-    for i, match in enumerate(matches):
+    xml_spans: list[tuple[int, int]] = []
+    for i, match in enumerate(re.finditer(tool_call_pattern, text, re.DOTALL)):
         try:
-            data = json.loads(match)
+            data = json.loads(match.group(1))
             name = data.get("name", "")
             arguments = _extract_arguments(data)
+            canonical_name = (
+                _canonicalize_tool_name(name, tool_names)
+                if isinstance(name, str)
+                else None
+            )
 
-            if name:
+            if canonical_name:
                 tool_calls.append(ToolCall(
                     id=f"call_{i}",
-                    name=name,
+                    name=canonical_name,
                     arguments=arguments,
                 ))
+                xml_spans.append(match.span())
         except json.JSONDecodeError:
             continue
 
-    # Remove tool call blocks from content (including malformed ones)
-    content = re.sub(r"</tool_call>\s*", "", content)
-    content = re.sub(r"<tool_call>\s*\{[^}]*\}\s*</tool_call>", "", content, flags=re.DOTALL)
+    content = _remove_spans(content, xml_spans)
 
     # Pattern 2: Bare JSON if no tool_call tags found
     if not tool_calls:
-        tool_calls, spans = _extract_json_tool_calls(text)
+        tool_calls, spans = _extract_json_tool_calls(text, tool_names)
         if tool_calls and not is_final:
             content = _remove_spans(content, spans)
 
@@ -180,11 +219,18 @@ def parse_tool_calls(text: str) -> ParsedResponse:
     if not tool_calls:
         bracket_pattern = r'\[(?:calls|USE)\s+(\w+)\s+tool(?:\s+with)?[:\s]+([^\]]+)\]'
         for i, (name, args_str) in enumerate(re.findall(bracket_pattern, text, re.IGNORECASE)):
+            canonical_name = _canonicalize_tool_name(
+                name,
+                tool_names,
+                lowercase_default=True,
+            )
+            if canonical_name is None:
+                continue
             args = _parse_bracket_args(args_str)
             if args:
                 tool_calls.append(ToolCall(
                     id=f"call_{i}",
-                    name=name.lower(),
+                    name=canonical_name,
                     arguments=args,
                 ))
         # Remove bracketed tool calls from content

@@ -130,7 +130,10 @@ class ExploreRuntime:
                 max_tokens=min(self.context.config.max_tokens, 1024),
             )
 
-            parsed = parse_tool_calls(response.content)
+            parsed = parse_tool_calls(
+                response.content,
+                allowed_tool_names=[tool.name for tool in self.context.registry.list_tools()],
+            )
             tool_calls = list(response.tool_calls or parsed.tool_calls)
             cleaned_content = parsed.content if parsed.tool_calls else response.content
 

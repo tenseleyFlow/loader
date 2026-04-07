@@ -63,7 +63,6 @@ def build_context(
     temp_dir: Path,
     use_react: bool,
     contains_unexecuted_code,
-    extract_raw_json_tool_calls,
 ) -> RuntimeContext:
     registry = create_default_registry(temp_dir)
     registry.configure_workspace_root(temp_dir)
@@ -97,7 +96,6 @@ def build_context(
             assess_confidence=lambda tool_name, tool_args, context: None,  # type: ignore[arg-type]
             verify_action=lambda tool_name, tool_args, result, expected: None,  # type: ignore[arg-type]
             contains_unexecuted_code=contains_unexecuted_code,
-            extract_raw_json_tool_calls=extract_raw_json_tool_calls,
             get_recovery_context=lambda: None,
             set_recovery_context=lambda value: None,
         ),
@@ -105,23 +103,27 @@ def build_context(
 
 
 def test_response_repairer_uses_context_legacy_raw_fallback(temp_dir: Path) -> None:
-    tool_call = ToolCall(id="raw_ask_0", name="AskUserQuestion", arguments={"question": "Which path?"})
     context = build_context(
         temp_dir=temp_dir,
         use_react=False,
         contains_unexecuted_code=lambda content: False,
-        extract_raw_json_tool_calls=lambda content: [tool_call] if "AskUserQuestion" in content else [],
     )
     repairer = ResponseRepairer(context)
 
     analysis = repairer.analyze_response(
         content="I need clarification.",
-        response_content="I should call AskUserQuestion tool now.",
+        response_content='[calls askuserquestion tool with: question="Which path?"]',
         tool_calls=[],
         extracted_iterations=0,
         max_extracted_iterations=3,
     )
 
-    assert analysis.tool_calls == [tool_call]
+    assert analysis.tool_calls == [
+        ToolCall(
+            id="call_0",
+            name="AskUserQuestion",
+            arguments={"question": "Which path?"},
+        )
+    ]
     assert analysis.tool_source == "raw_text"
     assert analysis.clear_stream is True
