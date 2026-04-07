@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from loader.agent.reasoning import ActionVerification, ConfidenceAssessment, ConfidenceLevel
 from loader.llm.base import Message, Role, ToolCall
 from loader.runtime.context import RuntimeContext, RuntimeLegacyServices
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
@@ -20,6 +19,11 @@ from loader.runtime.permissions import (
     load_permission_rules,
 )
 from loader.runtime.recovery import RecoveryContext
+from loader.runtime.reasoning_types import (
+    ActionVerification,
+    ConfidenceAssessment,
+    ConfidenceLevel,
+)
 from loader.runtime.tool_batches import ToolBatchRunner
 from loader.runtime.tracing import RuntimeTracer
 from loader.tools.base import ToolResult as RegistryToolResult

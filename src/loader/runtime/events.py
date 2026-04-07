@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..agent.reasoning import (
+from ..llm.base import Message
+from .dod import DefinitionOfDone
+from .reasoning_types import (
     ActionVerification,
     ConfidenceAssessment,
     SelfCritique,
@@ -13,8 +15,6 @@ from ..agent.reasoning import (
     TaskCompletionCheck,
     TaskDecomposition,
 )
-from ..llm.base import Message
-from .dod import DefinitionOfDone
 from .rollback import RollbackAction, RollbackPlan
 from .tracing import RuntimeTraceEvent
 

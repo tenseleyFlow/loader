@@ -10,8 +10,6 @@ enabled to improve the agent's decision-making:
 """
 
 import re
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
 from ..runtime.rollback import (
@@ -22,6 +20,15 @@ from ..runtime.rollback import (
     execute_rollback,
     get_undo_command,
     is_destructive_tool,
+)
+from ..runtime.reasoning_types import (
+    ActionVerification,
+    ConfidenceAssessment,
+    ConfidenceLevel,
+    SelfCritique,
+    Subtask,
+    TaskCompletionCheck,
+    TaskDecomposition,
 )
 
 
@@ -131,166 +138,6 @@ def get_token_budget(complexity: str) -> tuple[int, int]:
         "complex": (2048, 16384),  # Full response, full context
     }
     return budgets.get(complexity, (1024, 8192))
-
-
-class ConfidenceLevel(Enum):
-    """Confidence levels for actions."""
-    VERY_LOW = 1      # < 20% - Need more information
-    LOW = 2           # 20-40% - Uncertain, may need verification
-    MEDIUM = 3        # 40-60% - Reasonable guess
-    HIGH = 4          # 60-80% - Confident
-    VERY_HIGH = 5     # 80-100% - Certain
-
-
-@dataclass
-class Subtask:
-    """A decomposed subtask with dependencies."""
-    id: str
-    description: str
-    dependencies: list[str] = field(default_factory=list)  # IDs of subtasks this depends on
-    verification: str = ""  # How to verify this subtask succeeded
-    status: str = "pending"  # pending, in_progress, completed, failed, skipped
-    result: str = ""
-    attempts: int = 0
-    max_attempts: int = 2
-
-
-@dataclass
-class TaskDecomposition:
-    """A decomposed task with ordered subtasks."""
-    original_task: str
-    subtasks: list[Subtask] = field(default_factory=list)
-    current_index: int = 0
-    rollback_points: list[int] = field(default_factory=list)  # Indices where we can safely rollback
-
-    def next_subtask(self) -> Subtask | None:
-        """Get the next pending subtask that has all dependencies met."""
-        completed_ids = {st.id for st in self.subtasks if st.status == "completed"}
-
-        for st in self.subtasks:
-            if st.status == "pending":
-                # Check if all dependencies are completed
-                if all(dep in completed_ids for dep in st.dependencies):
-                    return st
-        return None
-
-    def mark_completed(self, subtask_id: str, result: str = "") -> None:
-        """Mark a subtask as completed."""
-        for st in self.subtasks:
-            if st.id == subtask_id:
-                st.status = "completed"
-                st.result = result
-                break
-
-    def mark_failed(self, subtask_id: str, error: str = "") -> None:
-        """Mark a subtask as failed."""
-        for st in self.subtasks:
-            if st.id == subtask_id:
-                st.status = "failed"
-                st.result = error
-                st.attempts += 1
-                break
-
-    def can_retry(self, subtask_id: str) -> bool:
-        """Check if a subtask can be retried."""
-        for st in self.subtasks:
-            if st.id == subtask_id:
-                return st.attempts < st.max_attempts
-        return False
-
-    def reset_for_retry(self, subtask_id: str) -> None:
-        """Reset a subtask for retry."""
-        for st in self.subtasks:
-            if st.id == subtask_id:
-                st.status = "pending"
-                break
-
-    def progress_str(self) -> str:
-        """Get progress string like '[2/5]'."""
-        completed = sum(1 for st in self.subtasks if st.status == "completed")
-        total = len(self.subtasks)
-        return f"[{completed}/{total}]"
-
-    def is_complete(self) -> bool:
-        """Check if all subtasks are completed."""
-        return all(st.status in ("completed", "skipped") for st in self.subtasks)
-
-    def has_failures(self) -> bool:
-        """Check if any subtask has failed (and can't be retried)."""
-        return any(
-            st.status == "failed" and st.attempts >= st.max_attempts
-            for st in self.subtasks
-        )
-
-    def to_prompt(self) -> str:
-        """Format decomposition for LLM prompt."""
-        lines = [f"Task: {self.original_task}", "", "Subtasks:"]
-        for i, st in enumerate(self.subtasks, 1):
-            status_icon = {
-                "pending": "○",
-                "in_progress": "◐",
-                "completed": "●",
-                "failed": "✗",
-                "skipped": "⊘",
-            }.get(st.status, "?")
-            deps = f" (after: {', '.join(st.dependencies)})" if st.dependencies else ""
-            lines.append(f"  {status_icon} {i}. {st.description}{deps}")
-            if st.verification:
-                lines.append(f"      Verify: {st.verification}")
-        return "\n".join(lines)
-
-
-@dataclass
-class SelfCritique:
-    """Result of self-critique analysis."""
-    original_response: str
-    issues_found: list[str] = field(default_factory=list)
-    suggestions: list[str] = field(default_factory=list)
-    should_revise: bool = False
-    revised_response: str = ""
-    revision_count: int = 0
-    max_revisions: int = 2
-
-    def can_revise(self) -> bool:
-        """Check if we can do another revision."""
-        return self.should_revise and self.revision_count < self.max_revisions
-
-
-@dataclass
-class ConfidenceAssessment:
-    """Confidence assessment for an action."""
-    action: str  # Description of the action
-    tool_name: str
-    tool_args: dict[str, Any]
-    level: ConfidenceLevel = ConfidenceLevel.MEDIUM
-    reasoning: str = ""
-    risks: list[str] = field(default_factory=list)
-    mitigations: list[str] = field(default_factory=list)
-    requires_verification: bool = False
-
-    @property
-    def score(self) -> int:
-        """Get numeric score 1-5."""
-        return self.level.value
-
-    @property
-    def is_low_confidence(self) -> bool:
-        """Check if confidence is low enough to warrant caution."""
-        return self.level.value <= ConfidenceLevel.LOW.value
-
-
-@dataclass
-class ActionVerification:
-    """Verification result for a completed action."""
-    tool_name: str
-    tool_args: dict[str, Any]
-    expected_outcome: str
-    actual_result: str
-    verified: bool = False
-    verification_method: str = ""  # How we verified (e.g., "file_exists", "output_contains")
-    discrepancies: list[str] = field(default_factory=list)
-    needs_correction: bool = False
-    correction_suggestion: str = ""
 
 
 # Prompts for reasoning stages
@@ -704,17 +551,6 @@ def quick_verify(tool_name: str, tool_args: dict, result: str) -> bool:
 
 
 # === Task Completion Detection ===
-
-@dataclass
-class TaskCompletionCheck:
-    """Result of checking if a task is complete."""
-    original_task: str
-    is_complete: bool = False
-    accomplished: list[str] = field(default_factory=list)
-    remaining: list[str] = field(default_factory=list)
-    suggested_next_steps: list[str] = field(default_factory=list)
-    continuation_prompt: str = ""
-
 
 COMPLETION_CHECK_PROMPT = """Evaluate if this task has been FULLY completed.
 

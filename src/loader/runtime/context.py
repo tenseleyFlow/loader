@@ -7,16 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..agent.reasoning import (
-    ActionVerification,
-    ConfidenceAssessment,
-)
 from ..context.project import ProjectContext
 from ..llm.base import LLMBackend, Message
 from ..tools.base import ToolRegistry
 from .capabilities import CapabilityProfile
 from .permissions import PermissionConfigStatus, PermissionPolicy
 from .recovery import RecoveryContext
+from .reasoning_types import ActionVerification, ConfidenceAssessment
 from .session import ConversationSession
 
 

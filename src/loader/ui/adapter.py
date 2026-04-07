@@ -8,7 +8,7 @@ from textual.message import Message
 from ..agent.loop import AgentEvent
 
 if TYPE_CHECKING:
-    from ..agent.reasoning import (
+    from ..runtime.reasoning_types import (
         ActionVerification,
         ConfidenceAssessment,
         SelfCritique,
