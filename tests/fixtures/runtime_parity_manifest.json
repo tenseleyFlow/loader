@@ -147,12 +147,12 @@
   {
     "name": "ambiguous_prompt_routes_to_clarify",
     "category": "workflow",
-    "description": "Ambiguous prompts enter clarify mode, ask one structured question, and persist a brief artifact."
+    "description": "Ambiguous prompts enter clarify mode, ask one structured question, persist a single-question brief artifact, and hand off to execute."
   },
   {
     "name": "complex_prompt_routes_to_plan",
     "category": "workflow",
-    "description": "Complex prompts enter plan mode, persist implementation and verification artifacts, and use planned verification commands."
+    "description": "Complex prompts enter plan mode, persist single-pass implementation and verification artifacts, and use planned verification commands without legacy decomposition."
   },
   {
     "name": "verify_failure_fix_loop_does_not_reroute_workflow",

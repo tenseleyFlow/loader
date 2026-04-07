@@ -22,6 +22,9 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - durable project memory in `.loader/project-memory.json` and working notes in `.loader/notepad.md`
 - native memory tools for `project_memory_*` and `notepad_*`
 - heuristic workflow routing across `clarify` → `plan` → `execute` → `verify`
+- clarify mode as an explicit single-question brief flow that returns to execute mode
+- plan mode as explicit single-pass implementation and verification artifact generation
+- persisted workflow-artifact status and source metadata in session state when execute consumes or reuses workflow artifacts
 - mode-specific system prompts for clarify, plan, execute, and verify
 - explicit verify/fix loops for mutating tasks, with a bounded retry budget
 - verify/fix retries return to execute mode without re-triggering clarify or plan
@@ -47,10 +50,10 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 ## Known weak spots
 
 - the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it still owns workflow routing, remaining loop safeguards, and other coordination logic that remains more heuristic-heavy than the reference runtime in `refs/claw-code`
-- planning, decomposition, and several helper behaviors still live in [`src/loader/agent/loop.py`](../src/loader/agent/loop.py), so ownership is cleaner than Sprint 00 but not fully simplified yet
+- workflow routing is cleaner than Sprint 00, but the router and artifact bridge still live in [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py) and remain more heuristic than the reference runtimes
 - the mode router is still heuristic-only; Loader does not yet implement OMX's deeper ambiguity scoring, pressure-pass discipline, or branch-specific routing policy
-- clarify mode currently stops after one structured question and one brief artifact; it does not yet run a deeper Socratic loop
-- plan mode is still a single-pass artifact generator, not a Planner/Architect/Critic consensus loop
+- clarify mode is now explicitly a single-question brief flow, not a deeper Socratic protocol
+- plan mode is now explicitly a single-pass artifact generator, not a Planner/Architect/Critic consensus loop
 - DoD acceptance criteria and pending items are stronger than Sprint 02, but todo progress is still lightly structured compared with claw-code's richer workflow state
 - evidence summaries are deterministic runtime summaries of captured output, not model-written verification narratives
 - session compaction summaries are heuristic runtime summaries, not model-assisted continuity artifacts
@@ -109,13 +112,13 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-07:
 
-- `uv run pytest -q`: 210 passed
+- `uv run pytest -q`: 211 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers router heuristics, clarify/plan artifact round trips, DoD workflow links, and todo-to-DoD syncing
 - `tests/test_workflow_runtime.py` covers clarify routing, plan routing, and verify-fix workflow handoff
 - `tests/test_workflow_tools.py` and `tests/test_workflow_runtime_tools.py` cover `TodoWrite`, `AskUserQuestion`, and runtime callback plumbing
-- `tests/test_session_state.py` covers session persistence, resume, rotation, compaction persistence, cumulative usage rollups, and persisted permission-policy metadata
+- `tests/test_session_state.py` covers session persistence, resume, rotation, compaction persistence, cumulative usage rollups, persisted permission-policy metadata, and persisted workflow-artifact state
 - `tests/test_compaction.py` covers claw-style line compression and compacted continuation-message behavior
 - `tests/test_memory_tools.py` covers project-memory writes, notepad writes, lifecycle-hook mirroring, and DoD-summary capture into project memory
 - `tests/test_cli_resume.py` covers `--resume` argument rewriting for latest and named-session restore
@@ -135,7 +138,7 @@ As of 2026-04-07:
 - Sprint 01 turned the original `tool_call_id` regression green by fixing the message contract, not by weakening the test.
 - Sprint 02 replaced "looks done" completion for mutating tasks with a real verify/fix gate, but it has not yet reached the richer workflow contracts described in the report and Sprint 04+.
 - Sprint 03 established permission modes, hooks, and tool hardening, but it intentionally stops short of claw-code's fuller rule engine and prompt/allow permission variants.
-- Sprint 04 adds routing, artifacts, and structured user questions, but it is still a first-pass workflow layer rather than full OMX consensus planning or deep interview rigor.
+- Sprint 04's workflow layer is now explicitly scoped as lightweight: single-question clarify, single-pass planning, explicit artifact bridging, and no legacy decomposition path.
 - Sprint 05 adds durable sessions, resume, compaction, and native memory/notepad tools, but it stops short of Sprint 06's inspectable session/status product surfaces and still uses heuristic continuity summaries rather than richer semantic memory extraction.
 - Sprint 06 adds inspectable product surfaces, a constrained explore lane, and a broader tool registry, but it still stops short of interactive explore workflows, richer git ergonomics, AST/LSP-aware editing, or any multi-agent/team runtime.
 - Sprint 07 is complete: Loader now has prompt/allow modes, rule-based permission policy, policy-backed prompting, persisted policy inspection state, and smaller assistant-turn/tool-batch/finalization runtime seams, but it still stops short of a richer rule UX, deeper policy sandboxing, and the more opinionated workflow/runtime contracts in the refs.

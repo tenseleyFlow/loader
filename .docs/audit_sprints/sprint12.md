@@ -1,5 +1,15 @@
 # Sprint 12: Workflow Protocol Hardening and Decomposition Decision
 
+## Status on `cleanup-audit-plan`
+
+- repo verification is currently `211 passed`
+- clarify mode is now explicitly a single-question brief flow in prompts, runtime behavior, and persisted clarify artifacts
+- plan mode is now explicitly single-pass implementation and verification artifact generation in prompts, runtime behavior, and persisted plans
+- execute now records workflow-artifact status and artifact sources in session state when it activates or reuses the workflow bridge
+- the legacy decomposition CLI flag and `agent/loop.py` decomposition orchestration have been deleted
+- the sprint's explicit workflow-contract goals are now met
+  - the remaining gap is not hidden workflow depth; it is the absence of the refs' deeper routing discipline and the broader legacy tree still living under `agent/`
+
 ## Prerequisites
 
 Sprint 11
