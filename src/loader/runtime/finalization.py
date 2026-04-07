@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..llm.base import Message, Role, ToolCall
@@ -23,6 +24,8 @@ from .workflow import (
     ModeDecision,
     WorkflowDecisionKind,
     WorkflowMode,
+    WorkflowTimelineEntry,
+    WorkflowTimelineEntryKind,
     extract_verification_commands_from_markdown,
 )
 
@@ -100,6 +103,19 @@ class TurnFinalizer:
             dod.last_verification_result = "skipped"
             summary.verification_status = "skipped"
             summary.definition_of_done = dod
+            self.agent.session.append_workflow_timeline_entry(
+                WorkflowTimelineEntry(
+                    timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    kind=WorkflowTimelineEntryKind.VERIFY_SKIP.value,
+                    mode=self.agent.workflow_mode,
+                    reason_code="verification_not_required",
+                    summary="verification skipped because the turn made no mutating changes",
+                    decision_kind=WorkflowDecisionKind.FORCED.value,
+                    prompt_format=self.agent.prompt_format,
+                    prompt_sections=list(self.agent.prompt_sections),
+                )
+            )
+            summary.workflow_timeline = list(self.agent.session.workflow_timeline)
             self.dod_store.save(dod)
             await self.emit_dod_status(emit, dod)
             return CompletionGateResult(

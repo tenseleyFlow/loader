@@ -94,6 +94,7 @@ class AgentConfig:
     auto_recover: bool = True  # Auto-recover from tool errors
     max_recovery_attempts: int = 2  # Reduced from 3
     verification_retry_budget: int = 3  # Retry budget for verify/fix loop
+    clarify_max_rounds: int = 2  # Bounded clarify depth before carrying ambiguity forward
     permission_mode: PermissionMode = PermissionMode.WORKSPACE_WRITE
     workflow_mode_override: str | None = None
     stream: bool = True  # Stream LLM responses for real-time output

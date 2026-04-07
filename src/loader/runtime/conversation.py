@@ -26,7 +26,9 @@ from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .workflow import (
     VERIFICATION_SEPARATOR,
+    ArtifactFreshness,
     ClarifyBrief,
+    ClarifyReview,
     ModeDecision,
     PlanningArtifacts,
     WorkflowArtifactStore,
@@ -174,6 +176,16 @@ class ConversationRuntime:
                         content=f"[USER INTERRUPTION]: {steering_message}",
                     )
                 )
+
+            if await self._maybe_refresh_plan_for_drift(
+                task=original_task or task,
+                dod=dod,
+                emit=emit,
+                summary=summary,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+            ):
+                continue
 
             await self.phase_tracker.enter(
                 TurnPhase.ASSISTANT,
@@ -490,8 +502,14 @@ class ConversationRuntime:
             summary=summary,
         )
 
+        clarify_review = ClarifyReview(
+            should_continue=False,
+            reason_code="clarify_not_needed",
+            reason_summary="clarify was not needed for this route",
+        )
+
         if decision.mode == WorkflowMode.CLARIFY:
-            await self._run_clarify_mode(
+            clarify_review = await self._run_clarify_mode(
                 task=task,
                 dod=dod,
                 emit=emit,
@@ -504,12 +522,14 @@ class ConversationRuntime:
                 has_plan=self._artifact_exists(dod.implementation_plan)
                 and self._artifact_exists(dod.verification_plan),
                 allow_clarify=False,
+                unresolved_questions=clarify_review.unresolved_questions,
             )
             await self._set_workflow_mode(
                 decision.with_context(
                     reason_code=f"post_clarify_{decision.reason_code}",
                     reason_summary=f"clarify handoff: {decision.reason_summary}",
                     decision_kind=WorkflowDecisionKind.HANDOFF,
+                    unresolved_questions=clarify_review.unresolved_questions,
                 ),
                 dod=dod,
                 emit=emit,
@@ -524,6 +544,7 @@ class ConversationRuntime:
                 summary=summary,
                 on_confirmation=on_confirmation,
                 on_user_question=on_user_question,
+                refresh_reasons=clarify_review.unresolved_questions or None,
             )
             await self._set_workflow_mode(
                 ModeDecision.transition(
@@ -537,26 +558,7 @@ class ConversationRuntime:
                 summary=summary,
             )
 
-        bridge = build_execute_bridge(
-            Path(dod.clarify_brief) if dod.clarify_brief else None,
-            Path(dod.implementation_plan) if dod.implementation_plan else None,
-            Path(dod.verification_plan) if dod.verification_plan else None,
-        )
-        if bridge and not any(
-            message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
-            for message in self.agent.messages[-4:]
-        ):
-            self.agent.session.append(
-                Message(
-                    role=Role.USER,
-                    content=(
-                        "[WORKFLOW BRIDGE]\n"
-                        f"{bridge}\n\n"
-                        "Honor these artifacts while you execute the task. "
-                        "Keep TodoWrite current when the work spans multiple steps."
-                    ),
-                )
-            )
+        self._maybe_append_execute_bridge(dod)
         return task
 
     async def _set_workflow_mode(
@@ -589,15 +591,13 @@ class ConversationRuntime:
         summary.workflow_reason_code = decision.reason_code
         summary.workflow_reason_summary = decision.reason_summary
         summary.workflow_decision_kind = decision.decision_kind.value
-        timeline_kind = {
-            WorkflowDecisionKind.HANDOFF: WorkflowTimelineEntryKind.HANDOFF,
-            WorkflowDecisionKind.REENTRY: WorkflowTimelineEntryKind.REENTRY,
-        }.get(decision.decision_kind, WorkflowTimelineEntryKind.ROUTE)
-        timeline_entry = WorkflowTimelineEntry.from_decision(
+        self._append_workflow_timeline_from_decision(
             decision,
-            kind=timeline_kind,
-            prompt_format=self.agent.prompt_format,
-            prompt_sections=self.agent.prompt_sections,
+            kind={
+                WorkflowDecisionKind.HANDOFF: WorkflowTimelineEntryKind.HANDOFF,
+                WorkflowDecisionKind.REENTRY: WorkflowTimelineEntryKind.REENTRY,
+            }.get(decision.decision_kind, WorkflowTimelineEntryKind.ROUTE),
+            summary=summary,
             artifact_paths=[
                 path
                 for path in (
@@ -608,8 +608,6 @@ class ConversationRuntime:
                 if path
             ],
         )
-        self.agent.session.append_workflow_timeline_entry(timeline_entry)
-        summary.workflow_timeline = list(self.agent.session.workflow_timeline)
         summary.definition_of_done = dod
         self.dod_store.save(dod)
         await emit(
@@ -662,124 +660,74 @@ class ConversationRuntime:
         emit: EventSink,
         summary: TurnSummary,
         on_user_question: UserQuestionHandler,
-    ) -> None:
-        ask_tool = self.agent.registry.get("AskUserQuestion")
-        assert ask_tool is not None
-        prompt = (
-            "Clarify the task before planning or implementation.\n"
-            "Ask exactly one focused question with AskUserQuestion.\n"
-            "Target missing outcome, scope, or decision-boundary information.\n"
-            "Do not propose solutions yet.\n\n"
-            f"Task: {task}"
+    ) -> ClarifyReview:
+        max_rounds = max(1, self.agent.config.clarify_max_rounds)
+        rounds: list[tuple[str, str]] = []
+        latest_brief: ClarifyBrief | None = None
+        review = ClarifyReview(
+            should_continue=False,
+            reason_code="clarify_complete",
+            reason_summary="clarify gathered enough boundaries to proceed",
         )
-        response = await self._complete_in_mode(
-            prompt=prompt,
-            tools=[ask_tool.to_schema()],
-            max_tokens=300,
-        )
-        tool_call = next(
-            (tool for tool in response.tool_calls if tool.name == "AskUserQuestion"),
-            None,
-        )
-        if tool_call is None:
-            tool_call = ToolCall(
-                id="clarify-question-1",
-                name="AskUserQuestion",
-                arguments={
-                    "question": self._fallback_clarify_question(task, response.content),
-                },
+
+        for round_index in range(1, max_rounds + 1):
+            latest_brief, question, answer = await self._run_clarify_round(
+                task=task,
+                emit=emit,
+                summary=summary,
+                on_user_question=on_user_question,
+                round_index=round_index,
+                rounds=rounds,
+                unresolved_questions=review.unresolved_questions,
             )
-
-        assistant_message = Message(
-            role=Role.ASSISTANT,
-            content=response.content or tool_call.arguments.get("question", ""),
-            tool_calls=[tool_call],
-        )
-        self.agent.session.append(assistant_message)
-        summary.assistant_messages.append(assistant_message)
-
-        await emit(
-            AgentEvent(
-                type="tool_call",
-                tool_name=tool_call.name,
-                tool_args=tool_call.arguments,
-                phase="clarify",
-            )
-        )
-        assert self.executor is not None
-        outcome = await self.executor.execute_tool_call(
-            tool_call,
-            on_confirmation=None,
-            on_user_question=on_user_question,
-            emit_confirmation=None,
-            source="clarify",
-            skip_duplicate_check=True,
-            record_action=False,
-            skip_confirmation=True,
-        )
-        await emit(
-            AgentEvent(
-                type="tool_result",
-                content=outcome.event_content,
-                tool_name=tool_call.name,
-                is_error=outcome.is_error,
-                phase="clarify",
-            )
-        )
-        self.agent.session.append(outcome.message)
-        summary.tool_result_messages.append(outcome.message)
-
-        question = str(tool_call.arguments.get("question", "")).strip()
-        answer = ""
-        if outcome.registry_result is not None:
-            answer = str(outcome.registry_result.metadata.get("answer", "")).strip()
-
-        brief_prompt = (
-            "Write a concise task brief in markdown using these exact sections:\n"
-            "## Task Statement\n"
-            "## Desired Outcome\n"
-            "## In Scope\n"
-            "## Non Goals\n"
-            "## Decision Boundaries\n"
-            "## Constraints\n"
-            "## Likely Touchpoints\n"
-            "## Assumptions\n"
-            "## Acceptance Criteria\n\n"
-            "Use short bullet lists when helpful. Do not start implementing.\n\n"
-            f"Task: {task}\n"
-            f"Question: {question}\n"
-            f"Answer: {answer or 'No answer provided.'}"
-        )
-        brief_response = await self._complete_in_mode(
-            prompt=brief_prompt,
-            tools=None,
-            max_tokens=900,
-            temperature=0.1,
-        )
-        brief = (
-            ClarifyBrief.from_markdown(
-                brief_response.content,
-                task_statement=task,
-                question=question,
+            rounds.append((question, answer))
+            review = self.workflow_policy.review_clarify(
+                task=task,
                 answer=answer,
+                non_goals=latest_brief.non_goals,
+                round_index=round_index,
+                max_rounds=max_rounds,
             )
-            if brief_response.content.strip()
-            else ClarifyBrief.fallback(
-                task_statement=task,
-                question=question,
-                answer=answer,
-            )
-        )
+            if review.should_continue:
+                self._append_workflow_timeline_from_decision(
+                    ModeDecision.transition(
+                        WorkflowMode.CLARIFY,
+                        reason_code=review.reason_code,
+                        reason_summary=review.reason_summary,
+                        decision_kind=WorkflowDecisionKind.FORCED,
+                        unresolved_questions=review.unresolved_questions,
+                    ),
+                    kind=WorkflowTimelineEntryKind.CLARIFY_CONTINUE,
+                    summary=summary,
+                )
+                continue
+            break
+
+        assert latest_brief is not None
+        brief = latest_brief
         brief_path = self.artifact_store.write_brief(task, brief)
         dod.clarify_brief = str(brief_path)
         dod.acceptance_criteria = list(dict.fromkeys(brief.acceptance_criteria))
         self.dod_store.save(dod)
+        self._append_workflow_timeline_from_decision(
+            ModeDecision.transition(
+                WorkflowMode.CLARIFY,
+                reason_code=review.reason_code,
+                reason_summary=review.reason_summary,
+                decision_kind=WorkflowDecisionKind.FORCED,
+                unresolved_questions=review.unresolved_questions,
+            ),
+            kind=WorkflowTimelineEntryKind.CLARIFY_EXIT,
+            summary=summary,
+            artifact_paths=[str(brief_path)],
+        )
         await self._emit_artifact(
             emit=emit,
             kind="clarify_brief",
             path=brief_path,
             preview=(f"Clarify brief: {brief_path}\nOutcome: {brief.desired_outcome[0]}"),
         )
+        return review
 
     async def _run_plan_mode(
         self,
@@ -790,20 +738,12 @@ class ConversationRuntime:
         summary: TurnSummary,
         on_confirmation: ConfirmationHandler,
         on_user_question: UserQuestionHandler,
+        refresh_reasons: list[str] | None = None,
     ) -> None:
-        prompt = (
-            "Produce two markdown planning artifacts separated by the exact line "
-            f"`{VERIFICATION_SEPARATOR}`.\n\n"
-            "Before the separator, write an Implementation Plan with these sections:\n"
-            "## File Changes\n"
-            "## Execution Order\n"
-            "## Risks\n\n"
-            "After the separator, write a Verification Plan with these sections:\n"
-            "## Acceptance Criteria\n"
-            "## Verification Commands\n"
-            "## Notes\n\n"
-            "Do not start writing code.\n\n"
-            f"Task: {task}"
+        prompt = self._plan_prompt(
+            task=task,
+            dod=dod,
+            refresh_reasons=refresh_reasons,
         )
         response = await self._complete_in_mode(
             prompt=prompt,
@@ -915,6 +855,320 @@ class ConversationRuntime:
     @staticmethod
     def _artifact_exists(path_str: str | None) -> bool:
         return bool(path_str and Path(path_str).exists())
+
+    def _append_workflow_timeline_from_decision(
+        self,
+        decision: ModeDecision,
+        *,
+        kind: WorkflowTimelineEntryKind,
+        summary: TurnSummary | None = None,
+        artifact_paths: list[str] | None = None,
+    ) -> None:
+        entry = WorkflowTimelineEntry.from_decision(
+            decision,
+            kind=kind,
+            prompt_format=self.agent.prompt_format,
+            prompt_sections=self.agent.prompt_sections,
+            artifact_paths=artifact_paths,
+        )
+        self.agent.session.append_workflow_timeline_entry(entry)
+        if summary is not None:
+            summary.workflow_timeline = list(self.agent.session.workflow_timeline)
+
+    async def _run_clarify_round(
+        self,
+        *,
+        task: str,
+        emit: EventSink,
+        summary: TurnSummary,
+        on_user_question: UserQuestionHandler,
+        round_index: int,
+        rounds: list[tuple[str, str]],
+        unresolved_questions: list[str],
+    ) -> tuple[ClarifyBrief, str, str]:
+        ask_tool = self.agent.registry.get("AskUserQuestion")
+        assert ask_tool is not None
+        response = await self._complete_in_mode(
+            prompt=self._clarify_prompt(
+                task=task,
+                round_index=round_index,
+                rounds=rounds,
+                unresolved_questions=unresolved_questions,
+            ),
+            tools=[ask_tool.to_schema()],
+            max_tokens=300,
+        )
+        tool_call = next(
+            (tool for tool in response.tool_calls if tool.name == "AskUserQuestion"),
+            None,
+        )
+        if tool_call is None:
+            tool_call = ToolCall(
+                id=f"clarify-question-{round_index}",
+                name="AskUserQuestion",
+                arguments={
+                    "question": self._fallback_clarify_question(task, response.content),
+                },
+            )
+
+        assistant_message = Message(
+            role=Role.ASSISTANT,
+            content=response.content or tool_call.arguments.get("question", ""),
+            tool_calls=[tool_call],
+        )
+        self.agent.session.append(assistant_message)
+        summary.assistant_messages.append(assistant_message)
+
+        await emit(
+            AgentEvent(
+                type="tool_call",
+                tool_name=tool_call.name,
+                tool_args=tool_call.arguments,
+                phase="clarify",
+            )
+        )
+        assert self.executor is not None
+        outcome = await self.executor.execute_tool_call(
+            tool_call,
+            on_confirmation=None,
+            on_user_question=on_user_question,
+            emit_confirmation=None,
+            source="clarify",
+            skip_duplicate_check=True,
+            record_action=False,
+            skip_confirmation=True,
+        )
+        await emit(
+            AgentEvent(
+                type="tool_result",
+                content=outcome.event_content,
+                tool_name=tool_call.name,
+                is_error=outcome.is_error,
+                phase="clarify",
+            )
+        )
+        self.agent.session.append(outcome.message)
+        summary.tool_result_messages.append(outcome.message)
+
+        question = str(tool_call.arguments.get("question", "")).strip()
+        answer = ""
+        if outcome.registry_result is not None:
+            answer = str(outcome.registry_result.metadata.get("answer", "")).strip()
+
+        brief_response = await self._complete_in_mode(
+            prompt=self._clarify_brief_prompt(
+                task=task,
+                rounds=rounds + [(question, answer)],
+            ),
+            tools=None,
+            max_tokens=900,
+            temperature=0.1,
+        )
+        brief = (
+            ClarifyBrief.from_markdown(
+                brief_response.content,
+                task_statement=task,
+                question=question,
+                answer=answer,
+            )
+            if brief_response.content.strip()
+            else ClarifyBrief.fallback(
+                task_statement=task,
+                question=question,
+                answer=answer,
+            )
+        )
+        return brief, question, answer
+
+    def _clarify_prompt(
+        self,
+        *,
+        task: str,
+        round_index: int,
+        rounds: list[tuple[str, str]],
+        unresolved_questions: list[str],
+    ) -> str:
+        if round_index == 1:
+            return (
+                "Clarify the task before planning or implementation.\n"
+                "Ask exactly one focused question with AskUserQuestion.\n"
+                "Target missing outcome, scope, or decision-boundary information.\n"
+                "Do not propose solutions yet.\n\n"
+                f"Task: {task}"
+            )
+
+        history = "\n".join(
+            f"Question {index}: {question}\nAnswer {index}: {answer or 'No answer provided.'}"
+            for index, (question, answer) in enumerate(rounds, start=1)
+        )
+        unresolved = "\n".join(f"- {item}" for item in unresolved_questions) or "- none"
+        return (
+            "Continue clarify mode with one focused follow-up question.\n"
+            "Ask exactly one question with AskUserQuestion.\n"
+            "Only target the highest-leverage remaining uncertainty.\n\n"
+            f"Task: {task}\n\n"
+            f"Previous clarify rounds:\n{history}\n\n"
+            f"Still unresolved:\n{unresolved}"
+        )
+
+    def _clarify_brief_prompt(
+        self,
+        *,
+        task: str,
+        rounds: list[tuple[str, str]],
+    ) -> str:
+        history = "\n".join(
+            f"Question {index}: {question}\nAnswer {index}: {answer or 'No answer provided.'}"
+            for index, (question, answer) in enumerate(rounds, start=1)
+        )
+        return (
+            "Write a concise task brief in markdown using these exact sections:\n"
+            "## Task Statement\n"
+            "## Desired Outcome\n"
+            "## In Scope\n"
+            "## Non Goals\n"
+            "## Decision Boundaries\n"
+            "## Constraints\n"
+            "## Likely Touchpoints\n"
+            "## Assumptions\n"
+            "## Acceptance Criteria\n\n"
+            "Use short bullet lists when helpful. Do not start implementing.\n\n"
+            f"Task: {task}\n\n"
+            f"Clarify history:\n{history}"
+        )
+
+    def _plan_prompt(
+        self,
+        *,
+        task: str,
+        dod: DefinitionOfDone,
+        refresh_reasons: list[str] | None,
+    ) -> str:
+        base = (
+            "Produce two markdown planning artifacts separated by the exact line "
+            f"`{VERIFICATION_SEPARATOR}`.\n\n"
+            "Before the separator, write an Implementation Plan with these sections:\n"
+            "## File Changes\n"
+            "## Execution Order\n"
+            "## Risks\n\n"
+            "After the separator, write a Verification Plan with these sections:\n"
+            "## Acceptance Criteria\n"
+            "## Verification Commands\n"
+            "## Notes\n\n"
+            "Do not start writing code.\n\n"
+            f"Task: {task}"
+        )
+        if not refresh_reasons:
+            return base
+
+        existing_plan = self._artifact_text(dod.implementation_plan)
+        existing_verify = self._artifact_text(dod.verification_plan)
+        refresh_text = "\n".join(f"- {item}" for item in refresh_reasons)
+        return (
+            "Refresh the existing planning artifacts instead of creating a fresh plan "
+            "from scratch.\n"
+            "Account for the plan drift listed below and preserve any still-valid work.\n\n"
+            f"Refresh reasons:\n{refresh_text}\n\n"
+            f"Current implementation plan:\n{existing_plan or 'none'}\n\n"
+            f"Current verification plan:\n{existing_verify or 'none'}\n\n"
+            f"{base}"
+        )
+
+    async def _maybe_refresh_plan_for_drift(
+        self,
+        *,
+        task: str,
+        dod: DefinitionOfDone,
+        emit: EventSink,
+        summary: TurnSummary,
+        on_confirmation: ConfirmationHandler,
+        on_user_question: UserQuestionHandler,
+    ) -> bool:
+        if self.agent.workflow_mode != WorkflowMode.EXECUTE.value:
+            return False
+        if not (
+            self._artifact_exists(dod.implementation_plan)
+            and self._artifact_exists(dod.verification_plan)
+        ):
+            return False
+
+        freshness = self._plan_freshness(dod)
+        if not freshness.stale_plan:
+            return False
+
+        decision = self.workflow_policy.route(
+            task,
+            has_brief=self._artifact_exists(dod.clarify_brief),
+            has_plan=True,
+            allow_clarify=False,
+            stale_plan=True,
+            verification_pressure=bool(dod.retry_count or dod.last_verification_result == "failed"),
+            unresolved_questions=freshness.reasons,
+        )
+        await self._set_workflow_mode(
+            decision,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+        )
+        await self._run_plan_mode(
+            task=task,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            refresh_reasons=freshness.reasons,
+        )
+        await self._set_workflow_mode(
+            ModeDecision.transition(
+                WorkflowMode.EXECUTE,
+                reason_code="plan_refresh_completed",
+                reason_summary="plan artifacts refreshed; returning to execute",
+                decision_kind=WorkflowDecisionKind.HANDOFF,
+                unresolved_questions=freshness.reasons,
+            ),
+            dod=dod,
+            emit=emit,
+            summary=summary,
+        )
+        self._maybe_append_execute_bridge(dod)
+        return True
+
+    def _plan_freshness(self, dod: DefinitionOfDone) -> ArtifactFreshness:
+        return self.workflow_policy.assess_artifact_freshness(
+            implementation_text=self._artifact_text(dod.implementation_plan),
+            verification_text=self._artifact_text(dod.verification_plan),
+            touched_files=list(dod.touched_files),
+        )
+
+    def _artifact_text(self, path_str: str | None) -> str | None:
+        if not self._artifact_exists(path_str):
+            return None
+        assert path_str is not None
+        return Path(path_str).read_text().strip()
+
+    def _maybe_append_execute_bridge(self, dod: DefinitionOfDone) -> None:
+        bridge = build_execute_bridge(
+            Path(dod.clarify_brief) if dod.clarify_brief else None,
+            Path(dod.implementation_plan) if dod.implementation_plan else None,
+            Path(dod.verification_plan) if dod.verification_plan else None,
+        )
+        if bridge and not any(
+            message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
+            for message in self.agent.messages[-4:]
+        ):
+            self.agent.session.append(
+                Message(
+                    role=Role.USER,
+                    content=(
+                        "[WORKFLOW BRIDGE]\n"
+                        f"{bridge}\n\n"
+                        "Honor these artifacts while you execute the task. "
+                        "Keep TodoWrite current when the work spans multiple steps."
+                    ),
+                )
+            )
 
     @staticmethod
     def _fallback_clarify_question(task: str, response_content: str) -> str:

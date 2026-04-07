@@ -50,6 +50,22 @@ def test_workflow_policy_marks_unplanned_touched_files_as_stale() -> None:
     assert "unplanned.py" in freshness.reasons[0]
 
 
+def test_workflow_policy_requests_follow_up_when_clarify_answer_is_still_ambiguous() -> None:
+    policy = WorkflowPolicy()
+
+    review = policy.review_clarify(
+        task="Improve Loader so it feels more like claw-code.",
+        answer="Make it nicer.",
+        non_goals=["Anything not confirmed in the clarification answer."],
+        round_index=1,
+        max_rounds=2,
+    )
+
+    assert review.should_continue is True
+    assert review.reason_code == "clarify_follow_up_needed"
+    assert review.unresolved_questions
+
+
 def test_workflow_timeline_entry_round_trips() -> None:
     entry = WorkflowTimelineEntry(
         timestamp="2026-04-07T12:00:00Z",

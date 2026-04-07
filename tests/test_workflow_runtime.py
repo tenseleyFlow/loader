@@ -37,6 +37,11 @@ def artifact_kinds(run) -> list[str]:
     ]
 
 
+def workflow_timeline_kinds(run) -> list[str]:
+    assert run.agent.last_turn_summary is not None
+    return [entry.kind for entry in run.agent.last_turn_summary.workflow_timeline]
+
+
 @pytest.mark.asyncio
 async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
     temp_dir: Path,
@@ -119,10 +124,104 @@ async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
     assert run.agent.last_turn_summary.workflow_mode == "execute"
     assert run.agent.last_turn_summary.workflow_reason_code == "post_clarify_task_is_concrete"
     assert run.agent.last_turn_summary.workflow_decision_kind == "handoff"
-    assert [entry.mode for entry in run.agent.last_turn_summary.workflow_timeline[:2]] == [
-        "clarify",
-        "execute",
-    ]
+    assert run.agent.last_turn_summary.workflow_timeline[0].mode == "clarify"
+    assert run.agent.last_turn_summary.workflow_timeline[-1].mode == "execute"
+
+
+@pytest.mark.asyncio
+async def test_clarify_can_continue_for_a_second_round_when_scope_stays_ambiguous(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before I proceed.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={"question": "What part should change most?"},
+                    )
+                ],
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="I need one more focused detail before moving on.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-2",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": "Which file should change, and what should stay unchanged?",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Improve Loader so it feels more like claw-code.",
+                        "",
+                        "## Desired Outcome",
+                        "- Make the runtime feel more disciplined.",
+                        "",
+                        "## In Scope",
+                        "- Update src/loader/runtime/conversation.py only.",
+                        "",
+                        "## Non Goals",
+                        "- Do not change the CLI surface.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Escalate before touching unrelated modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/conversation.py",
+                        "",
+                        "## Assumptions",
+                        "- The user wants a narrow runtime change.",
+                        "",
+                        "## Acceptance Criteria",
+                        "- Only conversation.py changes.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="I have enough detail now and can move forward."),
+        ]
+    )
+
+    answers = iter(
+        [
+            "Make it nicer.",
+            "Only update src/loader/runtime/conversation.py and keep the CLI unchanged.",
+        ]
+    )
+
+    async def answer(_: str, __: list[str] | None) -> str:
+        return next(answers)
+
+    run = await run_scenario(
+        "Improve Loader so it feels more like claw-code.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    dod = run.agent.last_turn_summary.definition_of_done
+    assert dod is not None
+    assert dod.clarify_brief is not None
+    assert Path(dod.clarify_brief).exists()
+    assert workflow_modes(run)[:2] == ["clarify", "execute"]
+    assert workflow_timeline_kinds(run).count("clarify_continue") == 1
+    assert "clarify_exit" in workflow_timeline_kinds(run)
+    assert any(
+        entry.reason_code == "clarify_follow_up_needed"
+        for entry in run.agent.last_turn_summary.workflow_timeline
+    )
 
 
 @pytest.mark.asyncio
@@ -298,3 +397,110 @@ async def test_verify_failure_returns_to_execute_without_retriggering_plan(
     assert modes.count("execute") >= 2
     assert modes.count("verify") >= 2
     assert "fixed output" in target.read_text()
+
+
+@pytest.mark.asyncio
+async def test_stale_plan_artifacts_trigger_targeted_plan_refresh(
+    temp_dir: Path,
+) -> None:
+    target = temp_dir / "notes.txt"
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "# Implementation Plan",
+                        "",
+                        "## File Changes",
+                        "- Create planned.txt in the workspace root.",
+                        "",
+                        "## Execution Order",
+                        "1. Write planned.txt.",
+                        "",
+                        "## Risks",
+                        "- Choosing the wrong file path.",
+                        "",
+                        "<<<VERIFICATION>>>",
+                        "",
+                        "# Verification Plan",
+                        "",
+                        "## Acceptance Criteria",
+                        "- planned.txt exists.",
+                        "",
+                        "## Verification Commands",
+                        f"- `test -f {temp_dir / 'planned.txt'}`",
+                        "",
+                        "## Notes",
+                        "- Verify the originally planned file.",
+                    ]
+                )
+            ),
+            CompletionResponse(
+                content="I'll create the audit notes file first.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(target),
+                            "content": "runtime notes\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "# Implementation Plan",
+                        "",
+                        "## File Changes",
+                        f"- Keep {target.name} as the runtime audit artifact.",
+                        "",
+                        "## Execution Order",
+                        f"1. Confirm {target.name} is the intended output.",
+                        "",
+                        "## Risks",
+                        "- Accidentally verifying the stale plan output.",
+                        "",
+                        "<<<VERIFICATION>>>",
+                        "",
+                        "# Verification Plan",
+                        "",
+                        "## Acceptance Criteria",
+                        f"- {target.name} exists in the workspace root.",
+                        "",
+                        "## Verification Commands",
+                        f"- `test -f {target}`",
+                        "",
+                        "## Notes",
+                        "- Refresh the plan around the actual artifact.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="The refreshed plan matches the notes artifact."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Implement a persistent workflow artifact with planning artifacts, "
+        "verification commands, and plan refresh discipline so Loader can refresh stale plans.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    modes = workflow_modes(run)
+    assert modes.count("plan") == 2
+    assert modes.count("execute") >= 2
+    assert modes[-1] == "verify"
+    assert artifact_kinds(run).count("implementation_plan") == 2
+    assert artifact_kinds(run).count("verification_plan") == 2
+    assert target.read_text() == "runtime notes\n"
+    assert any(
+        entry.reason_code == "stale_plan_artifacts"
+        for entry in run.agent.last_turn_summary.workflow_timeline
+    )
+    assert any(
+        entry.reason_code == "plan_refresh_completed"
+        for entry in run.agent.last_turn_summary.workflow_timeline
+    )
