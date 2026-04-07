@@ -13,6 +13,10 @@ from ..agent.reasoning import (
     get_token_budget,
 )
 from ..llm.base import Message, Role, ToolCall
+from .artifact_invalidation import (
+    ArtifactInvalidationAssessor,
+    WorkflowRecoveryStrategy,
+)
 from .assistant_turns import AssistantTurnRequester
 from .clarify_strategy import ClarifySnapshot, build_clarify_question, describe_clarify_slot
 from .completion_policy import CompletionPolicy
@@ -58,6 +62,7 @@ class ConversationRuntime:
         self.dod_store = DefinitionOfDoneStore(agent.project_root)
         self.workflow_signals = WorkflowSignalExtractor()
         self.workflow_policy = WorkflowPolicy(self.workflow_signals)
+        self.artifact_invalidation = ArtifactInvalidationAssessor()
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
         self.turn_requester = AssistantTurnRequester(agent, self.tracer)
         self.tool_batches = ToolBatchRunner(agent, self.dod_store)
@@ -777,9 +782,12 @@ class ConversationRuntime:
         )
         dod.implementation_plan = str(implementation_path)
         dod.verification_plan = str(verification_path)
-        dod.acceptance_criteria = list(
-            dict.fromkeys(dod.acceptance_criteria + artifacts.acceptance_criteria)
-        )
+        if refresh_reasons:
+            dod.acceptance_criteria = list(dict.fromkeys(artifacts.acceptance_criteria))
+        else:
+            dod.acceptance_criteria = list(
+                dict.fromkeys(dod.acceptance_criteria + artifacts.acceptance_criteria)
+            )
         if artifacts.verification_commands:
             dod.verification_commands = artifacts.verification_commands
         self.dod_store.save(dod)
@@ -1116,9 +1124,94 @@ class ConversationRuntime:
             return False
 
         freshness = self._plan_freshness(dod)
-        if not freshness.stale_plan:
+        if not freshness.requires_refresh:
             return False
 
+        strategy = WorkflowRecoveryStrategy(freshness.recovery_strategy)
+        if strategy == WorkflowRecoveryStrategy.PLAN_REFRESH:
+            return await self._run_plan_refresh_reentry(
+                task=task,
+                dod=dod,
+                freshness=freshness,
+                emit=emit,
+                summary=summary,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+            )
+        if strategy == WorkflowRecoveryStrategy.CLARIFY_REENTRY:
+            return await self._run_clarify_reentry_for_drift(
+                task=task,
+                dod=dod,
+                freshness=freshness,
+                emit=emit,
+                summary=summary,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+                force_plan_after_clarify=False,
+            )
+        if strategy == WorkflowRecoveryStrategy.FULL_REPLAN:
+            return await self._run_clarify_reentry_for_drift(
+                task=task,
+                dod=dod,
+                freshness=freshness,
+                emit=emit,
+                summary=summary,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+                force_plan_after_clarify=True,
+            )
+        return False
+
+    def _plan_freshness(self, dod: DefinitionOfDone) -> ArtifactFreshness:
+        return self.artifact_invalidation.assess(
+            task_statement=dod.task_statement,
+            clarify_text=self._artifact_text(dod.clarify_brief),
+            implementation_text=self._artifact_text(dod.implementation_plan),
+            verification_text=self._artifact_text(dod.verification_plan),
+            acceptance_criteria=list(dod.acceptance_criteria),
+            touched_files=list(dod.touched_files),
+            last_verification_result=dod.last_verification_result,
+        )
+
+    def _artifact_text(self, path_str: str | None) -> str | None:
+        if not self._artifact_exists(path_str):
+            return None
+        assert path_str is not None
+        return Path(path_str).read_text().strip()
+
+    def _maybe_append_execute_bridge(self, dod: DefinitionOfDone) -> None:
+        bridge = build_execute_bridge(
+            Path(dod.clarify_brief) if dod.clarify_brief else None,
+            Path(dod.implementation_plan) if dod.implementation_plan else None,
+            Path(dod.verification_plan) if dod.verification_plan else None,
+        )
+        if bridge and not any(
+            message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
+            for message in self.agent.messages[-4:]
+        ):
+            self.agent.session.append(
+                Message(
+                    role=Role.USER,
+                    content=(
+                        "[WORKFLOW BRIDGE]\n"
+                        f"{bridge}\n\n"
+                        "Honor these artifacts while you execute the task. "
+                        "Keep TodoWrite current when the work spans multiple steps."
+                    ),
+                )
+            )
+
+    async def _run_plan_refresh_reentry(
+        self,
+        *,
+        task: str,
+        dod: DefinitionOfDone,
+        freshness: ArtifactFreshness,
+        emit: EventSink,
+        summary: TurnSummary,
+        on_confirmation: ConfirmationHandler,
+        on_user_question: UserQuestionHandler,
+    ) -> bool:
         decision = self.workflow_policy.route_from_signals(
             self.workflow_signals.extract_route_signals(
                 task,
@@ -1163,40 +1256,132 @@ class ConversationRuntime:
         self._maybe_append_execute_bridge(dod)
         return True
 
-    def _plan_freshness(self, dod: DefinitionOfDone) -> ArtifactFreshness:
-        return self.workflow_policy.assess_artifact_freshness(
-            implementation_text=self._artifact_text(dod.implementation_plan),
-            verification_text=self._artifact_text(dod.verification_plan),
-            touched_files=list(dod.touched_files),
+    async def _run_clarify_reentry_for_drift(
+        self,
+        *,
+        task: str,
+        dod: DefinitionOfDone,
+        freshness: ArtifactFreshness,
+        emit: EventSink,
+        summary: TurnSummary,
+        on_confirmation: ConfirmationHandler,
+        on_user_question: UserQuestionHandler,
+        force_plan_after_clarify: bool,
+    ) -> bool:
+        clarify_reason_code = (
+            "full_replan_requires_clarify"
+            if force_plan_after_clarify
+            else "clarify_reentry_required"
         )
-
-    def _artifact_text(self, path_str: str | None) -> str | None:
-        if not self._artifact_exists(path_str):
-            return None
-        assert path_str is not None
-        return Path(path_str).read_text().strip()
-
-    def _maybe_append_execute_bridge(self, dod: DefinitionOfDone) -> None:
-        bridge = build_execute_bridge(
-            Path(dod.clarify_brief) if dod.clarify_brief else None,
-            Path(dod.implementation_plan) if dod.implementation_plan else None,
-            Path(dod.verification_plan) if dod.verification_plan else None,
+        clarify_reason_summary = (
+            "clarify and plan artifacts drifted; revisit requirements before replanning"
+            if force_plan_after_clarify
+            else "clarify artifacts drifted; revisit requirements before continuing"
         )
-        if bridge and not any(
-            message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
-            for message in self.agent.messages[-4:]
-        ):
-            self.agent.session.append(
-                Message(
-                    role=Role.USER,
-                    content=(
-                        "[WORKFLOW BRIDGE]\n"
-                        f"{bridge}\n\n"
-                        "Honor these artifacts while you execute the task. "
-                        "Keep TodoWrite current when the work spans multiple steps."
-                    ),
-                )
+        await self._set_workflow_mode(
+            ModeDecision.transition(
+                WorkflowMode.CLARIFY,
+                reason_code=clarify_reason_code,
+                reason_summary=clarify_reason_summary,
+                decision_kind=WorkflowDecisionKind.REENTRY,
+                unresolved_questions=freshness.reasons,
+            ),
+            dod=dod,
+            emit=emit,
+            summary=summary,
+        )
+        clarify_review = await self._run_clarify_mode(
+            task=task,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+            on_user_question=on_user_question,
+        )
+        recovery_reasons = freshness.reasons + clarify_review.unresolved_questions
+
+        if force_plan_after_clarify:
+            await self._set_workflow_mode(
+                ModeDecision.transition(
+                    WorkflowMode.PLAN,
+                    reason_code="full_replan_required",
+                    reason_summary="clarify and plan artifacts drifted; rebuilding the plan",
+                    decision_kind=WorkflowDecisionKind.REENTRY,
+                    unresolved_questions=recovery_reasons,
+                ),
+                dod=dod,
+                emit=emit,
+                summary=summary,
             )
+            await self._run_plan_mode(
+                task=task,
+                dod=dod,
+                emit=emit,
+                summary=summary,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+                refresh_reasons=recovery_reasons,
+            )
+            await self._set_workflow_mode(
+                ModeDecision.transition(
+                    WorkflowMode.EXECUTE,
+                    reason_code="full_replan_completed",
+                    reason_summary="clarify and plan artifacts refreshed; returning to execute",
+                    decision_kind=WorkflowDecisionKind.HANDOFF,
+                    unresolved_questions=recovery_reasons,
+                ),
+                dod=dod,
+                emit=emit,
+                summary=summary,
+            )
+            self._maybe_append_execute_bridge(dod)
+            return True
+
+        decision = self.workflow_policy.route_from_signals(
+            self.workflow_signals.extract_route_signals(
+                task,
+                has_brief=self._artifact_exists(dod.clarify_brief),
+                has_plan=self._artifact_exists(dod.implementation_plan)
+                and self._artifact_exists(dod.verification_plan),
+                allow_clarify=False,
+                unresolved_questions=recovery_reasons,
+                timeline=self.agent.session.workflow_timeline,
+            )
+        )
+        await self._set_workflow_mode(
+            decision.with_context(
+                reason_code=f"post_drift_{decision.reason_code}",
+                reason_summary=f"clarify reentry handoff: {decision.reason_summary}",
+                decision_kind=WorkflowDecisionKind.HANDOFF,
+                unresolved_questions=recovery_reasons,
+            ),
+            dod=dod,
+            emit=emit,
+            summary=summary,
+        )
+        if decision.mode == WorkflowMode.PLAN:
+            await self._run_plan_mode(
+                task=task,
+                dod=dod,
+                emit=emit,
+                summary=summary,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+                refresh_reasons=recovery_reasons,
+            )
+            await self._set_workflow_mode(
+                ModeDecision.transition(
+                    WorkflowMode.EXECUTE,
+                    reason_code="clarify_reentry_plan_created",
+                    reason_summary="plan refreshed after clarify reentry; returning to execute",
+                    decision_kind=WorkflowDecisionKind.HANDOFF,
+                    unresolved_questions=recovery_reasons,
+                ),
+                dod=dod,
+                emit=emit,
+                summary=summary,
+            )
+        self._maybe_append_execute_bridge(dod)
+        return True
 
     @staticmethod
     def _fallback_clarify_question(

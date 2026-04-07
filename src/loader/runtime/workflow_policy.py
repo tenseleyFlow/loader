@@ -181,6 +181,8 @@ class ArtifactFreshness:
     stale_brief: bool = False
     stale_plan: bool = False
     reasons: list[str] = field(default_factory=list)
+    reason_codes: list[str] = field(default_factory=list)
+    recovery_strategy: str = "none"
 
     @property
     def requires_refresh(self) -> bool:

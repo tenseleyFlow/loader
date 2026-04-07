@@ -505,3 +505,210 @@ async def test_stale_plan_artifacts_trigger_targeted_plan_refresh(
         entry.reason_code == "plan_refresh_completed"
         for entry in run.agent.last_turn_summary.workflow_timeline
     )
+
+
+@pytest.mark.asyncio
+async def test_full_replan_can_reenter_clarify_before_rebuilding_plan(
+    temp_dir: Path,
+) -> None:
+    task = (
+        "Don't assume the scope: improve Loader so it feels more like claw-code "
+        "while tightening workflow artifacts."
+    )
+    target = temp_dir / "notes.txt"
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before planning.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": "What outcome matters most for this Loader improvement?",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        task,
+                        "",
+                        "## Desired Outcome",
+                        "- Improve the runtime workflow around the planned artifact.",
+                        "",
+                        "## Non Goals",
+                        "- Do not redesign the CLI surface.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Escalate before broad UX changes.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository conventions.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- planned.txt",
+                        "",
+                        "## Acceptance Criteria",
+                        "- planned.txt exists in the workspace root.",
+                    ]
+                )
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "# Implementation Plan",
+                        "",
+                        "## File Changes",
+                        "- Create planned.txt in the workspace root.",
+                        "",
+                        "## Execution Order",
+                        "1. Write planned.txt.",
+                        "",
+                        "## Risks",
+                        "- Choosing the wrong output artifact.",
+                        "",
+                        "<<<VERIFICATION>>>",
+                        "",
+                        "# Verification Plan",
+                        "",
+                        "## Acceptance Criteria",
+                        "- planned.txt exists.",
+                        "",
+                        "## Verification Commands",
+                        f"- `test -f {temp_dir / 'planned.txt'}`",
+                        "",
+                        "## Notes",
+                        "- Verify the originally planned artifact.",
+                    ]
+                )
+            ),
+            CompletionResponse(
+                content="I'll create the notes artifact first.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(target),
+                            "content": "runtime notes\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="I need one more clarification before rebuilding the plan.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-2",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": (
+                                "Which file should I actually focus on, "
+                                "and what should stay unchanged?"
+                            ),
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        task,
+                        "",
+                        "## Desired Outcome",
+                        "- Keep the runtime artifact aligned with the actual work.",
+                        "",
+                        "## Non Goals",
+                        "- Do not change the CLI surface.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Escalate before touching unrelated modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        f"- {target.name}",
+                        "",
+                        "## Acceptance Criteria",
+                        f"- {target.name} exists in the workspace root.",
+                    ]
+                )
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "# Implementation Plan",
+                        "",
+                        "## File Changes",
+                        f"- Keep {target.name} as the runtime artifact.",
+                        "",
+                        "## Execution Order",
+                        f"1. Confirm {target.name} remains the intended output.",
+                        "",
+                        "## Risks",
+                        "- Accidentally verifying the stale artifact name.",
+                        "",
+                        "<<<VERIFICATION>>>",
+                        "",
+                        "# Verification Plan",
+                        "",
+                        "## Acceptance Criteria",
+                        f"- {target.name} exists in the workspace root.",
+                        "",
+                        "## Verification Commands",
+                        f"- `test -f {target}`",
+                        "",
+                        "## Notes",
+                        "- Rebuild the plan around the actual runtime artifact.",
+                    ]
+                )
+            ),
+            CompletionResponse(
+                content="The refreshed brief and plan now match the notes artifact."
+            ),
+            CompletionResponse(
+                content="The refreshed brief and plan now match the notes artifact."
+            ),
+        ]
+    )
+
+    answers = iter(
+        [
+            (
+                "Focus on the planned runtime artifact, keep the CLI unchanged, "
+                "and stop before broad UX changes."
+            ),
+            "Focus on notes.txt and keep the CLI unchanged.",
+        ]
+    )
+
+    async def answer(_: str, __: list[str] | None) -> str:
+        return next(answers)
+
+    run = await run_scenario(
+        task,
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    modes = workflow_modes(run)
+    assert modes.count("clarify") >= 2
+    assert modes.count("plan") == 2
+    assert modes.count("execute") >= 2
+    assert modes[-1] == "verify"
+    assert target.read_text() == "runtime notes\n"
+    assert any(
+        entry.reason_code == "full_replan_requires_clarify"
+        for entry in run.agent.last_turn_summary.workflow_timeline
+    )
+    assert any(
+        entry.reason_code == "full_replan_required"
+        for entry in run.agent.last_turn_summary.workflow_timeline
+    )
