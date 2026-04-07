@@ -10,6 +10,7 @@ from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role, ToolCall
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.conversation import ConversationRuntime
+from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.permissions import PermissionMode, build_permission_policy
 from ..runtime.session import ConversationSession
@@ -91,6 +92,9 @@ class AgentConfig:
     permission_mode: PermissionMode = PermissionMode.WORKSPACE_WRITE
     workflow_mode_override: str | None = None
     stream: bool = True  # Stream LLM responses for real-time output
+    session_rotate_after_bytes: int = 256 * 1024
+    session_auto_compaction_input_tokens_threshold: int = 100_000
+    session_compaction_keep_last_messages: int = 4
 
     # Reasoning stages configuration
     reasoning: ReasoningConfig = None  # type: ignore
@@ -120,14 +124,10 @@ class Agent:
             workspace_root=self.project_root,
             tool_requirements=self.registry.get_tool_requirements(),
         )
-        self.messages: list[Message] = []
-        self.session = ConversationSession(
-            system_message_factory=self._get_system_message,
-            few_shot_factory=self._get_few_shot_examples,
-            messages=self.messages,
-        )
-        self._system_message: Message | None = None
         self.workflow_mode = WorkflowMode.EXECUTE.value
+        self.messages: list[Message] = []
+        self.session = self._create_session(messages=self.messages)
+        self._system_message: Message | None = None
         self._use_react: bool | None = None
         self.capability_profile = resolve_backend_capability_profile(self.backend)
         self.last_turn_summary: TurnSummary | None = None
@@ -149,6 +149,74 @@ class Agent:
         self.project_context: ProjectContext | None = None
         if self.config.auto_context:
             self.project_context = detect_project(self.project_root)
+
+    def _create_session(
+        self,
+        *,
+        messages: list[Message] | None = None,
+    ) -> ConversationSession:
+        """Create a fresh persisted conversation session."""
+
+        session = ConversationSession(
+            system_message_factory=self._get_system_message,
+            few_shot_factory=self._get_few_shot_examples,
+            project_root=self.project_root,
+            messages=messages or [],
+            permission_mode=self.permission_policy.active_mode.as_str(),
+            workflow_mode=self.workflow_mode,
+            rotate_after_bytes=self.config.session_rotate_after_bytes,
+            auto_compaction_input_tokens_threshold=(
+                self.config.session_auto_compaction_input_tokens_threshold
+            ),
+            compaction_keep_last_messages=(
+                self.config.session_compaction_keep_last_messages
+            ),
+        )
+        return session
+
+    def _replace_session(self, session: ConversationSession) -> None:
+        """Install a loaded session as the agent's active conversation."""
+
+        self.session = session
+        self.messages = session.messages
+        self._current_task = session.current_task
+        self.set_workflow_mode(session.workflow_mode)
+        self.permission_policy.active_mode = PermissionMode.from_str(
+            session.permission_mode
+        )
+        self.last_turn_summary = None
+        if session.active_dod_path:
+            dod_path = Path(session.active_dod_path)
+            if dod_path.exists():
+                dod = DefinitionOfDoneStore(self.project_root).load(dod_path)
+                self.last_turn_summary = TurnSummary(
+                    final_response="",
+                    definition_of_done=dod,
+                    workflow_mode=session.workflow_mode,
+                    session_id=session.session_id,
+                    cumulative_usage=dict(session.usage_totals),
+                )
+
+    def resume_session(self, session_id: str | None = None) -> bool:
+        """Resume the latest or named persisted session."""
+
+        loaded = ConversationSession.load(
+            project_root=self.project_root,
+            system_message_factory=self._get_system_message,
+            few_shot_factory=self._get_few_shot_examples,
+            session_id=session_id,
+            rotate_after_bytes=self.config.session_rotate_after_bytes,
+            auto_compaction_input_tokens_threshold=(
+                self.config.session_auto_compaction_input_tokens_threshold
+            ),
+            compaction_keep_last_messages=(
+                self.config.session_compaction_keep_last_messages
+            ),
+        )
+        if loaded is None:
+            return False
+        self._replace_session(loaded)
+        return True
 
     def steer(self, message: str) -> bool:
         """Send a steering message to the agent during execution.
@@ -394,7 +462,7 @@ class Agent:
         await emit(AgentEvent(type="thinking"))
 
         # Add to history
-        self.messages.append(Message(role=Role.USER, content=user_message))
+        self.session.append(Message(role=Role.USER, content=user_message))
 
         # Simple system prompt for chat (no tools)
         chat_system = Message(
@@ -427,7 +495,7 @@ class Agent:
                 full_content += chunk.content
 
         # Add to history
-        self.messages.append(Message(role=Role.ASSISTANT, content=full_content))
+        self.session.append(Message(role=Role.ASSISTANT, content=full_content))
 
         await emit(AgentEvent(type="response", content=full_content))
         return full_content
@@ -520,7 +588,7 @@ class Agent:
                     ))
 
                     # Run the subtask
-                    self.messages.append(Message(
+                    self.session.append(Message(
                         role=Role.USER,
                         content=f"Execute this subtask: {subtask.description}\n\n"
                                 f"Verification: {subtask.verification}",
@@ -553,7 +621,7 @@ class Agent:
                         f"{decomposition.to_prompt()}\n\n"
                         "Provide a brief summary of what was accomplished."
                     )
-                    self.messages.append(Message(role=Role.USER, content=summary_prompt))
+                    self.session.append(Message(role=Role.USER, content=summary_prompt))
                     return await self._run_inner(
                         summary_prompt,
                         emit,
@@ -565,7 +633,7 @@ class Agent:
                     return f"Task partially completed. {decomposition.to_prompt()}"
 
         # No planning or decomposition - run directly
-        self.messages.append(Message(role=Role.USER, content=user_message))
+        self.session.append(Message(role=Role.USER, content=user_message))
         return await self._run_inner(
             user_message,
             emit,
@@ -974,11 +1042,7 @@ class Agent:
     def clear_history(self) -> None:
         """Clear conversation history."""
         self.messages = []
-        self.session = ConversationSession(
-            system_message_factory=self._get_system_message,
-            few_shot_factory=self._get_few_shot_examples,
-            messages=self.messages,
-        )
+        self.session = self._create_session(messages=self.messages)
         self._recovery_context = None
         self._current_task = None
         self.last_turn_summary = None

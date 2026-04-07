@@ -450,6 +450,10 @@ class OllamaBackend(LLMBackend):
                     full_content=display_content or full_content,
                     tool_calls=tool_calls,
                     is_done=True,
+                    usage={
+                        "prompt_tokens": data.get("prompt_eval_count", 0),
+                        "completion_tokens": data.get("eval_count", 0),
+                    },
                 )
             else:
                 # Filter out <think> blocks from reasoning models (deepseek-r1, etc.)

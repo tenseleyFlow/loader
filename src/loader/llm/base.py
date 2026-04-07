@@ -22,6 +22,25 @@ class ToolCall:
     name: str
     arguments: dict[str, Any]
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize one tool call for persistence."""
+
+        return {
+            "id": self.id,
+            "name": self.name,
+            "arguments": self.arguments,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolCall":
+        """Restore one tool call from persisted data."""
+
+        return cls(
+            id=str(data["id"]),
+            name=str(data["name"]),
+            arguments=dict(data.get("arguments", {})),
+        )
+
 
 @dataclass
 class ToolResult:
@@ -29,6 +48,25 @@ class ToolResult:
     tool_call_id: str
     content: str
     is_error: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize one tool result for persistence."""
+
+        return {
+            "tool_call_id": self.tool_call_id,
+            "content": self.content,
+            "is_error": self.is_error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolResult":
+        """Restore one tool result from persisted data."""
+
+        return cls(
+            tool_call_id=str(data["tool_call_id"]),
+            content=str(data.get("content", "")),
+            is_error=bool(data.get("is_error", False)),
+        )
 
 
 @dataclass
@@ -79,6 +117,33 @@ class Message:
             result["is_error"] = primary_result.is_error
         return result
 
+    def to_persisted_dict(self) -> dict[str, Any]:
+        """Serialize the full message payload for session persistence."""
+
+        return {
+            "role": self.role.value,
+            "content": self.content,
+            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls],
+            "tool_results": [
+                tool_result.to_dict() for tool_result in self.tool_results
+            ],
+        }
+
+    @classmethod
+    def from_persisted_dict(cls, data: dict[str, Any]) -> "Message":
+        """Restore a persisted conversation message."""
+
+        return cls(
+            role=Role(str(data["role"])),
+            content=str(data.get("content", "")),
+            tool_calls=[
+                ToolCall.from_dict(item) for item in data.get("tool_calls", [])
+            ],
+            tool_results=[
+                ToolResult.from_dict(item) for item in data.get("tool_results", [])
+            ],
+        )
+
 
 @dataclass
 class StreamChunk:
@@ -90,6 +155,7 @@ class StreamChunk:
     # Pending tool call detected during streaming (ReAct mode)
     # This allows showing tool widgets as they're detected, before streaming ends
     pending_tool_call: ToolCall | None = None
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass

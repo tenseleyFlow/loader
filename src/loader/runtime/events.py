@@ -64,6 +64,8 @@ class TurnSummary:
     failures: list[str] = field(default_factory=list)
     verification_status: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
+    cumulative_usage: dict[str, int] = field(default_factory=dict)
     trace: list[RuntimeTraceEvent] = field(default_factory=list)
     definition_of_done: DefinitionOfDone | None = None
     workflow_mode: str | None = None
+    session_id: str | None = None

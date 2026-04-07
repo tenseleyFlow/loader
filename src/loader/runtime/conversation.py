@@ -31,6 +31,7 @@ from .dod import (
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
 from .hooks import build_default_tool_hooks
+from .session import normalize_usage
 from .tracing import RuntimeTracer
 from .workflow import (
     VERIFICATION_SEPARATOR,
@@ -119,11 +120,18 @@ class ConversationRuntime:
             ),
         )
         summary = TurnSummary(final_response="")
+        summary.session_id = self.agent.session.session_id
         dod = self.dod_store.create_or_resume(
             original_task or task,
             retry_budget=self.agent.config.verification_retry_budget,
         )
         summary.definition_of_done = dod
+        self.agent.session.update_runtime_state(
+            active_dod_path=dod.storage_path,
+            current_task=original_task or task,
+            workflow_mode=self.agent.workflow_mode,
+            permission_mode=self.agent.active_permission_mode,
+        )
         await self._emit_dod_status(emit, dod)
 
         task = await self._prepare_workflow(
@@ -595,6 +603,19 @@ class ConversationRuntime:
         max_tokens: int,
     ) -> AssistantTurn:
         self.agent.safeguards.code_filter.reset()
+        compaction = self.agent.session.maybe_compact()
+        if compaction is not None:
+            await self._emit_artifact(
+                emit=emit,
+                kind="session_compaction",
+                path=self.agent.session.storage_path,
+                preview=(
+                    f"Compacted {compaction.removed_message_count} older message(s) "
+                    f"into a continuation summary.\n"
+                    f"Input tokens: {compaction.original_input_tokens} -> "
+                    f"{compaction.compressed_input_tokens}"
+                ),
+            )
         tools = None if self.agent.use_react else self.agent.registry.get_schemas()
         self.tracer.record(
             "assistant.requested",
@@ -608,6 +629,7 @@ class ConversationRuntime:
             full_content_unfiltered = ""
             tool_calls: list[ToolCall] = []
             pending_tool_calls_seen: set[str] = set()
+            usage: dict[str, int] = {}
 
             async for chunk in self.agent.backend.stream(
                 messages=self.agent.session.build_request_messages(),
@@ -648,6 +670,7 @@ class ConversationRuntime:
                 if chunk.is_done:
                     full_content = chunk.full_content or full_content_unfiltered
                     tool_calls = chunk.tool_calls
+                    usage = chunk.usage
 
             self.tracer.record(
                 "assistant.responded",
@@ -660,6 +683,7 @@ class ConversationRuntime:
                 response_content=full_content,
                 tool_calls=tool_calls,
                 pending_tool_calls_seen=pending_tool_calls_seen,
+                usage=usage,
             )
 
         response = await self.agent.backend.complete(
@@ -862,6 +886,7 @@ class ConversationRuntime:
         reason: str,
     ) -> None:
         self.agent.set_workflow_mode(mode.value)
+        self.agent.session.update_runtime_state(workflow_mode=mode.value)
         dod.current_mode = mode.value
         if not dod.mode_history or dod.mode_history[-1] != mode.value:
             dod.mode_history.append(mode.value)
@@ -1410,12 +1435,20 @@ class ConversationRuntime:
         return all_passed
 
     def _finalize_summary(self, summary: TurnSummary) -> TurnSummary:
+        summary.usage["tool_calls"] = len(summary.tool_result_messages)
+        summary.usage["iterations"] = summary.iterations
+        summary.cumulative_usage = self.agent.session.record_turn_usage(
+            summary.usage,
+            tool_calls=len(summary.tool_result_messages),
+            iterations=summary.iterations,
+        )
+        summary.session_id = self.agent.session.session_id
         summary.trace = list(self.tracer.events)
         return summary
 
     @staticmethod
     def _merge_usage(target: dict[str, int], update: dict[str, int]) -> None:
-        for key, value in update.items():
+        for key, value in normalize_usage(update).items():
             target[key] = target.get(key, 0) + value
 
     async def _prepare_runtime_capabilities(self) -> None:
