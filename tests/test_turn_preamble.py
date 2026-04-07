@@ -39,7 +39,7 @@ async def _prepare_runtime(
 
 
 @pytest.mark.asyncio
-async def test_turn_preamble_seeds_action_hint_and_drains_steering(
+async def test_turn_preamble_drains_steering_without_prefill_hint(
     temp_dir: Path,
 ) -> None:
     backend = ScriptedBackend()
@@ -54,12 +54,7 @@ async def test_turn_preamble_seeds_action_hint_and_drains_steering(
         runtime,
         task="Create a README for the runtime controller.",
     )
-    agent.messages.append(
-        Message(
-            role=Role.USER,
-            content="Create a README for the runtime controller.",
-        )
-    )
+    agent.messages.append(Message(role=Role.USER, content=prepared.task))
     agent._steering_queue.put_nowait("Stay inside src/loader/runtime.")
 
     decision = await runtime.turn_preamble.prepare_iteration(
@@ -75,7 +70,7 @@ async def test_turn_preamble_seeds_action_hint_and_drains_steering(
 
     assert not decision.should_continue
     assert prepared.summary.iterations == 1
-    assert any(
+    assert not any(
         message.role.value == "assistant" and message.content == "["
         for message in agent.session.messages
     )
