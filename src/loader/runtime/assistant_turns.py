@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from ..llm.base import ToolCall
+from .context import RuntimeContext
 from .events import AgentEvent
 from .tracing import RuntimeTracer
 
@@ -26,8 +27,8 @@ class AssistantTurn:
 class AssistantTurnRequester:
     """Encapsulates assistant request/response handling for one runtime turn."""
 
-    def __init__(self, agent, tracer: RuntimeTracer) -> None:
-        self.agent = agent
+    def __init__(self, context: RuntimeContext, tracer: RuntimeTracer) -> None:
+        self.context = context
         self.tracer = tracer
 
     async def request_turn(
@@ -38,8 +39,8 @@ class AssistantTurnRequester:
     ) -> AssistantTurn:
         """Request one assistant turn through streaming or complete mode."""
 
-        self.agent.safeguards.code_filter.reset()
-        compaction = self.agent.session.maybe_compact()
+        self.context.safeguards.code_filter.reset()
+        compaction = self.context.session.maybe_compact()
         if compaction is not None:
             await emit(
                 AgentEvent(
@@ -51,33 +52,33 @@ class AssistantTurnRequester:
                         f"{compaction.compressed_input_tokens}"
                     ),
                     artifact_kind="session_compaction",
-                    artifact_path=str(self.agent.session.storage_path),
+                    artifact_path=str(self.context.session.storage_path),
                 )
             )
-        tools = None if self.agent.use_react else self.agent.registry.get_schemas()
+        tools = None if self.context.use_react else self.context.registry.get_schemas()
         self.tracer.record(
             "assistant.requested",
-            use_react=self.agent.use_react,
-            stream=self.agent.config.stream,
+            use_react=self.context.use_react,
+            stream=self.context.config.stream,
             max_tokens=max_tokens,
         )
 
-        if self.agent.config.stream:
+        if self.context.config.stream:
             full_content = ""
             full_content_unfiltered = ""
             tool_calls: list[ToolCall] = []
             pending_tool_calls_seen: set[str] = set()
             usage: dict[str, int] = {}
 
-            async for chunk in self.agent.backend.stream(
-                messages=self.agent.session.build_request_messages(),
+            async for chunk in self.context.backend.stream(
+                messages=self.context.session.build_request_messages(),
                 tools=tools,
-                temperature=self.agent.config.temperature,
+                temperature=self.context.config.temperature,
                 max_tokens=max_tokens,
             ):
                 filtered_content = ""
                 if chunk.content:
-                    filtered_content = self.agent.safeguards.filter_stream_chunk(chunk.content)
+                    filtered_content = self.context.safeguards.filter_stream_chunk(chunk.content)
                     full_content_unfiltered += chunk.content
 
                 if filtered_content or chunk.is_done:
@@ -89,10 +90,10 @@ class AssistantTurnRequester:
                         )
                     )
 
-                if self.agent.safeguards.should_steer():
-                    steering_message = self.agent.safeguards.get_steering_message()
+                if self.context.safeguards.should_steer():
+                    steering_message = self.context.safeguards.get_steering_message()
                     if steering_message:
-                        self.agent._steering_queue.put_nowait(steering_message)
+                        self.context.legacy.queue_steering_message(steering_message)
 
                 if (
                     chunk.pending_tool_call
@@ -127,19 +128,19 @@ class AssistantTurnRequester:
                 usage=usage,
             )
 
-        response = await self.agent.backend.complete(
-            messages=self.agent.session.build_request_messages(),
+        response = await self.context.backend.complete(
+            messages=self.context.session.build_request_messages(),
             tools=tools,
-            temperature=self.agent.config.temperature,
+            temperature=self.context.config.temperature,
             max_tokens=max_tokens,
         )
         response_content = response.content
-        content = self.agent.safeguards.filter_complete_content(response.content)
-        tool_calls = response.tool_calls if not self.agent.use_react else []
-        if self.agent.safeguards.should_steer():
-            steering_message = self.agent.safeguards.get_steering_message()
+        content = self.context.safeguards.filter_complete_content(response.content)
+        tool_calls = response.tool_calls if not self.context.use_react else []
+        if self.context.safeguards.should_steer():
+            steering_message = self.context.safeguards.get_steering_message()
             if steering_message:
-                self.agent._steering_queue.put_nowait(steering_message)
+                self.context.legacy.queue_steering_message(steering_message)
         self.tracer.record(
             "assistant.responded",
             stream=False,

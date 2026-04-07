@@ -15,6 +15,7 @@ from ..agent.reasoning import (
 from ..llm.base import Message, Role, ToolCall
 from .assistant_turns import AssistantTurnRequester
 from .completion_policy import CompletionPolicy
+from .context import RuntimeContext
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
@@ -45,16 +46,17 @@ class ConversationRuntime:
 
     def __init__(self, agent: Any) -> None:
         self.agent = agent
+        self.context: RuntimeContext = agent._build_runtime_context()
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
-        self.dod_store = DefinitionOfDoneStore(agent.project_root)
+        self.dod_store = DefinitionOfDoneStore(self.context.project_root)
         self.router = ModeRouter()
-        self.artifact_store = WorkflowArtifactStore(agent.project_root)
-        self.turn_requester = AssistantTurnRequester(agent, self.tracer)
+        self.artifact_store = WorkflowArtifactStore(self.context.project_root)
+        self.turn_requester = AssistantTurnRequester(self.context, self.tracer)
         self.tool_batches = ToolBatchRunner(agent, self.dod_store)
         self.repairer = ResponseRepairer(agent)
         self.completion_policy = CompletionPolicy(agent)
-        self.phase_tracker = TurnPhaseTracker(agent, self.tracer)
+        self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
         self.finalizer = TurnFinalizer(
             agent,
             self.tracer,
@@ -849,19 +851,19 @@ class ConversationRuntime:
         )
 
     async def _prepare_runtime_capabilities(self) -> None:
-        describe_model = getattr(self.agent.backend, "describe_model", None)
+        describe_model = getattr(self.context.backend, "describe_model", None)
         if callable(describe_model):
             await describe_model()
 
-        previous_profile = self.agent.capability_profile
-        self.agent.refresh_capability_profile()
-        if self.agent.capability_profile != previous_profile:
+        previous_profile = self.context.capability_profile
+        self.context.legacy.refresh_capability_profile()
+        if self.context.capability_profile != previous_profile:
             self.tracer.record(
                 "runtime.capabilities_refreshed",
-                model_name=self.agent.capability_profile.model_name,
-                supports_native_tools=self.agent.capability_profile.supports_native_tools,
+                model_name=self.context.capability_profile.model_name,
+                supports_native_tools=self.context.capability_profile.supports_native_tools,
                 preferred_tool_call_format=(
-                    self.agent.capability_profile.preferred_tool_call_format
+                    self.context.capability_profile.preferred_tool_call_format
                 ),
             )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 
+from .context import RuntimeContext
 from .events import AgentEvent
 from .tracing import RuntimeTracer
 
@@ -26,8 +27,8 @@ class TurnPhase(StrEnum):
 class TurnPhaseTracker:
     """Persist and emit turn-phase transitions."""
 
-    def __init__(self, agent, tracer: RuntimeTracer) -> None:
-        self.agent = agent
+    def __init__(self, context: RuntimeContext, tracer: RuntimeTracer) -> None:
+        self.context = context
         self.tracer = tracer
         self.current_phase: str | None = None
 
@@ -44,7 +45,7 @@ class TurnPhaseTracker:
             return
 
         self.current_phase = phase.value
-        self.agent.session.update_runtime_state(active_turn_phase=phase.value)
+        self.context.session.update_runtime_state(active_turn_phase=phase.value)
         self.tracer.record("turn.phase_changed", phase=phase.value, detail=detail)
         await emit(
             AgentEvent(
@@ -58,4 +59,4 @@ class TurnPhaseTracker:
         """Clear the persisted active phase when the turn finishes."""
 
         self.current_phase = None
-        self.agent.session.update_runtime_state(active_turn_phase=None)
+        self.context.session.update_runtime_state(active_turn_phase=None)
