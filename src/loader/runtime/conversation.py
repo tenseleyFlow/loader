@@ -7,10 +7,6 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from ..agent.reasoning import (
-    estimate_complexity,
-    get_token_budget,
-)
 from ..llm.base import Message, Role, ToolCall
 from .assistant_turns import AssistantTurnRequester
 from .completion_policy import CompletionPolicy
@@ -23,6 +19,7 @@ from .hooks import build_default_tool_hooks
 from .phases import TurnPhase, TurnPhaseTracker
 from .repair import ResponseRepairer
 from .rollback import RollbackPlan
+from .task_classification import estimate_complexity, get_token_budget
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .workflow import (
