@@ -11,12 +11,12 @@ from ..agent.reasoning import (
     ActionVerification,
     ConfidenceAssessment,
 )
-from ..agent.recovery import RecoveryContext
 from ..context.project import ProjectContext
 from ..llm.base import LLMBackend, Message
 from ..tools.base import ToolRegistry
 from .capabilities import CapabilityProfile
 from .permissions import PermissionConfigStatus, PermissionPolicy
+from .recovery import RecoveryContext
 from .session import ConversationSession
 
 

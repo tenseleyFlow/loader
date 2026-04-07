@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from ..agent.recovery import RecoveryContext, format_failure_message, format_recovery_prompt
 from ..llm.base import Message, Role, ToolCall
 from .context import RuntimeContext
 from .dod import DefinitionOfDone, DefinitionOfDoneStore, record_successful_tool_call
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
+from .recovery import RecoveryContext, format_failure_message, format_recovery_prompt
 from .workflow import sync_todos_to_definition_of_done
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]

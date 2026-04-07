@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from loader.agent.loop import Agent, AgentConfig
-from loader.agent.recovery import RecoveryContext
 from loader.runtime.context import RuntimeContext
+from loader.runtime.recovery import RecoveryContext
 from tests.helpers.runtime_harness import ScriptedBackend
 
 

@@ -8,13 +8,13 @@ from enum import StrEnum
 from typing import Any
 
 from ..agent.parsing import format_tool_result
-from ..agent.recovery import ErrorCategory, categorize_error
 from ..llm.base import Message, ToolCall
 from ..tools.base import ConfirmationRequired, ToolRegistry
 from ..tools.base import ToolResult as RegistryToolResult
 from ..tools.workflow_tools import UserQuestionHandler
 from .hooks import HookContext, HookDecision, HookManager
 from .permissions import PermissionDecision, PermissionMode, PermissionPolicy
+from .recovery import ErrorCategory, categorize_error
 from .tracing import RuntimeTracer
 
 BrowserConfirmation = Callable[[str, str, str], Awaitable[bool]] | None

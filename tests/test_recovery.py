@@ -1,6 +1,6 @@
 """Tests for the error recovery system."""
 
-from loader.agent.recovery import (
+from loader.runtime.recovery import (
     ErrorCategory,
     RecoveryContext,
     categorize_error,
