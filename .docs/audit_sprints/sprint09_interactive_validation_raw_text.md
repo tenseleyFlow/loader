@@ -5,7 +5,7 @@
 - Date: 2026-04-07
 - Operator: Codex
 - Branch: `cleanup-audit-plan`
-- Capture base: `3d6ca9d` (`Record native interactive validation blockage`)
+- Capture base: `f60523c` (`Probe live chat health in doctor`)
 - Backend: `ollama`
 - Models exercised:
   - `qwen3-coder:30b`
@@ -31,7 +31,7 @@
 
 ### Evidence
 
-- Doctor result: `uv run loader doctor -m qwen3-coder:30b` reported backend `pass` and capabilities `warn` (`json_tag`)
+- Doctor result: `uv run loader doctor -m qwen3-coder:30b` reported `backend: pass`, `chat: fail`, and capabilities `warn` (`json_tag`)
 - Runtime invocation: `uv run loader -m qwen3-coder:30b --no-tui --permission-mode read-only --react "Say hello in five words."`
 - Tool path used: none
 - Phase trace: startup banner printed, then `Generating...`, then `/api/chat` failed with HTTP 500 before the first streamed chunk
@@ -61,7 +61,7 @@
 
 ### Evidence
 
-- Doctor result: `uv run loader doctor -m gemma3:12b` reported backend `pass` and capabilities `warn` (`json_tag`)
+- Doctor result: `uv run loader doctor -m gemma3:12b` reported `backend: pass`, `chat: fail`, and capabilities `warn` (`json_tag`)
 - Runtime invocation: `uv run loader -m gemma3:12b --no-tui --permission-mode read-only --react "Say hello in five words."`
 - Tool path used: none
 - Phase trace: startup banner printed, then `Generating...`, then `/api/chat` failed with HTTP 500 before the first streamed chunk
@@ -91,7 +91,7 @@
 
 ### Evidence
 
-- Doctor result: `uv run loader doctor -m llama2:latest` reported backend `pass` and capabilities `warn` (`json_tag`)
+- Doctor result: `uv run loader doctor -m llama2:latest` reported `backend: pass`, `chat: fail`, and capabilities `warn` (`json_tag`)
 - Tool path used: none
 - Phase trace: not applicable
 - Recovery layers fired: none observed
@@ -108,7 +108,7 @@
 
 ## Summary
 
-- Most useful runtime behaviors: `loader doctor` still distinguishes native and `json_tag` profiles accurately enough to structure the test lanes.
+- Most useful runtime behaviors: `loader doctor` now distinguishes capability classification from live chat readiness, so the raw-text lane blockage is explicit.
 - Least useful runtime behaviors: none assessed; runtime behavior was not exercised.
 - Recovery layers that should likely be deleted: no update from this artifact
 - Recovery layers that should likely be gated by capability profile: no update from this artifact

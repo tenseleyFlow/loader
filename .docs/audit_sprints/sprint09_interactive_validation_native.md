@@ -5,7 +5,7 @@
 - Date: 2026-04-07
 - Operator: Codex
 - Branch: `cleanup-audit-plan`
-- Capture base: `6554136` (`Characterize runtime action-loop bailout`)
+- Capture base: `f60523c` (`Probe live chat health in doctor`)
 - Backend: `ollama`
 - Models exercised:
   - `qwen2.5:7b`
@@ -29,7 +29,7 @@
 
 ### Evidence
 
-- Doctor result: `uv run loader doctor -m qwen2.5:7b` reported backend `pass` and capabilities `pass`
+- Doctor result: `uv run loader doctor -m qwen2.5:7b` reported `backend: pass`, `chat: fail`, and capabilities `pass`
 - Runtime invocation: `uv run loader -m qwen2.5:7b --no-tui --permission-mode read-only "Say hello in five words."`
 - Tool path used: none
 - Phase trace: startup banner printed, then `Generating...`, then `/api/chat` failed with HTTP 500 before the first streamed chunk
@@ -59,7 +59,7 @@
 
 ### Evidence
 
-- Doctor result: `uv run loader doctor -m qwen2.5:14b` reported backend `pass` and capabilities `pass`
+- Doctor result: `uv run loader doctor -m qwen2.5:14b` reported `backend: pass`, `chat: fail`, and capabilities `pass`
 - Runtime invocation: `uv run loader -m qwen2.5:14b --no-tui --permission-mode read-only "Say hello in five words."`
 - Tool path used: none
 - Phase trace: startup banner printed, then `Generating...`, then `/api/chat` failed with HTTP 500 before the first streamed chunk
@@ -80,7 +80,7 @@
 
 ## Summary
 
-- Most useful runtime behaviors: `loader doctor` still provides a credible preflight for model presence and capability classification.
+- Most useful runtime behaviors: `loader doctor` now separates model availability from live chat readiness, which makes the blockage explicit instead of implying the lane is healthy.
 - Least useful runtime behaviors: none assessed; runtime behavior was not exercised.
 - Recovery layers that should likely be deleted: no update from this artifact
 - Recovery layers that should likely be gated by capability profile: no update from this artifact

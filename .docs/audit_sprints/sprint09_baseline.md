@@ -9,7 +9,9 @@
   - `uv run pytest -q tests/test_parsing.py`
   - `uv run pytest -q tests/test_runtime_harness.py -k 'raw_json or native_and_raw_tool_paths_share_executor_trace or runtime_parity_manifest_matches_implemented_cases'`
 - Repo-wide verification after the latest Sprint 09 characterization update:
-  - `uv run pytest -q` → `190 passed`
+  - `uv run pytest -q` → `191 passed`
+- Doctor surface update:
+  - `f60523c` adds a dedicated live chat probe so `loader doctor` now reports `backend` reachability separately from `/api/chat` readiness
 - New Sprint 09 guardrails now cover raw-text recovery for:
   - `read`
   - `TodoWrite`
@@ -62,10 +64,10 @@ These runs are still pending. They require at least one configured real native-t
 
 | Lane | Task | Why it matters | Status |
 | --- | --- | --- | --- |
-| Native-tool lane | Read a file, then write a small file and let DoD verify it | Confirms the runtime can stay on the normal native path without repair machinery stepping in | Blocked: native-capable models pass doctor, but live `/api/chat` fails with HTTP 500 before turn execution. See `sprint09_interactive_validation_native.md`. |
+| Native-tool lane | Read a file, then write a small file and let DoD verify it | Confirms the runtime can stay on the normal native path without repair machinery stepping in | Blocked: `loader doctor` now reports `backend: pass` but `chat: fail`, and live `/api/chat` still fails with HTTP 500 before turn execution. See `sprint09_interactive_validation_native.md`. |
 | Native-tool lane | Ambiguous request that routes through clarify mode | Measures whether current clarify behavior is helpful or just extra prompt text | Blocked behind the same native-lane `/api/chat` failure. |
 | Native-tool lane | Multi-step implementation that uses `TodoWrite` and verification | Measures if completion behavior stays disciplined without fake continuations | Blocked behind the same native-lane `/api/chat` failure. |
-| Raw-text-prone lane | Recover `read`, `patch`, `TodoWrite`, and `AskUserQuestion` from raw JSON/text | Confirms which raw fallback paths are still load-bearing after the new guardrails | Blocked: `json_tag` models pass doctor, but live `/api/chat` fails with HTTP 500 before any raw-text output is produced. See `sprint09_interactive_validation_raw_text.md`. |
+| Raw-text-prone lane | Recover `read`, `patch`, `TodoWrite`, and `AskUserQuestion` from raw JSON/text | Confirms which raw fallback paths are still load-bearing after the new guardrails | Blocked: `loader doctor` now reports `backend: pass` but `chat: fail`, and live `/api/chat` fails with HTTP 500 before any raw-text output is produced. See `sprint09_interactive_validation_raw_text.md`. |
 | Raw-text-prone lane | Prompt that tends to elicit narrated fake tool use | Measures whether fake-tool repair actually saves the run or just churns the conversation | Blocked behind the same raw-text-lane `/api/chat` failure. |
 | Raw-text-prone lane | Prompt that tends to return empty or deflective text | Measures whether empty-output and deflection repairs help enough to justify keeping them | Blocked behind the same raw-text-lane `/api/chat` failure. |
 
@@ -78,6 +80,7 @@ Completed captures:
 
 ## Immediate Sprint 09 Follow-on
 
-- Use the `190 passed` repo-wide baseline as the regression floor for the next Sprint 09 slices.
+- Use the `191 passed` repo-wide baseline as the regression floor for the next Sprint 09 slices.
 - Restore a working live chat backend, then rerun the interactive validation matrix against the documented native and raw-text-prone model lanes.
+- Keep `191 passed` as the regression floor for any Sprint 10 runtime-seam work that begins before the backend is healthy again.
 - Use this inventory as the checklist for Sprint 10 service seams and Sprint 11 deletions.
