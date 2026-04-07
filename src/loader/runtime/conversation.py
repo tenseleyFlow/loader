@@ -58,7 +58,7 @@ class ConversationRuntime:
         self.completion_policy = CompletionPolicy(self.context)
         self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
         self.finalizer = TurnFinalizer(
-            agent,
+            self.context,
             self.tracer,
             self.dod_store,
             self._set_workflow_mode,
