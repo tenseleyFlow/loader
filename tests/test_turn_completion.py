@@ -245,3 +245,63 @@ async def test_turn_completion_handles_deflection_text_without_repair_prompt(
         for message in agent.session.messages
     )
     assert any(event.type == "response" and event.content == deflection for event in events)
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_skips_self_critique_reroute(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    config = non_streaming_config()
+    config.reasoning.completion_check = False
+    config.reasoning.self_critique = True
+    agent = Agent(
+        backend=backend,
+        config=config,
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task="Explain Loader's clarify loop.",
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+    await runtime.phase_tracker.enter(
+        TurnPhase.ASSISTANT,
+        capture,
+        detail="Requesting assistant response",
+        reason_code="request_assistant_response",
+    )
+
+    detailed = (
+        "Loader might begin with a bounded clarify pass, perhaps asking follow-up "
+        "questions when the task leaves touchpoints or decision boundaries unclear. "
+        "It then shifts into execution once the workflow policy is satisfied."
+    )
+    decision = await runtime.turn_completion.handle_text_response(
+        content=detailed,
+        response_content=detailed,
+        task=prepared.task,
+        effective_task=prepared.effective_task,
+        iterations=1,
+        max_iterations=agent.config.max_iterations,
+        actions_taken=[],
+        continuation_count=0,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        executor=prepared.executor,
+        rollback_plan=prepared.rollback_plan,
+    )
+
+    assert decision.action == TurnCompletionAction.COMPLETE
+    assert prepared.summary.final_response == detailed
+    assert not any("[SELF-CRITIQUE]" in message.content for message in agent.session.messages)
+    assert not any(event.type == "critique" for event in events)
