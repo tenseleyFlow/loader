@@ -128,3 +128,47 @@ async def test_ollama_stream_response_uses_shared_parser_for_text_tool_calls() -
         "question": "Which path should we take?"
     }
     await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_response_defers_raw_json_detection_to_final_parse() -> None:
+    backend = OllamaBackend()
+    raw_json = (
+        '{"name": "AskUserQuestion", '
+        '"arguments": {"question": "Which path should we take?"}}'
+    )
+
+    chunks = [
+        chunk
+        async for chunk in backend._stream_response(
+            FakeStreamResponse(
+                [
+                    {
+                        "message": {"content": raw_json[:30]},
+                        "done": False,
+                    },
+                    {
+                        "message": {"content": raw_json[30:]},
+                        "done": False,
+                    },
+                    {
+                        "message": {"content": ""},
+                        "done": True,
+                        "prompt_eval_count": 4,
+                        "eval_count": 2,
+                    },
+                ]
+            ),
+            tools=[{"name": "AskUserQuestion"}, {"name": "TodoWrite"}],
+        )
+    ]
+
+    assert [chunk.pending_tool_call for chunk in chunks[:-1]] == [None, None]
+    assert [chunk.content for chunk in chunks[:-1]] == [raw_json[:30], raw_json[30:]]
+    final_chunk = chunks[-1]
+    assert final_chunk.full_content == ""
+    assert final_chunk.tool_calls[0].name == "AskUserQuestion"
+    assert final_chunk.tool_calls[0].arguments == {
+        "question": "Which path should we take?"
+    }
+    await backend.close()

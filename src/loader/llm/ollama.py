@@ -408,9 +408,7 @@ class OllamaBackend(LLMBackend):
 
         full_content = ""
         display_content = ""  # Content to show (filtered)
-        json_buffer = ""  # Buffer for potential tool call JSON
         tool_call_buffer = ""  # Buffer for <tool_call> block content
-        in_json_block = False
         in_think_block = False  # For reasoning models like deepseek-r1
         in_tool_call_block = False  # For ReAct <tool_call> tags
         detected_tool_calls: list[ToolCall] = []  # Track tool calls found during streaming
@@ -559,50 +557,8 @@ class OllamaBackend(LLMBackend):
                         tool_call_buffer += chunk_content
                     continue
 
-                # Filter out tool call JSON from display (bare JSON without tags)
-                # Detect start of JSON tool call
-                if not in_json_block and '{"name"' in chunk_content:
-                    in_json_block = True
-                    # Split at the JSON start
-                    parts = chunk_content.split('{"name"', 1)
-                    if parts[0]:
-                        display_content += parts[0]
-                        yield StreamChunk(content=parts[0])
-                    json_buffer = '{"name"' + parts[1] if len(parts) > 1 else '{"name"'
-                elif in_json_block:
-                    json_buffer += chunk_content
-                    # Check if JSON block closed (simple heuristic)
-                    open_braces = json_buffer.count('{')
-                    close_braces = json_buffer.count('}')
-                    if close_braces >= open_braces and open_braces > 0:
-                        # JSON block complete, try to parse it
-                        in_json_block = False
-                        try:
-                            # Find where JSON ends
-                            last_brace = json_buffer.rfind('}')
-                            json_str = json_buffer[:last_brace + 1]
-                            after_json = json_buffer[last_brace + 1:]
-                            # Try to parse as tool call
-                            tc_data = json.loads(json_str)
-                            if "name" in tc_data:
-                                tc = ToolCall(
-                                    id=f"call_{tool_call_counter}",
-                                    name=tc_data.get("name", ""),
-                                    arguments=tc_data.get("arguments", tc_data.get("parameters", {})),
-                                )
-                                tool_call_counter += 1
-                                detected_tool_calls.append(tc)
-                                yield StreamChunk(content="", pending_tool_call=tc)
-                            if after_json.strip():
-                                display_content += after_json
-                                yield StreamChunk(content=after_json)
-                        except (json.JSONDecodeError, KeyError):
-                            # Not valid JSON, just discard
-                            pass
-                        json_buffer = ""
-                else:
-                    display_content += chunk_content
-                    yield StreamChunk(content=chunk_content)
+                display_content += chunk_content
+                yield StreamChunk(content=chunk_content)
 
     async def close(self) -> None:
         """Close the HTTP client."""
