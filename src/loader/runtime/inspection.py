@@ -18,7 +18,11 @@ from .permissions import (
     PermissionConfigStatus,
     PermissionDecision,
     PermissionMode,
+    PermissionRule,
+    build_permission_policy,
     load_permission_rules,
+    permission_path_hint,
+    summarize_permission_input,
 )
 from .session import SessionSnapshot, SessionStore
 
@@ -52,6 +56,53 @@ class ToolPermissionSummary:
     @property
     def allowed_in_active_mode(self) -> bool:
         return self.resolution == PermissionDecision.ALLOW.value
+
+
+@dataclass(slots=True)
+class PermissionRuleSummary:
+    """Normalized view of one permission rule."""
+
+    disposition: str
+    tool_name: str | None
+    contains: str | None
+    path_contains: str | None
+    summary: str
+
+
+@dataclass(slots=True)
+class PermissionSnapshot:
+    """Operator-facing snapshot of the active permission policy."""
+
+    project_root: Path
+    active_mode: str
+    prompting_enabled: bool
+    rule_counts: dict[str, int]
+    rules_valid: bool
+    rules_source: str
+    rules_error: str | None
+    normalized_rules: dict[str, list[PermissionRuleSummary]] = field(
+        default_factory=dict
+    )
+    tool_permissions: list[ToolPermissionSummary] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PermissionCheckResult:
+    """Dry-run evaluation of one hypothetical tool request."""
+
+    project_root: Path
+    tool_name: str
+    arguments: dict[str, Any]
+    input_summary: str
+    path_hint: str | None
+    required_mode: str
+    active_mode: str
+    prompting_enabled: bool
+    rules_source: str
+    decision: str
+    reason: str | None
+    matched_rule: str | None
+    matched_disposition: str | None
 
 
 @dataclass(slots=True)
@@ -105,6 +156,7 @@ class StatusSnapshot:
     permission_prompting_enabled: bool
     permission_rule_counts: dict[str, int]
     permission_rules_valid: bool
+    permission_rules_source: str
     prompt_format: str | None
     prompt_sections: list[str]
     current_task: str | None
@@ -131,6 +183,7 @@ class SessionSummary:
     permission_mode: str
     permission_prompting_enabled: bool
     permission_rule_counts: dict[str, int]
+    permission_rules_source: str | None
     prompt_format: str | None
     active_turn_phase: str | None
     current_task: str | None
@@ -274,6 +327,7 @@ def collect_status_snapshot(
             ),
             permission_rule_counts=rule_status.rules.counts,
             permission_rules_valid=rule_status.valid,
+            permission_rules_source=str(rule_status.source_path),
             prompt_format=(
                 "native" if capability_profile.supports_native_tools else "react"
             ),
@@ -316,6 +370,9 @@ def collect_status_snapshot(
         permission_prompting_enabled=permission_prompting_enabled,
         permission_rule_counts=permission_rule_counts,
         permission_rules_valid=rule_status.valid,
+        permission_rules_source=(
+            snapshot.permission_rules_source or str(rule_status.source_path)
+        ),
         prompt_format=snapshot.prompt_format,
         prompt_sections=list(snapshot.prompt_sections),
         current_task=snapshot.current_task,
@@ -359,6 +416,7 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                     or snapshot.permission_mode == "prompt"
                 ),
                 permission_rule_counts=dict(snapshot.permission_rule_counts),
+                permission_rules_source=snapshot.permission_rules_source,
                 prompt_format=snapshot.prompt_format,
                 active_turn_phase=snapshot.active_turn_phase,
                 current_task=snapshot.current_task,
@@ -386,6 +444,104 @@ def load_session_detail(
         snapshot=snapshot,
         is_current=snapshot.session_id == current_session_id,
         definition_of_done=_load_dod(snapshot.active_dod_path, project_root=resolved_root),
+    )
+
+
+def collect_permission_snapshot(
+    project_root: Path | str | None = None,
+    *,
+    permission_mode: PermissionMode | str = PermissionMode.WORKSPACE_WRITE,
+    registry: ToolRegistry | None = None,
+) -> PermissionSnapshot:
+    """Collect an operator-facing snapshot of the active permission policy."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    resolved_permission_mode = _coerce_permission_mode(permission_mode)
+    registry = registry or create_default_registry(resolved_root)
+    registry.configure_workspace_root(resolved_root)
+    rule_status = load_permission_rules(resolved_root)
+
+    return PermissionSnapshot(
+        project_root=resolved_root,
+        active_mode=resolved_permission_mode.as_str(),
+        prompting_enabled=(
+            resolved_permission_mode == PermissionMode.PROMPT
+            or bool(rule_status.rules.ask)
+        ),
+        rule_counts=rule_status.rules.counts,
+        rules_valid=rule_status.valid,
+        rules_source=str(rule_status.source_path),
+        rules_error=rule_status.error,
+        normalized_rules=_normalize_permission_rules(rule_status),
+        tool_permissions=_tool_permission_summaries(
+            registry,
+            resolved_permission_mode,
+            rule_status,
+        ),
+    )
+
+
+def dry_run_permission_check(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    project_root: Path | str | None = None,
+    permission_mode: PermissionMode | str = PermissionMode.WORKSPACE_WRITE,
+    registry: ToolRegistry | None = None,
+) -> PermissionCheckResult:
+    """Dry-run one hypothetical permission request against the active policy."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    resolved_permission_mode = _coerce_permission_mode(permission_mode)
+    registry = registry or create_default_registry(resolved_root)
+    registry.configure_workspace_root(resolved_root)
+    rule_status = load_permission_rules(resolved_root)
+    if not rule_status.valid:
+        raise ValueError(
+            "Invalid permission policy configuration at "
+            f"{rule_status.source_path}: {rule_status.error}"
+        )
+
+    tool = registry.get(tool_name)
+    if tool is None:
+        raise KeyError(tool_name)
+
+    required_mode = tool.get_required_permission(**arguments)
+    policy = _build_inspection_policy(
+        registry,
+        resolved_permission_mode,
+        rule_status,
+    )
+    outcome = policy.authorize(
+        tool_name,
+        required_mode=required_mode,
+        arguments=arguments,
+    )
+    request = outcome.request
+    input_summary = (
+        request.input_summary
+        if request is not None
+        else summarize_permission_input(tool_name, arguments)
+    )
+    path_hint = request.path_hint if request is not None else permission_path_hint(arguments)
+    return PermissionCheckResult(
+        project_root=resolved_root,
+        tool_name=tool_name,
+        arguments=dict(arguments),
+        input_summary=input_summary,
+        path_hint=path_hint,
+        required_mode=required_mode.as_str(),
+        active_mode=resolved_permission_mode.as_str(),
+        prompting_enabled=policy.prompting_enabled,
+        rules_source=str(rule_status.source_path),
+        decision=outcome.decision.value,
+        reason=outcome.reason,
+        matched_rule=_rule_summary(outcome.matched_rule),
+        matched_disposition=(
+            outcome.matched_disposition.value
+            if outcome.matched_disposition is not None
+            else None
+        ),
     )
 
 
@@ -658,8 +814,8 @@ def _permission_mode_check(
                 f"Loader will fail closed until `{rule_status.source_path.name}` is fixed."
             ),
             remediation=(
-                "Repair or remove `.loader/permission-rules.json` so Loader can "
-                "evaluate allow/deny/ask policy safely."
+                "Repair or remove `.loader/permission-rules.json`, then run "
+                "`loader permissions show` to inspect the normalized policy."
             ),
         )
 
@@ -681,8 +837,8 @@ def _permission_mode_check(
             f"{counts['danger-full-access']} danger-full-access."
         ),
         remediation=(
-            "Use `--permission-mode` or `loader explore` to constrain "
-            "the active runtime lane."
+            "Use `loader permissions show` to inspect rules, or "
+            "`loader permissions check <tool>` to dry-run one request."
         ),
     )
 
@@ -717,8 +873,6 @@ def _build_inspection_policy(
     permission_mode: PermissionMode,
     rule_status: PermissionConfigStatus,
 ):
-    from .permissions import build_permission_policy
-
     return build_permission_policy(
         active_mode=permission_mode,
         workspace_root=registry.workspace_root or Path.cwd(),
@@ -781,3 +935,48 @@ def _first_detail_line(item: VerificationEvidence) -> str:
             if stripped:
                 return stripped[:120]
     return ""
+
+
+def _normalize_permission_rules(
+    rule_status: PermissionConfigStatus,
+) -> dict[str, list[PermissionRuleSummary]]:
+    return {
+        "allow": [
+            _permission_rule_summary("allow", rule)
+            for rule in rule_status.rules.allow
+        ],
+        "deny": [
+            _permission_rule_summary("deny", rule)
+            for rule in rule_status.rules.deny
+        ],
+        "ask": [
+            _permission_rule_summary("ask", rule)
+            for rule in rule_status.rules.ask
+        ],
+    }
+
+
+def _permission_rule_summary(
+    disposition: str,
+    rule: PermissionRule,
+) -> PermissionRuleSummary:
+    return PermissionRuleSummary(
+        disposition=disposition,
+        tool_name=rule.tool_name,
+        contains=rule.contains,
+        path_contains=rule.path_contains,
+        summary=_rule_summary(rule) or "",
+    )
+
+
+def _rule_summary(rule: PermissionRule | None) -> str | None:
+    if rule is None:
+        return None
+    parts: list[str] = []
+    if rule.tool_name is not None:
+        parts.append(f"tool={rule.tool_name}")
+    if rule.contains is not None:
+        parts.append(f"contains={rule.contains}")
+    if rule.path_contains is not None:
+        parts.append(f"path_contains={rule.path_contains}")
+    return ", ".join(parts)
