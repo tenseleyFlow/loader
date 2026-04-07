@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,19 +19,16 @@ from ..agent.reasoning import (
 )
 from ..agent.recovery import RecoveryContext, format_failure_message, format_recovery_prompt
 from ..llm.base import Message, Role, ToolCall
+from .assistant_turns import AssistantTurnRequester
 from .dod import (
     DefinitionOfDone,
     DefinitionOfDoneStore,
-    VerificationEvidence,
-    build_verification_summary,
-    derive_verification_commands,
     record_successful_tool_call,
 )
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
+from .finalization import TurnFinalizer, merge_usage
 from .hooks import build_default_tool_hooks
-from .memory import MemoryStore
-from .session import normalize_usage
 from .tracing import RuntimeTracer
 from .workflow import (
     VERIFICATION_SEPARATOR,
@@ -42,32 +38,12 @@ from .workflow import (
     WorkflowArtifactStore,
     WorkflowMode,
     build_execute_bridge,
-    extract_verification_commands_from_markdown,
     sync_todos_to_definition_of_done,
 )
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
-
-
-@dataclass
-class AssistantTurn:
-    """Assistant output for one iteration of the conversation loop."""
-
-    content: str
-    response_content: str
-    tool_calls: list[ToolCall]
-    pending_tool_calls_seen: set[str] = field(default_factory=set)
-    usage: dict[str, int] = field(default_factory=dict)
-
-
-@dataclass
-class CompletionGateResult:
-    """Outcome of the definition-of-done completion gate."""
-
-    should_continue: bool
-    final_response: str
 
 
 class ConversationRuntime:
@@ -80,6 +56,13 @@ class ConversationRuntime:
         self.dod_store = DefinitionOfDoneStore(agent.project_root)
         self.router = ModeRouter()
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
+        self.turn_requester = AssistantTurnRequester(agent, self.tracer)
+        self.finalizer = TurnFinalizer(
+            agent,
+            self.tracer,
+            self.dod_store,
+            self._set_workflow_mode,
+        )
 
     async def run_turn(
         self,
@@ -133,7 +116,7 @@ class ConversationRuntime:
             workflow_mode=self.agent.workflow_mode,
             permission_mode=self.agent.active_permission_mode,
         )
-        await self._emit_dod_status(emit, dod)
+        await self.finalizer.emit_dod_status(emit, dod)
 
         task = await self._prepare_workflow(
             task=task,
@@ -182,11 +165,11 @@ class ConversationRuntime:
                 )
 
             await emit(AgentEvent(type="thinking"))
-            assistant_turn = await self._request_assistant_turn(
+            assistant_turn = await self.turn_requester.request_turn(
                 emit=emit,
                 max_tokens=effective_max_tokens,
             )
-            self._merge_usage(summary.usage, assistant_turn.usage)
+            merge_usage(summary.usage, assistant_turn.usage)
 
             content = assistant_turn.content
             response_content = assistant_turn.response_content
@@ -200,16 +183,23 @@ class ConversationRuntime:
                     retry_prompts = [
                         "Great! Now let me proceed with the task. I'll start by using my tools.",
                         "I understand. Let me create that now using my tools (write, bash, etc.).",
-                        f"Proceeding with: {task_context[:80]}. I'll use the write tool to create the files.",
+                        (
+                            f"Proceeding with: {task_context[:80]}. "
+                            "I'll use the write tool to create the files."
+                        ),
                         "Starting now. First step: create the necessary files and directories.",
-                        f"Let me complete this task step by step. The goal is: {task_context[:100]}",
+                        (
+                            "Let me complete this task step by step. "
+                            f"The goal is: {task_context[:100]}"
+                        ),
                     ]
                     prompt = retry_prompts[min(empty_retry_count - 1, len(retry_prompts) - 1)]
                     self.agent.session.append(Message(role=Role.ASSISTANT, content=prompt))
                     continue
 
                 final_response = (
-                    "I need a bit more direction. What specifically would you like me to create or do?"
+                    "I need a bit more direction. "
+                    "What specifically would you like me to create or do?"
                 )
                 summary.final_response = final_response
                 summary.failures.append("assistant returned empty output repeatedly")
@@ -285,7 +275,10 @@ class ConversationRuntime:
                         await emit(
                             AgentEvent(
                                 type="confidence",
-                                content=f"Confidence: {confidence.level.name} ({confidence.score}/5)",
+                                content=(
+                                    "Confidence: "
+                                    f"{confidence.level.name} ({confidence.score}/5)"
+                                ),
                                 confidence=confidence,
                                 tool_name=tool_call.name,
                             )
@@ -330,8 +323,7 @@ class ConversationRuntime:
                             AgentEvent(
                                 type="rollback",
                                 content=(
-                                    "Rollback tracked: "
-                                    f"{outcome.rollback_action.description}"
+                                    f"Rollback tracked: {outcome.rollback_action.description}"
                                 ),
                                 rollback_action=outcome.rollback_action,
                             )
@@ -350,10 +342,7 @@ class ConversationRuntime:
 
                     if outcome.state == ToolExecutionState.EXECUTED and not outcome.is_error:
                         record_successful_tool_call(dod, tool_call)
-                        if (
-                            tool_call.name == "TodoWrite"
-                            and outcome.registry_result is not None
-                        ):
+                        if tool_call.name == "TodoWrite" and outcome.registry_result is not None:
                             new_todos = outcome.registry_result.metadata.get("new_todos", [])
                             if isinstance(new_todos, list):
                                 sync_todos_to_definition_of_done(dod, new_todos)
@@ -380,7 +369,7 @@ class ConversationRuntime:
                                 )
                             )
                             await emit(AgentEvent(type="response", content=final_response))
-                            return self._finalize_summary(summary)
+                            return self.finalizer.finalize_summary(summary)
 
                     if outcome.is_error:
                         consecutive_errors += 1
@@ -417,7 +406,8 @@ class ConversationRuntime:
                         )
                         if not verification.verified and verification.needs_correction:
                             correction_message = (
-                                "[VERIFICATION FAILED] The action did not produce expected results.\n"
+                                "[VERIFICATION FAILED] The action did not "
+                                "produce expected results.\n"
                                 f"Discrepancies: {', '.join(verification.discrepancies)}\n"
                                 f"Suggestion: {verification.correction_suggestion}"
                             )
@@ -431,7 +421,8 @@ class ConversationRuntime:
 
                 if consecutive_errors >= 3:
                     final_response = (
-                        "I ran into some issues. Let me know if you'd like me to try a different approach."
+                        "I ran into some issues. "
+                        "Let me know if you'd like me to try a different approach."
                     )
                     summary.final_response = final_response
                     summary.failures.append("three consecutive tool errors")
@@ -442,12 +433,15 @@ class ConversationRuntime:
 
             if self.agent._contains_unexecuted_code(response_content):
                 if iterations < self.agent.config.max_iterations - 1:
-                    self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                    self.agent.session.append(
+                        Message(role=Role.ASSISTANT, content=response_content)
+                    )
                     self.agent.session.append(
                         Message(
                             role=Role.USER,
                             content=(
-                                "CRITICAL ERROR: You are PRETENDING to use tools instead of actually "
+                                "CRITICAL ERROR: You are PRETENDING to use tools "
+                                "instead of actually "
                                 "using them.\n\n"
                                 "DO NOT write:\n"
                                 "- 'Used bash tool with command...' (THIS IS FAKE)\n"
@@ -471,11 +465,16 @@ class ConversationRuntime:
             ):
                 deflection_phrases = ["you can", "you should", "you could", "try running"]
                 if any(phrase in content.lower() for phrase in deflection_phrases):
-                    self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                    self.agent.session.append(
+                        Message(role=Role.ASSISTANT, content=response_content)
+                    )
                     self.agent.session.append(
                         Message(
                             role=Role.USER,
-                            content="Please use your tools to execute the task rather than telling me what to do.",
+                            content=(
+                                "Please use your tools to execute the task "
+                                "rather than telling me what to do."
+                            ),
                         )
                     )
                     continue
@@ -502,7 +501,9 @@ class ConversationRuntime:
                             f"Suggestions: {', '.join(critique.suggestions)}\n\n"
                             "Please provide an improved response addressing these issues."
                         )
-                        self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                        self.agent.session.append(
+                            Message(role=Role.ASSISTANT, content=response_content)
+                        )
                         self.agent.session.append(Message(role=Role.USER, content=revision_message))
                         critique.revision_count += 1
                         continue
@@ -510,7 +511,8 @@ class ConversationRuntime:
             is_text_loop, loop_description = self.agent.safeguards.detect_text_loop(content)
             if is_text_loop:
                 final_response = (
-                    "I seem to be repeating myself. Let me know if you'd like me to try a different approach."
+                    "I seem to be repeating myself. "
+                    "Let me know if you'd like me to try a different approach."
                 )
                 summary.final_response = final_response
                 summary.failures.append(loop_description)
@@ -524,7 +526,7 @@ class ConversationRuntime:
                     )
                 )
                 await emit(AgentEvent(type="response", content=final_response))
-                return self._finalize_summary(summary)
+                return self.finalizer.finalize_summary(summary)
 
             self.agent.safeguards.record_response(content)
             effective_task = original_task or task
@@ -557,12 +559,18 @@ class ConversationRuntime:
                             ),
                         )
                     )
-                    self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                    self.agent.session.append(
+                        Message(role=Role.ASSISTANT, content=response_content)
+                    )
                     self.agent.session.append(Message(role=Role.USER, content=continuation_prompt))
                     continue
 
             final_response = content
-            if actions_taken and final_response.strip() and not final_response.rstrip().endswith("?"):
+            if (
+                actions_taken
+                and final_response.strip()
+                and not final_response.rstrip().endswith("?")
+            ):
                 final_response = (
                     final_response.rstrip()
                     + "\n\nWould you like me to make any changes or additions?"
@@ -572,11 +580,12 @@ class ConversationRuntime:
             self.agent.session.append(final_message)
             summary.assistant_messages.append(final_message)
 
-            gate_result = await self._run_definition_of_done_gate(
+            gate_result = await self.finalizer.run_definition_of_done_gate(
                 dod=dod,
                 candidate_response=final_response,
                 emit=emit,
                 summary=summary,
+                executor=self.executor,
             )
             if gate_result.should_continue:
                 continue
@@ -595,123 +604,7 @@ class ConversationRuntime:
             await emit(AgentEvent(type="response", content=final_response))
             break
 
-        return self._finalize_summary(summary)
-
-    async def _request_assistant_turn(
-        self,
-        *,
-        emit: EventSink,
-        max_tokens: int,
-    ) -> AssistantTurn:
-        self.agent.safeguards.code_filter.reset()
-        compaction = self.agent.session.maybe_compact()
-        if compaction is not None:
-            await self._emit_artifact(
-                emit=emit,
-                kind="session_compaction",
-                path=self.agent.session.storage_path,
-                preview=(
-                    f"Compacted {compaction.removed_message_count} older message(s) "
-                    f"into a continuation summary.\n"
-                    f"Input tokens: {compaction.original_input_tokens} -> "
-                    f"{compaction.compressed_input_tokens}"
-                ),
-            )
-        tools = None if self.agent.use_react else self.agent.registry.get_schemas()
-        self.tracer.record(
-            "assistant.requested",
-            use_react=self.agent.use_react,
-            stream=self.agent.config.stream,
-            max_tokens=max_tokens,
-        )
-
-        if self.agent.config.stream:
-            full_content = ""
-            full_content_unfiltered = ""
-            tool_calls: list[ToolCall] = []
-            pending_tool_calls_seen: set[str] = set()
-            usage: dict[str, int] = {}
-
-            async for chunk in self.agent.backend.stream(
-                messages=self.agent.session.build_request_messages(),
-                tools=tools,
-                temperature=self.agent.config.temperature,
-                max_tokens=max_tokens,
-            ):
-                filtered_content = ""
-                if chunk.content:
-                    filtered_content = self.agent.safeguards.filter_stream_chunk(chunk.content)
-                    full_content_unfiltered += chunk.content
-
-                if filtered_content or chunk.is_done:
-                    await emit(
-                        AgentEvent(
-                            type="stream",
-                            content=filtered_content,
-                            is_stream_end=chunk.is_done,
-                        )
-                    )
-
-                if self.agent.safeguards.should_steer():
-                    steering_message = self.agent.safeguards.get_steering_message()
-                    if steering_message:
-                        self.agent._steering_queue.put_nowait(steering_message)
-
-                if chunk.pending_tool_call and chunk.pending_tool_call.id not in pending_tool_calls_seen:
-                    pending_tool_calls_seen.add(chunk.pending_tool_call.id)
-                    await emit(
-                        AgentEvent(
-                            type="tool_call",
-                            tool_name=chunk.pending_tool_call.name,
-                            tool_args=chunk.pending_tool_call.arguments,
-                            phase="assistant",
-                        )
-                    )
-
-                if chunk.is_done:
-                    full_content = chunk.full_content or full_content_unfiltered
-                    tool_calls = chunk.tool_calls
-                    usage = chunk.usage
-
-            self.tracer.record(
-                "assistant.responded",
-                stream=True,
-                tool_call_count=len(tool_calls),
-                content_length=len(full_content),
-            )
-            return AssistantTurn(
-                content=full_content,
-                response_content=full_content,
-                tool_calls=tool_calls,
-                pending_tool_calls_seen=pending_tool_calls_seen,
-                usage=usage,
-            )
-
-        response = await self.agent.backend.complete(
-            messages=self.agent.session.build_request_messages(),
-            tools=tools,
-            temperature=self.agent.config.temperature,
-            max_tokens=max_tokens,
-        )
-        response_content = response.content
-        content = self.agent.safeguards.filter_complete_content(response.content)
-        tool_calls = response.tool_calls if not self.agent.use_react else []
-        if self.agent.safeguards.should_steer():
-            steering_message = self.agent.safeguards.get_steering_message()
-            if steering_message:
-                self.agent._steering_queue.put_nowait(steering_message)
-        self.tracer.record(
-            "assistant.responded",
-            stream=False,
-            tool_call_count=len(tool_calls),
-            content_length=len(content),
-        )
-        return AssistantTurn(
-            content=content,
-            response_content=response_content,
-            tool_calls=tool_calls,
-            usage=response.usage,
-        )
+        return self.finalizer.finalize_summary(summary)
 
     async def _handle_recovery(
         self,
@@ -781,9 +674,7 @@ class ConversationRuntime:
         self.agent._recovery_context = None
         return Message.tool_result_message(
             tool_call_id=tool_call.id,
-            display_content=(
-                f"Observation [{tool_call.name}]: Error: {failure_message}"
-            ),
+            display_content=(f"Observation [{tool_call.name}]: Error: {failure_message}"),
             result_content=failure_message,
             is_error=True,
         )
@@ -960,11 +851,7 @@ class ConversationRuntime:
             max_tokens=300,
         )
         tool_call = next(
-            (
-                tool
-                for tool in response.tool_calls
-                if tool.name == "AskUserQuestion"
-            ),
+            (tool for tool in response.tool_calls if tool.name == "AskUserQuestion"),
             None,
         )
         if tool_call is None:
@@ -1064,10 +951,7 @@ class ConversationRuntime:
             emit=emit,
             kind="clarify_brief",
             path=brief_path,
-            preview=(
-                f"Clarify brief: {brief_path}\n"
-                f"Outcome: {brief.desired_outcome[0]}"
-            ),
+            preview=(f"Clarify brief: {brief_path}\nOutcome: {brief.desired_outcome[0]}"),
         )
 
     async def _run_plan_mode(
@@ -1216,246 +1100,6 @@ class ConversationRuntime:
             else "What outcome matters most?"
         )
 
-    async def _run_definition_of_done_gate(
-        self,
-        *,
-        dod: DefinitionOfDone,
-        candidate_response: str,
-        emit: EventSink,
-        summary: TurnSummary,
-    ) -> CompletionGateResult:
-        implementation_item = "Complete the requested work"
-        if implementation_item in dod.pending_items:
-            dod.pending_items.remove(implementation_item)
-            dod.completed_items.append(implementation_item)
-
-        tracked_pending_items = [
-            item
-            for item in dod.pending_items
-            if item != "Collect verification evidence"
-        ]
-
-        mutating_paths = [path for path in dod.touched_files if path]
-        requires_verification = bool(mutating_paths or dod.mutating_actions)
-        if tracked_pending_items and not requires_verification:
-            pending_text = "\n".join(f"- {item}" for item in tracked_pending_items)
-            self.dod_store.save(dod)
-            await self._emit_dod_status(emit, dod)
-            self.agent.session.append(
-                Message(
-                    role=Role.USER,
-                    content=(
-                        "[PENDING WORK REMAINS]\n"
-                        "The tracked work items are not complete yet:\n"
-                        f"{pending_text}\n\n"
-                        "Continue the task, and update TodoWrite as you make progress."
-                    ),
-                )
-            )
-            return CompletionGateResult(should_continue=True, final_response="")
-
-        if not requires_verification:
-            dod.status = "done"
-            dod.last_verification_result = "skipped"
-            summary.verification_status = "skipped"
-            summary.definition_of_done = dod
-            self.dod_store.save(dod)
-            await self._emit_dod_status(emit, dod)
-            return CompletionGateResult(
-                should_continue=False,
-                final_response=candidate_response,
-            )
-
-        verify_item = "Collect verification evidence"
-        if verify_item not in dod.pending_items and verify_item not in dod.completed_items:
-            dod.pending_items.append(verify_item)
-
-        if not dod.verification_commands and dod.verification_plan and Path(dod.verification_plan).exists():
-            dod.verification_commands = extract_verification_commands_from_markdown(
-                Path(dod.verification_plan).read_text()
-            )
-
-        if not dod.verification_commands:
-            dod.verification_commands = derive_verification_commands(
-                dod,
-                project_root=self.agent.project_root,
-                task_statement=dod.task_statement,
-            )
-
-        await self._set_workflow_mode(
-            WorkflowMode.VERIFY,
-            dod=dod,
-            emit=emit,
-            summary=summary,
-            reason="definition-of-done gate requires verification",
-        )
-        verification_passed = await self._verify_definition_of_done(
-            dod=dod,
-            emit=emit,
-            summary=summary,
-        )
-        if verification_passed:
-            if verify_item in dod.pending_items:
-                dod.pending_items.remove(verify_item)
-            if verify_item not in dod.completed_items:
-                dod.completed_items.append(verify_item)
-            for pending in list(dod.pending_items):
-                if pending not in dod.completed_items:
-                    dod.completed_items.append(pending)
-            dod.pending_items = []
-            dod.status = "done"
-            dod.last_verification_result = "passed"
-            dod.confidence = "high"
-            summary.verification_status = "passed"
-            summary.definition_of_done = dod
-            self.dod_store.save(dod)
-            await self._emit_dod_status(emit, dod)
-            verified_response = candidate_response
-            verification_summary = build_verification_summary(dod.evidence)
-            if verification_summary not in verified_response:
-                verified_response = f"{candidate_response.rstrip()}\n\n{verification_summary}"
-            return CompletionGateResult(
-                should_continue=False,
-                final_response=verified_response,
-            )
-
-        dod.last_verification_result = "failed"
-        summary.verification_status = "failed"
-        summary.definition_of_done = dod
-        if dod.retry_count >= dod.retry_budget:
-            dod.status = "failed"
-            dod.confidence = "low"
-            self.dod_store.save(dod)
-            await self._emit_dod_status(emit, dod)
-            failure_summary = build_verification_summary(dod.evidence)
-            exhausted_response = (
-                "I couldn't verify that the task is complete within the retry budget.\n\n"
-                f"{failure_summary}"
-            )
-            return CompletionGateResult(
-                should_continue=False,
-                final_response=exhausted_response,
-            )
-
-        dod.retry_count += 1
-        dod.status = "fixing"
-        dod.confidence = "medium"
-        self.dod_store.save(dod)
-        await self._emit_dod_status(emit, dod)
-        await self._set_workflow_mode(
-            WorkflowMode.EXECUTE,
-            dod=dod,
-            emit=emit,
-            summary=summary,
-            reason="verification failed; returning to execute for fixes",
-        )
-        failure_prompt = (
-            "[DEFINITION OF DONE CHECK FAILED]\n"
-            f"Task: {dod.task_statement}\n"
-            f"Attempt: {dod.retry_count}/{dod.retry_budget}\n"
-            f"Pending items: {', '.join(dod.pending_items)}\n\n"
-            f"{build_verification_summary(dod.evidence)}\n\n"
-            "Fix the failures above, then finish the task again."
-        )
-        self.agent.session.append(Message(role=Role.USER, content=failure_prompt))
-        return CompletionGateResult(should_continue=True, final_response="")
-
-    async def _verify_definition_of_done(
-        self,
-        *,
-        dod: DefinitionOfDone,
-        emit: EventSink,
-        summary: TurnSummary,
-    ) -> bool:
-        dod.status = "verifying"
-        self.dod_store.save(dod)
-        await self._emit_dod_status(emit, dod)
-
-        if not dod.verification_commands:
-            summary.verification_status = "failed"
-            return False
-
-        dod.evidence = []
-        all_passed = True
-        for index, command in enumerate(dod.verification_commands, start=1):
-            verification_call = ToolCall(
-                id=f"verify-{summary.iterations}-{index}",
-                name="bash",
-                arguments={
-                    "command": command,
-                    "cwd": str(self.agent.project_root),
-                },
-            )
-            await emit(
-                AgentEvent(
-                    type="tool_call",
-                    tool_name=verification_call.name,
-                    tool_args=verification_call.arguments,
-                    phase="verification",
-                )
-            )
-            assert self.executor is not None
-            outcome = await self.executor.execute_tool_call(
-                verification_call,
-                on_confirmation=None,
-                emit_confirmation=None,
-                source="verification",
-                skip_duplicate_check=True,
-                record_action=False,
-                skip_confirmation=True,
-            )
-            await emit(
-                AgentEvent(
-                    type="tool_result",
-                    content=outcome.event_content,
-                    tool_name=verification_call.name,
-                    is_error=outcome.is_error,
-                    phase="verification",
-                )
-            )
-
-            metadata = {}
-            if outcome.registry_result is not None:
-                metadata = outcome.registry_result.metadata
-            evidence = VerificationEvidence(
-                command=command,
-                passed=not outcome.is_error,
-                exit_code=metadata.get("exit_code"),
-                stdout=str(metadata.get("stdout", "")),
-                stderr=str(metadata.get("stderr", "")),
-                output=outcome.result_output,
-                kind=self._classify_verification_kind(command),
-            )
-            dod.evidence.append(evidence)
-            all_passed = all_passed and evidence.passed
-            summary.tool_result_messages.append(outcome.message)
-            self.agent.session.append(outcome.message)
-
-        self.dod_store.save(dod)
-        summary.verification_status = "passed" if all_passed else "failed"
-        return all_passed
-
-    def _finalize_summary(self, summary: TurnSummary) -> TurnSummary:
-        summary.usage["tool_calls"] = len(summary.tool_result_messages)
-        summary.usage["iterations"] = summary.iterations
-        summary.cumulative_usage = self.agent.session.record_turn_usage(
-            summary.usage,
-            tool_calls=len(summary.tool_result_messages),
-            iterations=summary.iterations,
-        )
-        summary.session_id = self.agent.session.session_id
-        if summary.definition_of_done and summary.definition_of_done.status == "done":
-            MemoryStore(self.agent.project_root).capture_definition_of_done(
-                build_verification_summary(summary.definition_of_done.evidence)
-            )
-        summary.trace = list(self.tracer.events)
-        return summary
-
-    @staticmethod
-    def _merge_usage(target: dict[str, int], update: dict[str, int]) -> None:
-        for key, value in normalize_usage(update).items():
-            target[key] = target.get(key, 0) + value
-
     async def _prepare_runtime_capabilities(self) -> None:
         describe_model = getattr(self.agent.backend, "describe_model", None)
         if callable(describe_model):
@@ -1472,41 +1116,6 @@ class ConversationRuntime:
                     self.agent.capability_profile.preferred_tool_call_format
                 ),
             )
-
-    async def _emit_dod_status(self, emit: EventSink, dod: DefinitionOfDone) -> None:
-        self.dod_store.save(dod)
-        await emit(
-            AgentEvent(
-                type="dod_status",
-                content=(
-                    f"DoD: {dod.status} "
-                    f"({len(dod.pending_items)} pending"
-                    + (
-                        f", last verification: {dod.last_verification_result}"
-                        if dod.last_verification_result
-                        else ""
-                    )
-                    + ")"
-                ),
-                dod_status=dod.status,
-                pending_items_count=len(dod.pending_items),
-                last_verification_result=dod.last_verification_result,
-                definition_of_done=dod,
-            )
-        )
-
-    @staticmethod
-    def _classify_verification_kind(command: str) -> str:
-        command_lower = command.lower()
-        if "lint" in command_lower or "ruff" in command_lower:
-            return "lint"
-        if "type" in command_lower or "mypy" in command_lower or "py_compile" in command_lower:
-            return "typecheck"
-        if "test" in command_lower or "pytest" in command_lower:
-            return "test"
-        if "build" in command_lower:
-            return "build"
-        return "runtime"
 
     @staticmethod
     def _emit_confirmation(emit: EventSink):
