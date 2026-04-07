@@ -59,10 +59,12 @@ def seed_runtime_workspace(root: Path) -> None:
     (root / "pyproject.toml").write_text("[project]\nname='loader'\n")
     (root / "src" / "loader" / "runtime").mkdir(parents=True)
     (root / "src" / "loader" / "runtime" / "workflow_lanes.py").write_text(
-        '"""workflow lanes"""\n'
+        '"""Runtime lane orchestration for Loader."""\n\n'
+        "class WorkflowLaneRunner:\n"
+        "    pass\n"
     )
     (root / "src" / "loader" / "runtime" / "clarify_strategy.py").write_text(
-        '"""clarify strategy"""\n'
+        '"""Intent-aware clarify strategy for runtime follow-up."""\n'
     )
     (root / "tests").mkdir()
     (root / "tests" / "test_workflow_runtime.py").write_text("pass\n")
@@ -230,7 +232,10 @@ async def test_clarify_prompt_and_brief_include_workspace_evidence(
         "Referenced paths that exist: src/loader/runtime/workflow_lanes.py"
         in backend.invocations[0].messages[-1].content
     )
+    assert "Observed repo facts:" in backend.invocations[0].messages[-1].content
+    assert "class WorkflowLaneRunner:" in backend.invocations[0].messages[-1].content
     assert "Observed workspace evidence:" in backend.invocations[1].messages[-1].content
+    assert "class WorkflowLaneRunner:" in backend.invocations[1].messages[-1].content
     assert (
         "workflow_lanes.py"
         in run.agent.last_turn_summary.definition_of_done.acceptance_criteria[0]
@@ -419,6 +424,11 @@ async def test_second_round_fallback_question_uses_workspace_grounding(
 
     assert len(asked_questions) == 2
     assert "src/loader/runtime/" in asked_questions[1]
+    assert "currently contains" in asked_questions[1]
+    assert (
+        "WorkflowLaneRunner" in asked_questions[1]
+        or "Intent-aware clarify strategy" in asked_questions[1]
+    )
     assert "scoped" in asked_questions[1].lower()
     assert [
         event.tool_name
