@@ -162,6 +162,7 @@ class ToolExecutor:
             required_mode=required_permission,
             override=pre_hook_summary.permission_override,
             override_reason=pre_hook_summary.permission_reason,
+            arguments=tool_call.arguments,
         )
         if permission_outcome.decision == PermissionDecision.DENY:
             denied_output = self._merge_messages(
@@ -253,7 +254,7 @@ class ToolExecutor:
             on_confirmation,
             on_user_question,
             emit_confirmation,
-            skip_confirmation=skip_confirmation,
+            skip_confirmation=True,
         )
         registry_result = result
         post_hook_context = HookContext(
@@ -429,7 +430,7 @@ class ToolExecutor:
             return True
 
         message = reason or f"Approve {tool_call.name}"
-        details = str(tool_call.arguments)
+        details = self._format_permission_details(tool_call, reason)
         if emit_confirmation:
             await emit_confirmation(tool_call.name, message, details)
         if on_confirmation:
@@ -463,3 +464,36 @@ class ToolExecutor:
         if any(term in command for term in browser_terms):
             return "[Blocked - Browser/display commands are not supported in the terminal runtime]"
         return None
+
+    def _format_permission_details(
+        self,
+        tool_call: ToolCall,
+        reason: str | None,
+    ) -> str:
+        tool = self.registry.get(tool_call.name)
+        required_permission = (
+            tool.get_required_permission(**tool_call.arguments)
+            if tool is not None
+            else self.permission_policy.required_mode_for(tool_call.name)
+        )
+        summary = self.permission_policy.authorize(
+            tool_call.name,
+            required_mode=required_permission,
+            arguments=tool_call.arguments,
+        )
+        details = [
+            f"tool={tool_call.name}",
+            f"active_mode={summary.active_mode.as_str()}",
+            f"required_mode={summary.required_mode.as_str()}",
+        ]
+        if summary.request is not None:
+            details.append(f"input={summary.request.input_summary}")
+            if summary.request.path_hint:
+                details.append(f"path={summary.request.path_hint}")
+        if summary.matched_rule is not None and summary.matched_disposition is not None:
+            details.append(
+                f"matched_{summary.matched_disposition.value}_rule={summary.matched_rule.raw}"
+            )
+        if reason:
+            details.append(f"reason={reason}")
+        return "\n".join(details)

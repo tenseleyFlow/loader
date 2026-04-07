@@ -165,7 +165,7 @@ def clean_response(text: str) -> str:
 @click.option(
     "--permission-mode",
     type=click.Choice(
-        ["read-only", "workspace-write", "danger-full-access"],
+        ["read-only", "workspace-write", "danger-full-access", "prompt", "allow"],
         case_sensitive=False,
     ),
     default="workspace-write",
@@ -334,7 +334,11 @@ async def _main(
         workflow_mode_override="clarify" if clarify else ("plan" if plan else None),
         reasoning=reasoning_config,
     )
-    agent = Agent(backend=llm, registry=registry, config=config)
+    try:
+        agent = Agent(backend=llm, registry=registry, config=config)
+    except ValueError as exc:
+        console.print(f"[red]Permission policy error:[/red] {exc}")
+        return
     resumed = False
     if resume_target is not None:
         session_id = None if resume_target == "__latest__" else resume_target
@@ -731,7 +735,7 @@ async def _ask_user_question_cli(
 @click.option(
     "--permission-mode",
     type=click.Choice(
-        ["read-only", "workspace-write", "danger-full-access"],
+        ["read-only", "workspace-write", "danger-full-access", "prompt", "allow"],
         case_sensitive=False,
     ),
     default="workspace-write",
@@ -753,7 +757,7 @@ def doctor_cli(
 @click.option(
     "--permission-mode",
     type=click.Choice(
-        ["read-only", "workspace-write", "danger-full-access"],
+        ["read-only", "workspace-write", "danger-full-access", "prompt", "allow"],
         case_sensitive=False,
     ),
     default="workspace-write",
@@ -947,15 +951,19 @@ async def _explore_main(
     await llm.describe_model()
     set_last_model(model)
 
-    agent = Agent(
-        backend=llm,
-        config=AgentConfig(
-            auto_context=not no_context,
-            force_react=react,
-            permission_mode=PermissionMode.READ_ONLY,
-            stream=False,
-        ),
-    )
+    try:
+        agent = Agent(
+            backend=llm,
+            config=AgentConfig(
+                auto_context=not no_context,
+                force_react=react,
+                permission_mode=PermissionMode.READ_ONLY,
+                stream=False,
+            ),
+        )
+    except ValueError as exc:
+        console.print(f"[red]Permission policy error:[/red] {exc}")
+        return
     mode_str = "ReAct" if agent.use_react else "Native"
     console.print(
         Panel.fit(
@@ -996,6 +1004,13 @@ def _print_doctor_report(report: DoctorReport) -> None:
                     f"[bold]Model:[/bold] {report.model}",
                     f"[bold]Workspace:[/bold] {report.project_root}",
                     f"[bold]Capabilities:[/bold] {report.capability_profile.model_name} / {report.capability_profile.preferred_tool_call_format}",
+                    f"[bold]Permissions:[/bold] {report.permission_mode}",
+                    (
+                        "[bold]Policy:[/bold] "
+                        f"{report.permission_rule_counts['allow']} allow / "
+                        f"{report.permission_rule_counts['deny']} deny / "
+                        f"{report.permission_rule_counts['ask']} ask"
+                    ),
                     f"[bold]Overall:[/bold] [{overall_color}]{report.overall_status.value}[/{overall_color}]",
                 ]
             ),
@@ -1021,10 +1036,14 @@ def _print_doctor_report(report: DoctorReport) -> None:
     permissions = Table(show_header=True, header_style="bold cyan")
     permissions.add_column("Tool", style="white")
     permissions.add_column("Required", style="white")
-    permissions.add_column("Allowed", style="white")
+    permissions.add_column("Resolution", style="white")
     for item in report.tool_permissions:
-        allowed = "[green]yes[/green]" if item.allowed_in_active_mode else "[red]no[/red]"
-        permissions.add_row(item.tool_name, item.required_mode, allowed)
+        resolution = {
+            "allow": "[green]allow[/green]",
+            "deny": "[red]deny[/red]",
+            "ask": "[magenta]ask[/magenta]",
+        }.get(item.resolution, item.resolution)
+        permissions.add_row(item.tool_name, item.required_mode, resolution)
     console.print()
     console.print(permissions)
 
@@ -1049,6 +1068,22 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Session", snapshot.active_session_id or "none")
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row(
+        "Policy",
+        (
+            f"{snapshot.permission_rule_counts['allow']} allow / "
+            f"{snapshot.permission_rule_counts['deny']} deny / "
+            f"{snapshot.permission_rule_counts['ask']} ask"
+        ),
+    )
+    table.add_row(
+        "Prompting",
+        "enabled" if snapshot.permission_prompting_enabled else "disabled",
+    )
+    table.add_row(
+        "Rules",
+        "valid" if snapshot.permission_rules_valid else "invalid",
+    )
     table.add_row("Task", snapshot.current_task or "none")
     table.add_row("Messages", str(snapshot.message_count))
     table.add_row("DoD", snapshot.dod_status or "none")

@@ -13,7 +13,11 @@ from ..runtime.conversation import ConversationRuntime
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.explore import ExploreRuntime
-from ..runtime.permissions import PermissionMode, build_permission_policy
+from ..runtime.permissions import (
+    PermissionMode,
+    build_permission_policy,
+    load_permission_rules,
+)
 from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
@@ -120,10 +124,18 @@ class Agent:
         self.project_root = Path(project_root or ".").expanduser().resolve()
         self.registry = registry or create_default_registry(self.project_root)
         self.registry.configure_workspace_root(self.project_root)
+        self.permission_config_status = load_permission_rules(self.project_root)
+        if not self.permission_config_status.valid:
+            raise ValueError(
+                "Invalid permission policy configuration at "
+                f"{self.permission_config_status.source_path}: "
+                f"{self.permission_config_status.error}"
+            )
         self.permission_policy = build_permission_policy(
             active_mode=self.config.permission_mode,
             workspace_root=self.project_root,
             tool_requirements=self.registry.get_tool_requirements(),
+            rules=self.permission_config_status.rules,
         )
         self.workflow_mode = WorkflowMode.EXECUTE.value
         self.messages: list[Message] = []
@@ -239,6 +251,12 @@ class Agent:
     def active_permission_mode(self) -> str:
         """Return the current runtime permission mode."""
         return self.permission_policy.active_mode.as_str()
+
+    @property
+    def active_permission_rule_counts(self) -> dict[str, int]:
+        """Return rule counts for the active permission policy."""
+
+        return self.permission_policy.rule_counts()
 
     def _drain_steering_queue(self) -> list[str]:
         """Get all pending steering messages without blocking."""

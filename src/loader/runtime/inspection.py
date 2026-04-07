@@ -14,7 +14,12 @@ from ..context.project import ProjectContext, detect_project
 from ..runtime.capabilities import CapabilityProfile, resolve_capability_profile
 from ..tools.base import ToolRegistry, create_default_registry
 from .dod import DefinitionOfDone, DefinitionOfDoneStore, VerificationEvidence
-from .permissions import PermissionMode
+from .permissions import (
+    PermissionConfigStatus,
+    PermissionDecision,
+    PermissionMode,
+    load_permission_rules,
+)
 from .session import SessionSnapshot, SessionStore
 
 
@@ -42,7 +47,11 @@ class ToolPermissionSummary:
 
     tool_name: str
     required_mode: str
-    allowed_in_active_mode: bool
+    resolution: str
+
+    @property
+    def allowed_in_active_mode(self) -> bool:
+        return self.resolution == PermissionDecision.ALLOW.value
 
 
 @dataclass(slots=True)
@@ -53,6 +62,11 @@ class DoctorReport:
     model: str
     backend: str
     permission_mode: str
+    permission_prompting_enabled: bool
+    permission_rule_counts: dict[str, int]
+    permission_rules_valid: bool
+    permission_rules_source: str
+    permission_rules_error: str | None
     project_context: ProjectContext
     capability_profile: CapabilityProfile
     checks: list[DoctorCheck] = field(default_factory=list)
@@ -87,6 +101,9 @@ class StatusSnapshot:
     active_session_id: str | None
     workflow_mode: str
     permission_mode: str
+    permission_prompting_enabled: bool
+    permission_rule_counts: dict[str, int]
+    permission_rules_valid: bool
     current_task: str | None
     message_count: int
     active_dod_path: str | None
@@ -152,6 +169,7 @@ async def collect_doctor_report(
     project_context = detect_project(resolved_root)
     registry = registry or create_default_registry(resolved_root)
     registry.configure_workspace_root(resolved_root)
+    rule_status = load_permission_rules(resolved_root)
 
     capability_profile = resolve_capability_profile(resolved_model)
     checks: list[DoctorCheck] = []
@@ -185,14 +203,31 @@ async def collect_doctor_report(
     checks.append(_write_access_check(resolved_root))
     checks.append(_test_build_check(project_context))
     checks.append(_state_health_check(resolved_root))
-    checks.append(_permission_mode_check(registry, resolved_permission_mode))
+    checks.append(
+        _permission_mode_check(
+            registry,
+            resolved_permission_mode,
+            rule_status,
+        )
+    )
 
-    tool_permissions = _tool_permission_summaries(registry, resolved_permission_mode)
+    tool_permissions = _tool_permission_summaries(
+        registry,
+        resolved_permission_mode,
+        rule_status,
+    )
     return DoctorReport(
         project_root=resolved_root,
         model=resolved_model,
         backend=backend,
         permission_mode=resolved_permission_mode.as_str(),
+        permission_prompting_enabled=(
+            resolved_permission_mode == PermissionMode.PROMPT or bool(rule_status.rules.ask)
+        ),
+        permission_rule_counts=rule_status.rules.counts,
+        permission_rules_valid=rule_status.valid,
+        permission_rules_source=str(rule_status.source_path),
+        permission_rules_error=rule_status.error,
         project_context=project_context,
         capability_profile=capability_profile,
         checks=checks,
@@ -215,6 +250,7 @@ def collect_status_snapshot(
     snapshot = session_store.load_latest()
     capability_profile = resolve_capability_profile(resolved_model)
     default_permission_mode = _coerce_permission_mode(permission_mode).as_str()
+    rule_status = load_permission_rules(resolved_root)
 
     if snapshot is None:
         return StatusSnapshot(
@@ -224,6 +260,12 @@ def collect_status_snapshot(
             active_session_id=None,
             workflow_mode="execute",
             permission_mode=default_permission_mode,
+            permission_prompting_enabled=(
+                _coerce_permission_mode(permission_mode) == PermissionMode.PROMPT
+                or bool(rule_status.rules.ask)
+            ),
+            permission_rule_counts=rule_status.rules.counts,
+            permission_rules_valid=rule_status.valid,
             current_task=None,
             message_count=0,
             active_dod_path=None,
@@ -244,6 +286,12 @@ def collect_status_snapshot(
         active_session_id=snapshot.session_id,
         workflow_mode=snapshot.workflow_mode,
         permission_mode=snapshot.permission_mode or default_permission_mode,
+        permission_prompting_enabled=(
+            (snapshot.permission_mode or default_permission_mode) == "prompt"
+            or bool(rule_status.rules.ask)
+        ),
+        permission_rule_counts=rule_status.rules.counts,
+        permission_rules_valid=rule_status.valid,
         current_task=snapshot.current_task,
         message_count=len(snapshot.messages),
         active_dod_path=snapshot.active_dod_path,
@@ -560,6 +608,7 @@ def _state_health_check(project_root: Path) -> DoctorCheck:
 def _permission_mode_check(
     registry: ToolRegistry,
     permission_mode: PermissionMode,
+    rule_status: PermissionConfigStatus,
 ) -> DoctorCheck:
     required_modes = [tool.required_permission.as_str() for tool in registry.list_tools()]
     counts = {
@@ -567,11 +616,33 @@ def _permission_mode_check(
         "workspace-write": required_modes.count("workspace-write"),
         "danger-full-access": required_modes.count("danger-full-access"),
     }
+    if not rule_status.valid:
+        return DoctorCheck(
+            name="permissions",
+            status=CheckStatus.FAIL,
+            message=(
+                f"Permission rules are invalid: {rule_status.error}. "
+                f"Loader will fail closed until `{rule_status.source_path.name}` is fixed."
+            ),
+            remediation=(
+                "Repair or remove `.loader/permission-rules.json` so Loader can "
+                "evaluate allow/deny/ask policy safely."
+            ),
+        )
+
+    prompt_message = (
+        "prompting enabled"
+        if permission_mode == PermissionMode.PROMPT or rule_status.rules.ask
+        else "prompting disabled"
+    )
     return DoctorCheck(
         name="permissions",
         status=CheckStatus.PASS,
         message=(
             f"Default permission mode is `{permission_mode.as_str()}`. "
+            f"Policy rules: {rule_status.rules.counts['allow']} allow, "
+            f"{rule_status.rules.counts['deny']} deny, "
+            f"{rule_status.rules.counts['ask']} ask ({prompt_message}). "
             f"Tool requirements: {counts['read-only']} read-only, "
             f"{counts['workspace-write']} workspace-write, "
             f"{counts['danger-full-access']} danger-full-access."
@@ -586,16 +657,41 @@ def _permission_mode_check(
 def _tool_permission_summaries(
     registry: ToolRegistry,
     permission_mode: PermissionMode,
+    rule_status: PermissionConfigStatus,
 ) -> list[ToolPermissionSummary]:
+    policy = _build_inspection_policy(
+        registry,
+        permission_mode,
+        rule_status,
+    )
     summaries = [
         ToolPermissionSummary(
             tool_name=tool.name,
             required_mode=tool.required_permission.as_str(),
-            allowed_in_active_mode=permission_mode >= tool.required_permission,
+            resolution=policy.authorize(
+                tool.name,
+                required_mode=tool.required_permission,
+                arguments={},
+            ).decision.value,
         )
         for tool in sorted(registry.list_tools(), key=lambda item: item.name)
     ]
     return summaries
+
+
+def _build_inspection_policy(
+    registry: ToolRegistry,
+    permission_mode: PermissionMode,
+    rule_status: PermissionConfigStatus,
+):
+    from .permissions import build_permission_policy
+
+    return build_permission_policy(
+        active_mode=permission_mode,
+        workspace_root=registry.workspace_root or Path.cwd(),
+        tool_requirements=registry.get_tool_requirements(),
+        rules=rule_status.rules if rule_status.valid else None,
+    )
 
 
 def _session_paths(sessions_root: Path) -> list[Path]:

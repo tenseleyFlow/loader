@@ -108,3 +108,55 @@ async def test_explore_mode_denies_write_attempts_even_with_workspace_write(temp
     assert "read-only" in "\n".join(tool_results).lower()
     assert "cannot make that change" in response.lower()
     assert not (temp_dir / "new.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_explore_mode_ignores_global_allow_rules(temp_dir) -> None:
+    loader_root = temp_dir / ".loader"
+    loader_root.mkdir()
+    (loader_root / "permission-rules.json").write_text(
+        '{"allow": [{"tool": "write", "path_contains": "new.txt"}]}\n'
+    )
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I'll write a file.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(temp_dir / "new.txt"),
+                            "content": "still not allowed\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="Explore mode is read-only, so I cannot make that change here.",
+            ),
+        ]
+    )
+    agent = Agent(
+        backend=backend,
+        config=AgentConfig(
+            auto_context=False,
+            stream=False,
+            permission_mode=PermissionMode.ALLOW,
+        ),
+        project_root=temp_dir,
+    )
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    response = await agent.run_explore(
+        "Create a new file anyway.",
+        on_event=capture,
+    )
+
+    tool_results = [event.content for event in events if event.type == "tool_result"]
+    assert "read-only" in "\n".join(tool_results).lower()
+    assert "cannot make that change" in response.lower()
+    assert not (temp_dir / "new.txt").exists()

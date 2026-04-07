@@ -305,6 +305,8 @@ async def test_write_file_allowed(temp_dir: Path) -> None:
 @pytest.mark.asyncio
 async def test_write_file_denied(temp_dir: Path) -> None:
     target = temp_dir / "denied.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.PROMPT
     backend = ScriptedBackend(
         completions=[
             native_tool_response(
@@ -321,14 +323,14 @@ async def test_write_file_denied(temp_dir: Path) -> None:
 
     async def deny_confirmation(tool_name: str, message: str, details: str) -> bool:
         assert tool_name == "write"
-        assert "Write to file" in message
-        assert details
+        assert "approval" in message.lower()
+        assert "active_mode=prompt" in details
         return False
 
     run = await run_scenario(
         "Create denied.txt with a greeting.",
         backend,
-        config=non_streaming_config(),
+        config=config,
         project_root=temp_dir,
         on_confirmation=deny_confirmation,
     )
@@ -369,6 +371,8 @@ async def test_bash_confirmation_prompt_approved(
 ) -> None:
     monkeypatch.chdir(temp_dir)
     target = temp_dir / "approved.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.PROMPT
     backend = ScriptedBackend(
         completions=[
             native_tool_response(
@@ -381,14 +385,14 @@ async def test_bash_confirmation_prompt_approved(
 
     async def approve_confirmation(tool_name: str, message: str, details: str) -> bool:
         assert tool_name == "bash"
-        assert "Run command" in message
+        assert "approval" in message.lower()
         assert "touch approved.txt" in details
         return True
 
     run = await run_scenario(
         "Create approved.txt using bash.",
         backend,
-        config=non_streaming_config(),
+        config=config,
         project_root=temp_dir,
         on_confirmation=approve_confirmation,
     )
@@ -405,6 +409,8 @@ async def test_bash_confirmation_prompt_denied(
 ) -> None:
     monkeypatch.chdir(temp_dir)
     target = temp_dir / "denied-bash.txt"
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.PROMPT
     backend = ScriptedBackend(
         completions=[
             native_tool_response(
@@ -423,7 +429,7 @@ async def test_bash_confirmation_prompt_denied(
     run = await run_scenario(
         "Create denied-bash.txt using bash.",
         backend,
-        config=non_streaming_config(),
+        config=config,
         project_root=temp_dir,
         on_confirmation=deny_confirmation,
     )
@@ -582,7 +588,7 @@ async def test_danger_full_access_allows_dangerous_bash(temp_dir: Path) -> None:
 
     assert tool_event_names(run) == ["bash"]
     assert not any("requires" in message for message in tool_result_messages(run))
-    assert any(event.type == "confirmation" for event in run.events)
+    assert not any(event.type == "confirmation" for event in run.events)
 
 
 @pytest.mark.asyncio

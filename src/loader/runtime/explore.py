@@ -12,7 +12,7 @@ from ..runtime.events import AgentEvent, TurnSummary
 from ..tools.base import create_explore_registry
 from .executor import ToolExecutionState, ToolExecutor
 from .hooks import build_default_tool_hooks
-from .permissions import PermissionMode, build_permission_policy
+from .permissions import PermissionMode, PermissionRuleSet, build_permission_policy
 from .tracing import RuntimeTracer
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -75,10 +75,16 @@ class ExploreRuntime:
     def __init__(self, agent) -> None:
         self.agent = agent
         self.registry = create_explore_registry(agent.project_root)
+        explore_rules = PermissionRuleSet(
+            deny=list(agent.permission_policy.rules.deny),
+            ask=list(agent.permission_policy.rules.ask),
+            source_path=agent.permission_policy.rules.source_path,
+        )
         self.permission_policy = build_permission_policy(
             active_mode=PermissionMode.READ_ONLY,
             workspace_root=agent.project_root,
             tool_requirements=self.registry.get_tool_requirements(),
+            rules=explore_rules,
         )
         self.tracer = RuntimeTracer()
         self.executor = ToolExecutor(

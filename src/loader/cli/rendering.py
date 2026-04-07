@@ -11,6 +11,8 @@ def format_permission_mode(mode: str) -> str:
         "read-only": "green",
         "workspace-write": "yellow",
         "danger-full-access": "red",
+        "prompt": "magenta",
+        "allow": "cyan",
     }.get(mode, "white")
     return f"[{color}]{mode}[/{color}]"
 

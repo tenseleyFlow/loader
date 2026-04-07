@@ -45,6 +45,8 @@ def test_cli_dod_status_format_includes_pending_and_verification() -> None:
 def test_permission_mode_helpers_use_expected_colors() -> None:
     assert format_permission_mode_part("read-only") == "[green]perm read-only[/green]"
     assert format_permission_mode("danger-full-access") == "[red]danger-full-access[/red]"
+    assert format_permission_mode_part("prompt") == "[magenta]perm prompt[/magenta]"
+    assert format_permission_mode("allow") == "[cyan]allow[/cyan]"
 
 
 def test_workflow_mode_helpers_use_expected_colors() -> None:

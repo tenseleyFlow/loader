@@ -17,6 +17,8 @@ from loader.runtime.hooks import (
 from loader.runtime.permissions import (
     PermissionMode,
     PermissionOverride,
+    PermissionRuleDisposition,
+    PermissionRuleSet,
     build_permission_policy,
 )
 from loader.runtime.tracing import RuntimeTracer
@@ -76,6 +78,158 @@ async def test_permission_policy_honors_overrides(temp_dir: Path) -> None:
     assert denied.decision.value == "deny"
     assert allowed.allowed
     assert asked.decision.value == "ask"
+
+
+def test_permission_mode_parsing_supports_prompt_and_allow() -> None:
+    assert PermissionMode.from_str("prompt") == PermissionMode.PROMPT
+    assert PermissionMode.from_str("allow") == PermissionMode.ALLOW
+
+
+def test_permission_policy_honors_rule_precedence(temp_dir: Path) -> None:
+    policy = build_permission_policy(
+        active_mode=PermissionMode.ALLOW,
+        workspace_root=temp_dir,
+        tool_requirements={"write": PermissionMode.WORKSPACE_WRITE},
+        rules=PermissionRuleSet.from_dict(
+            {
+                "allow": [{"tool": "write", "contains": "safe change"}],
+                "deny": [{"tool": "write", "path_contains": "secrets"}],
+                "ask": [{"tool": "write", "path_contains": "README"}],
+            }
+        ),
+    )
+
+    denied = policy.authorize(
+        "write",
+        arguments={
+            "file_path": str(temp_dir / "secrets.txt"),
+            "content": "safe change\n",
+        },
+    )
+    asked = policy.authorize(
+        "write",
+        arguments={
+            "file_path": str(temp_dir / "README.md"),
+            "content": "safe change\n",
+        },
+    )
+    allowed = policy.authorize(
+        "write",
+        arguments={
+            "file_path": str(temp_dir / "notes.txt"),
+            "content": "safe change\n",
+        },
+    )
+
+    assert denied.decision.value == "deny"
+    assert denied.matched_disposition == PermissionRuleDisposition.DENY
+    assert asked.decision.value == "ask"
+    assert asked.matched_disposition == PermissionRuleDisposition.ASK
+    assert allowed.decision.value == "allow"
+    assert allowed.matched_disposition == PermissionRuleDisposition.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_prompt_mode_executor_prompts_once_and_respects_denial(
+    temp_dir: Path,
+) -> None:
+    prompts: list[tuple[str, str, str]] = []
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.PROMPT,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    executor = ToolExecutor(registry, RuntimeTracer(), policy)
+    target = temp_dir / "prompted.txt"
+
+    async def deny(tool_name: str, message: str, details: str) -> bool:
+        prompts.append((tool_name, message, details))
+        return False
+
+    outcome = await executor.execute_tool_call(
+        ToolCall(
+            id="write-1",
+            name="write",
+            arguments={"file_path": str(target), "content": "prompted\n"},
+        ),
+        source="native",
+        on_confirmation=deny,
+    )
+
+    assert outcome.state == ToolExecutionState.DECLINED
+    assert not target.exists()
+    assert len(prompts) == 1
+    assert "active_mode=prompt" in prompts[0][2]
+    assert "required_mode=workspace-write" in prompts[0][2]
+
+
+@pytest.mark.asyncio
+async def test_allow_mode_executor_skips_prompt_for_destructive_write(
+    temp_dir: Path,
+) -> None:
+    prompts: list[str] = []
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.ALLOW,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    executor = ToolExecutor(registry, RuntimeTracer(), policy)
+    target = temp_dir / "allowed.txt"
+
+    async def unexpected(tool_name: str, message: str, details: str) -> bool:
+        prompts.append(tool_name)
+        return False
+
+    outcome = await executor.execute_tool_call(
+        ToolCall(
+            id="write-1",
+            name="write",
+            arguments={"file_path": str(target), "content": "allowed\n"},
+        ),
+        source="native",
+        on_confirmation=unexpected,
+    )
+
+    assert outcome.state == ToolExecutionState.EXECUTED
+    assert target.read_text() == "allowed\n"
+    assert prompts == []
+
+
+@pytest.mark.asyncio
+async def test_ask_rule_prompts_even_when_allow_mode(temp_dir: Path) -> None:
+    prompts: list[str] = []
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.ALLOW,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+        rules=PermissionRuleSet.from_dict(
+            {"ask": [{"tool": "write", "path_contains": "README"}]}
+        ),
+    )
+    executor = ToolExecutor(registry, RuntimeTracer(), policy)
+    target = temp_dir / "README.md"
+
+    async def deny(tool_name: str, message: str, details: str) -> bool:
+        prompts.append(details)
+        return False
+
+    outcome = await executor.execute_tool_call(
+        ToolCall(
+            id="write-1",
+            name="write",
+            arguments={"file_path": str(target), "content": "no thanks\n"},
+        ),
+        source="native",
+        on_confirmation=deny,
+    )
+
+    assert outcome.state == ToolExecutionState.DECLINED
+    assert not target.exists()
+    assert len(prompts) == 1
+    assert "matched_ask_rule=tool=write, path_contains=README" in prompts[0]
 
 
 @pytest.mark.asyncio

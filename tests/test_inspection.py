@@ -163,6 +163,32 @@ async def test_collect_doctor_report_surfaces_backend_and_state_failures(temp_di
     assert "corrupted" in state_check.message
 
 
+@pytest.mark.asyncio
+async def test_collect_doctor_report_fails_closed_on_invalid_permission_rules(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    (temp_dir / ".loader" / "permission-rules.json").write_text('{"allow": "nope"}\n')
+
+    report = await collect_doctor_report(
+        temp_dir,
+        model="qwen2.5-coder:14b",
+        permission_mode="prompt",
+        backend_factory=lambda model: FakeOllamaBackend(
+            model=model,
+            health=True,
+            models=[{"name": "qwen2.5-coder:14b"}],
+        ),
+    )
+
+    permission_check = next(check for check in report.checks if check.name == "permissions")
+    assert report.overall_status == CheckStatus.FAIL
+    assert permission_check.status == CheckStatus.FAIL
+    assert report.permission_rules_valid is False
+    assert "invalid" in permission_check.message.lower()
+
+
 def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
     _ensure_loader_dirs(temp_dir)
@@ -180,6 +206,9 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.dod_pending_items_count == 1
     assert snapshot.last_verification_result == "failed"
     assert snapshot.active_dod_path == dod_path
+    assert snapshot.permission_rule_counts == {"allow": 0, "deny": 0, "ask": 0}
+    assert snapshot.permission_prompting_enabled is False
+    assert snapshot.permission_rules_valid is True
 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
@@ -217,6 +246,17 @@ def test_status_and_session_commands_render_persisted_state(
     assert show_result.exit_code == 0
     assert session_id in show_result.output
     assert "Patch the broken parser" in show_result.output
+
+
+def test_status_snapshot_reports_invalid_permission_rules(temp_dir: Path) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    (temp_dir / ".loader" / "permission-rules.json").write_text("{broken json")
+
+    snapshot = collect_status_snapshot(temp_dir, permission_mode="prompt")
+
+    assert snapshot.permission_rules_valid is False
+    assert snapshot.permission_prompting_enabled is True
 
 
 def test_root_help_lists_special_commands() -> None:
