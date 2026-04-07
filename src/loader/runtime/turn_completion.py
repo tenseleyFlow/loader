@@ -74,26 +74,6 @@ class TurnCompletionController:
     ) -> TurnCompletionDecision:
         """Handle a no-tool assistant response inside the main turn loop."""
 
-        cfg = self.agent.config.reasoning
-        if cfg.self_critique and len(content) > 100:
-            await self.phase_tracker.enter(
-                TurnPhase.CRITIQUE,
-                emit,
-                detail="Evaluating self-critique",
-                reason_code="evaluate_self_critique",
-            )
-            critique_decision = await self.completion_policy.maybe_self_critique(
-                content=content,
-                response_content=response_content,
-                task=task,
-                emit=emit,
-            )
-            if critique_decision.should_continue:
-                return TurnCompletionDecision(
-                    action=TurnCompletionAction.CONTINUE,
-                    continuation_count=continuation_count,
-                )
-
         await self.phase_tracker.enter(
             TurnPhase.COMPLETION,
             emit,
@@ -113,6 +93,7 @@ class TurnCompletionController:
                 finalize_reason_summary="Finalizing after text-loop bailout",
             )
 
+        cfg = self.agent.config.reasoning
         self.agent.safeguards.record_response(content)
         if (
             cfg.completion_check
