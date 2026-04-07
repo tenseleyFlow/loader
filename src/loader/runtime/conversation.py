@@ -141,7 +141,7 @@ class ConversationRuntime:
             summary.iterations = iterations
             self.tracer.record("turn.iteration_started", iteration=iterations)
 
-            if iterations == 1 and len(self.agent.messages) == 1:
+            if iterations == 1 and len(self.context.legacy.message_history()) == 1:
                 task_lower = task.lower()
                 action_keywords = [
                     "create",
@@ -503,7 +503,7 @@ class ConversationRuntime:
         )
         if bridge and not any(
             message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
-            for message in self.agent.messages[-4:]
+            for message in self.context.legacy.message_history()[-4:]
         ):
             self.context.session.append(
                 Message(

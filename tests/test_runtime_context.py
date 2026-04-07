@@ -36,6 +36,7 @@ def test_agent_builds_typed_runtime_context(temp_dir: Path) -> None:
     assert context.use_react == agent.use_react
     assert context.active_permission_mode == agent.active_permission_mode
     assert context.active_permission_rule_counts == agent.active_permission_rule_counts
+    assert context.legacy.message_history() is agent.messages
 
 
 def test_runtime_context_legacy_services_stay_in_sync(temp_dir: Path) -> None:

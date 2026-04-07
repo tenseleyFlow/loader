@@ -89,6 +89,7 @@ class RuntimeSafeguardsProtocol(Protocol):
 class RuntimeLegacyServices:
     """Explicit migration seams for legacy agent-owned behavior."""
 
+    message_history: Callable[[], list[Message]]
     drain_steering_queue: Callable[[], list[str]]
     queue_steering_message: Callable[[str], None]
     set_workflow_mode: Callable[[str], None]

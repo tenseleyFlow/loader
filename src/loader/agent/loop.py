@@ -374,6 +374,7 @@ class Agent:
             workflow_mode=self.workflow_mode,
             safeguards=self.safeguards,
             legacy=RuntimeLegacyServices(
+                message_history=lambda: self.messages,
                 drain_steering_queue=self._drain_steering_queue,
                 queue_steering_message=queue_steering_message,
                 set_workflow_mode=set_workflow_mode,

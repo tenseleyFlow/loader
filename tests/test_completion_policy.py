@@ -81,11 +81,12 @@ def build_context(
         tool_requirements=registry.get_tool_requirements(),
         rules=rule_status.rules,
     )
+    session = FakeSession()
     return RuntimeContext(
         project_root=temp_dir,
         backend=ScriptedBackend(),
         registry=registry,
-        session=FakeSession(),  # type: ignore[arg-type]
+        session=session,  # type: ignore[arg-type]
         config=SimpleNamespace(
             force_react=False,
             reasoning=SimpleNamespace(
@@ -107,6 +108,7 @@ def build_context(
         workflow_mode="execute",
         safeguards=safeguards,
         legacy=RuntimeLegacyServices(
+            message_history=lambda: session.messages,
             drain_steering_queue=lambda: [],
             queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,

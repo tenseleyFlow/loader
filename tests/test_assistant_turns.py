@@ -132,6 +132,7 @@ def build_runtime_context(
         workflow_mode="execute",
         safeguards=safeguards,
         legacy=RuntimeLegacyServices(
+            message_history=lambda: session.messages,  # type: ignore[attr-defined]
             drain_steering_queue=lambda: [],
             queue_steering_message=queued_messages.append,
             set_workflow_mode=lambda mode: None,
