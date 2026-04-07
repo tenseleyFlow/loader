@@ -33,19 +33,15 @@ from .planner import (
 from .prompts import build_system_prompt_result
 from .reasoning import (
     CONFIDENCE_PROMPT,
-    DECOMPOSITION_PROMPT,
     VERIFICATION_PROMPT,
     ActionVerification,
     ConfidenceAssessment,
     ConfidenceLevel,
-    TaskDecomposition,
     estimate_confidence_quick,
     is_conversational,
     parse_confidence,
-    parse_decomposition,
     parse_verification,
     quick_verify,
-    should_decompose,
 )
 from .recovery import RecoveryContext
 from .safeguards import RuntimeSafeguards
@@ -54,10 +50,6 @@ from .safeguards import RuntimeSafeguards
 @dataclass
 class ReasoningConfig:
     """Configuration for reasoning stages."""
-    # Decomposition: break complex tasks into atomic subtasks
-    decomposition: bool = False
-    decomposition_threshold: int = 30  # Word count threshold for auto-decomposition
-
     # Self-critique: review output before finalizing
     self_critique: bool = False
     max_critique_revisions: int = 2
@@ -430,22 +422,6 @@ class Agent:
         )
         return parse_plan(response.content, goal=task)
 
-    # === Reasoning Stage Methods ===
-
-    async def _decompose_task(self, task: str) -> TaskDecomposition:
-        """Decompose a complex task into atomic subtasks."""
-        prompt = DECOMPOSITION_PROMPT.format(task=task)
-        response = await self.backend.complete(
-            messages=[
-                self._get_system_message(),
-                Message(role=Role.USER, content=prompt),
-            ],
-            tools=None,
-            temperature=0.3,  # Lower temp for structured output
-            max_tokens=1000,
-        )
-        return parse_decomposition(response.content, task)
-
     async def _assess_confidence(
         self,
         tool_name: str,
@@ -631,77 +607,7 @@ class Agent:
         if self._current_task is None:
             self._current_task = user_message
 
-        # Check if we should decompose the task (higher priority than planning)
-        if cfg.decomposition and should_decompose(user_message):
-            await emit(AgentEvent(type="thinking", content="Analyzing task complexity..."))
-            decomposition = await self._decompose_task(user_message)
-
-            if len(decomposition.subtasks) > 1:
-                await emit(AgentEvent(
-                    type="decomposition",
-                    content=decomposition.to_prompt(),
-                    decomposition=decomposition,
-                ))
-
-                # Execute each subtask
-                while not decomposition.is_complete() and not decomposition.has_failures():
-                    subtask = decomposition.next_subtask()
-                    if not subtask:
-                        break
-
-                    subtask.status = "in_progress"
-                    await emit(AgentEvent(
-                        type="subtask",
-                        content=f"{decomposition.progress_str()} {subtask.description}",
-                        subtask=subtask,
-                    ))
-
-                    # Run the subtask
-                    self.session.append(Message(
-                        role=Role.USER,
-                        content=f"Execute this subtask: {subtask.description}\n\n"
-                                f"Verification: {subtask.verification}",
-                    ))
-                    subtask_response = await self._run_inner(
-                        subtask.description,
-                        emit,
-                        on_confirmation,
-                        on_user_question=on_user_question,
-                        original_task=self._current_task,
-                    )
-
-                    # Mark based on result (simple heuristic)
-                    if "error" in subtask_response.lower() or "failed" in subtask_response.lower():
-                        decomposition.mark_failed(subtask.id, subtask_response)
-                        if decomposition.can_retry(subtask.id):
-                            decomposition.reset_for_retry(subtask.id)
-                            await emit(AgentEvent(
-                                type="subtask",
-                                content=f"Retrying subtask: {subtask.description}",
-                                subtask=subtask,
-                            ))
-                    else:
-                        decomposition.mark_completed(subtask.id, subtask_response)
-
-                # Final summary
-                if decomposition.is_complete():
-                    summary_prompt = (
-                        f"All subtasks completed for: {user_message}\n\n"
-                        f"{decomposition.to_prompt()}\n\n"
-                        "Provide a brief summary of what was accomplished."
-                    )
-                    self.session.append(Message(role=Role.USER, content=summary_prompt))
-                    return await self._run_inner(
-                        summary_prompt,
-                        emit,
-                        on_confirmation,
-                        on_user_question=on_user_question,
-                        original_task=self._current_task,
-                    )
-                else:
-                    return f"Task partially completed. {decomposition.to_prompt()}"
-
-        # No planning or decomposition - run directly
+        # No legacy decomposition branch - hand the task directly to the runtime.
         self.session.append(Message(role=Role.USER, content=user_message))
         return await self._run_inner(
             user_message,

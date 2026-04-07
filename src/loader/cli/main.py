@@ -188,11 +188,10 @@ def clean_response(text: str) -> str:
 @click.option("--gpu", type=int, default=-1, help="GPU layers (default: -1 = all, 0 = CPU only)")
 @click.option("--timeout", type=int, default=None, help="Request timeout in seconds (default: auto based on model size)")
 # Reasoning options
-@click.option("--decompose", is_flag=True, help="Enable task decomposition (break complex tasks into subtasks)")
 @click.option("--critique", is_flag=True, help="Enable self-critique (review responses before finalizing)")
 @click.option("--confidence", is_flag=True, help="Enable confidence scoring (rate certainty before actions)")
 @click.option("--verify", is_flag=True, help="Enable post-action verification (check results)")
-@click.option("--reason", is_flag=True, help="Enable all reasoning stages (decompose + critique + confidence + verify)")
+@click.option("--reason", is_flag=True, help="Enable all remaining reasoning stages (critique + confidence + verify)")
 @click.argument("prompt", required=False)
 def cli(
     model: str | None,
@@ -210,7 +209,6 @@ def cli(
     ctx: int,
     gpu: int,
     timeout: int | None,
-    decompose: bool,
     critique: bool,
     confidence: bool,
     verify: bool,
@@ -220,7 +218,7 @@ def cli(
     """Loader - Local AI coding assistant."""
     asyncio.run(_main(
         model, select_model, backend, yes, permission_mode, react, no_context, plan, clarify, resume_target, no_recover,
-        no_tui, ctx, gpu, timeout, decompose, critique, confidence, verify, reason, prompt
+        no_tui, ctx, gpu, timeout, critique, confidence, verify, reason, prompt
     ))
 
 
@@ -262,7 +260,6 @@ async def _main(
     ctx: int | None,
     gpu: int | None,
     timeout: float | None,
-    decompose: bool,
     critique: bool,
     confidence: bool,
     verify: bool,
@@ -321,10 +318,9 @@ async def _main(
     registry = create_default_registry()
     registry.skip_confirmation = yes
 
-    # Configure reasoning stages
+    # Configure remaining reasoning stages
     # --reason enables all, otherwise use individual flags
     reasoning_config = ReasoningConfig(
-        decomposition=reason or decompose,
         self_critique=reason or critique,
         confidence_scoring=reason or confidence,
         verification=reason or verify,
@@ -358,8 +354,6 @@ async def _main(
 
     # Show reasoning status if enabled
     reasoning_active = []
-    if reasoning_config.decomposition:
-        reasoning_active.append("decompose")
     if reasoning_config.self_critique:
         reasoning_active.append("critique")
     if reasoning_config.confidence_scoring:

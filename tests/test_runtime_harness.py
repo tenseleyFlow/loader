@@ -1402,6 +1402,8 @@ async def test_complex_prompt_routes_to_plan(temp_dir: Path) -> None:
     assert dod is not None
     assert workflow_modes(run)[:3] == ["plan", "execute", "verify"]
     assert artifact_kinds(run) == ["implementation_plan", "verification_plan"]
+    assert not any(event.type == "decomposition" for event in run.events)
+    assert not any(event.type == "subtask" for event in run.events)
     assert dod.verification_commands == [f"test -f {target}"]
     assert verification_commands(run) == [f"test -f {target}"]
 

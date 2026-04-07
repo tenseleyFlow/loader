@@ -199,6 +199,8 @@ async def test_complex_prompt_routes_to_plan_and_uses_verification_artifact(
         "implementation_plan",
         "verification_plan",
     ]
+    assert not any(event.type == "decomposition" for event in run.events)
+    assert not any(event.type == "subtask" for event in run.events)
     assert dod.verification_commands == [f"test -f {target}"]
     assert "## Plan Mode" in backend.invocations[0].messages[0].content
     verify_calls = [
