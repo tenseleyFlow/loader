@@ -136,10 +136,8 @@ def build_context(
             queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,
             refresh_capability_profile=lambda: None,
-            self_critique=lambda response, task: None,  # type: ignore[arg-type]
             assess_confidence=assess_confidence,
             verify_action=verify_action,
-            contains_unexecuted_code=lambda content: False,
             get_recovery_context=lambda: recovery_holder["value"],
             set_recovery_context=lambda value: recovery_holder.__setitem__("value", value),
         ),

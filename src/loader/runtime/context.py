@@ -10,7 +10,6 @@ from typing import Any, Protocol
 from ..agent.reasoning import (
     ActionVerification,
     ConfidenceAssessment,
-    SelfCritique,
 )
 from ..agent.recovery import RecoveryContext
 from ..context.project import ProjectContext
@@ -78,13 +77,6 @@ class RuntimeSafeguardsProtocol(Protocol):
     def record_response(self, content: str) -> None:
         """Record a completed assistant response for safeguard bookkeeping."""
 
-    def detect_text_loop(self, content: str) -> tuple[bool, str]:
-        """Detect repeated assistant-text loops."""
-
-    def detect_loop(self) -> tuple[bool, str]:
-        """Detect repeated tool-action loops."""
-
-
 @dataclass(slots=True)
 class RuntimeLegacyServices:
     """Explicit migration seams for legacy agent-owned behavior."""
@@ -94,10 +86,8 @@ class RuntimeLegacyServices:
     queue_steering_message: Callable[[str], None]
     set_workflow_mode: Callable[[str], None]
     refresh_capability_profile: Callable[[], None]
-    self_critique: Callable[[str, str], Awaitable[SelfCritique]]
     assess_confidence: Callable[[str, dict[str, Any], str], Awaitable[ConfidenceAssessment]]
     verify_action: Callable[[str, dict[str, Any], str, str], Awaitable[ActionVerification]]
-    contains_unexecuted_code: Callable[[str], bool]
     get_recovery_context: Callable[[], RecoveryContext | None]
     set_recovery_context: Callable[[RecoveryContext | None], None]
 

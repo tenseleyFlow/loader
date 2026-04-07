@@ -62,7 +62,6 @@ def build_context(
     *,
     temp_dir: Path,
     use_react: bool,
-    contains_unexecuted_code,
 ) -> RuntimeContext:
     registry = create_default_registry(temp_dir)
     registry.configure_workspace_root(temp_dir)
@@ -92,10 +91,8 @@ def build_context(
             queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,
             refresh_capability_profile=lambda: None,
-            self_critique=lambda response, task: None,  # type: ignore[arg-type]
             assess_confidence=lambda tool_name, tool_args, context: None,  # type: ignore[arg-type]
             verify_action=lambda tool_name, tool_args, result, expected: None,  # type: ignore[arg-type]
-            contains_unexecuted_code=contains_unexecuted_code,
             get_recovery_context=lambda: None,
             set_recovery_context=lambda value: None,
         ),
@@ -106,7 +103,6 @@ def test_response_repairer_uses_context_legacy_raw_fallback(temp_dir: Path) -> N
     context = build_context(
         temp_dir=temp_dir,
         use_react=False,
-        contains_unexecuted_code=lambda content: False,
     )
     repairer = ResponseRepairer(context)
 

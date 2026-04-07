@@ -35,7 +35,7 @@ The repo has moved since the audit snapshot. On this planning branch:
 
 ## Current Sprint 11 status
 
-- `src/loader/agent/loop.py`: `926` lines, down `185` lines from the Sprint 09 baseline of `1111`
+- `src/loader/agent/loop.py`: `818` lines, down `293` lines from the Sprint 09 baseline of `1111`
 - raw-text parsing now runs through `src/loader/agent/parsing.py`; the stale `_extract_raw_json_tool_calls(...)` fallback is gone from `src/loader/agent/loop.py`
 - deleted assistant-puppeting behaviors so far:
   - post-action follow-up suffix
@@ -47,7 +47,7 @@ The repo has moved since the audit snapshot. On this planning branch:
   - text-loop bailout
   - action-loop bailout on successful repeated tool patterns
 - empty-output handling is now one honest retry followed by explicit failure instead of five fake assistant continuation prompts
-- remaining Sprint 11 debt is mostly the legacy-surface subtraction target in `agent/loop.py`, not parser fragmentation or inline bailout decisions
+- remaining Sprint 11 debt is mostly the last `7` lines needed to hit the legacy-surface subtraction target in `agent/loop.py`, not parser fragmentation or inline bailout decisions
 
 ## Phase 1: Validate Before Deleting
 

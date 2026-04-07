@@ -122,10 +122,8 @@ def build_context(temp_dir: Path, session: FakeSession) -> RuntimeContext:
             queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,
             refresh_capability_profile=lambda: None,
-            self_critique=lambda response, task: None,  # type: ignore[arg-type]
             assess_confidence=lambda tool_name, tool_args, context: None,  # type: ignore[arg-type]
             verify_action=lambda tool_name, tool_args, result, expected: None,  # type: ignore[arg-type]
-            contains_unexecuted_code=lambda content: False,
             get_recovery_context=lambda: None,
             set_recovery_context=lambda value: None,
         ),

@@ -34,18 +34,15 @@ from .prompts import build_system_prompt_result
 from .reasoning import (
     CONFIDENCE_PROMPT,
     DECOMPOSITION_PROMPT,
-    SELF_CRITIQUE_PROMPT,
     VERIFICATION_PROMPT,
     ActionVerification,
     ConfidenceAssessment,
     ConfidenceLevel,
-    SelfCritique,
     TaskDecomposition,
     estimate_confidence_quick,
     is_conversational,
     parse_confidence,
     parse_decomposition,
-    parse_self_critique,
     parse_verification,
     quick_verify,
     should_decompose,
@@ -380,10 +377,8 @@ class Agent:
                 queue_steering_message=queue_steering_message,
                 set_workflow_mode=set_workflow_mode,
                 refresh_capability_profile=refresh_capability_profile,
-                self_critique=self._self_critique,
                 assess_confidence=self._assess_confidence,
                 verify_action=self._verify_action,
-                contains_unexecuted_code=self._contains_unexecuted_code,
                 get_recovery_context=get_recovery_context,
                 set_recovery_context=set_recovery_context,
             ),
@@ -453,17 +448,6 @@ class Agent:
             max_tokens=1000,
         )
         return parse_decomposition(response.content, task)
-
-    async def _self_critique(self, response: str, context: str) -> SelfCritique:
-        """Perform self-critique on a response."""
-        prompt = SELF_CRITIQUE_PROMPT.format(response=response, context=context)
-        critique_response = await self.backend.complete(
-            messages=[Message(role=Role.USER, content=prompt)],
-            tools=None,
-            temperature=0.3,
-            max_tokens=500,
-        )
-        return parse_self_critique(critique_response.content, response)
 
     async def _assess_confidence(
         self,
@@ -819,98 +803,6 @@ class Agent:
         runtime = ExploreRuntime(self)
         self.last_turn_summary = await runtime.run_query(user_message, emit)
         return self.last_turn_summary.final_response
-
-    def _contains_unexecuted_code(self, content: str) -> bool:
-        """Detect if response contains code blocks that should be tool calls.
-
-        Returns True if the response looks like chatbot-style advice with
-        code blocks, rather than an actual final answer.
-        """
-        import re
-
-        # Check for raw JSON tool call attempts (model outputting tool calls as text)
-        # This happens when small models try to call tools but output JSON instead
-        json_tool_patterns = [
-            r'\{"name"\s*:\s*"(write|read|edit|bash|glob|grep)"',  # Tool call JSON
-            r'"name"\s*:\s*"(write|read|edit|bash|glob|grep)".*"(?:parameters|arguments)"',
-        ]
-        for pattern in json_tool_patterns:
-            if re.search(pattern, content):
-                return True
-
-        # Check for bracket format: [calls bash tool with: ...] or [USE write tool: ...]
-        bracket_patterns = [
-            r'\[calls?\s+\w+\s+tool\s+with:',
-            r'\[USE\s+\w+\s+tool:',
-        ]
-        for pattern in bracket_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                return True
-
-        # Check for hallucinated/narrated tool uses - model DESCRIBES using tools
-        # but doesn't actually call them (past tense narration)
-        hallucination_patterns = [
-            r'used\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "Used bash tool..."
-            r'used\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "Used the bash tool..."
-            r'using\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "...using the write tool"
-            r'with\s+file_path\s*=\s*[`\'"]',  # "with file_path=`..." (narrated parameter)
-            r'with\s+command\s*[`\'"]',  # "with command `..." (narrated bash)
-            r'i\s+(ran|executed|created|wrote|read)\s+(the\s+)?(command|file)',  # "I ran the command"
-            r'\*\s*used\s+`',  # "* Used `bash`..." (bullet point narration)
-            r'here\s+is\s+what\s+i\s+did:',  # "Here is what I did:"
-        ]
-        for pattern in hallucination_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                return True
-
-        # Look for markdown code blocks
-        code_blocks = re.findall(r'```(\w*)\n(.*?)```', content, re.DOTALL)
-
-        if not code_blocks:
-            return False
-
-        # Check if any code blocks look like commands or file contents
-        action_indicators = [
-            'bash', 'sh', 'shell', 'cmd', 'powershell',  # Shell code
-            'mkdir', 'cd ', 'npm ', 'pip ', 'git ',  # Commands in code
-            'python', 'html', 'css', 'javascript', 'js', 'ts',  # File content
-        ]
-
-        chatbot_phrases = [
-            'you can run', 'you can create', 'you can use',
-            'run this', 'create this', 'save this',
-            'here\'s how', 'here is', 'copy this',
-            'execute this', 'paste this',
-        ]
-
-        # Tutorial/instruction patterns
-        tutorial_patterns = [
-            r'^\s*\d+\.\s+(open|create|navigate|run|execute|make)',  # Numbered instructions
-            r'(first|second|third|next|then),?\s+(open|create|navigate)',  # Sequenced steps
-            r'open your (terminal|command|shell)',  # Tutorial starter
-            r'navigate to (the|your|~/)',  # Navigation instruction
-            r'here\'s how you can (quickly|easily)?',  # How-to preamble
-            r'you can (start by|begin by|follow these)',  # Tutorial start
-        ]
-
-        content_lower = content.lower()
-
-        # Check for tutorial patterns
-        for pattern in tutorial_patterns:
-            if re.search(pattern, content_lower, re.MULTILINE | re.IGNORECASE):
-                return True
-
-        # If chatbot phrases present with code blocks, it's describing not doing
-        for phrase in chatbot_phrases:
-            if phrase in content_lower:
-                return True
-
-        # Check code block languages that suggest action needed
-        for lang, _ in code_blocks:
-            if lang.lower() in action_indicators:
-                return True
-
-        return False
 
     def clear_history(self) -> None:
         """Clear conversation history."""
