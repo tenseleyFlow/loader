@@ -1,10 +1,15 @@
 """Tests for user-visible definition-of-done status formatting."""
 
-from loader.cli.rendering import format_dod_status, format_permission_mode
+from loader.cli.rendering import (
+    format_dod_status,
+    format_permission_mode,
+    format_workflow_mode,
+)
 from loader.runtime.events import AgentEvent
 from loader.ui.status_helpers import (
     format_definition_of_done_parts,
     format_permission_mode_part,
+    format_workflow_mode_part,
 )
 
 
@@ -38,3 +43,8 @@ def test_cli_dod_status_format_includes_pending_and_verification() -> None:
 def test_permission_mode_helpers_use_expected_colors() -> None:
     assert format_permission_mode_part("read-only") == "[green]perm read-only[/green]"
     assert format_permission_mode("danger-full-access") == "[red]danger-full-access[/red]"
+
+
+def test_workflow_mode_helpers_use_expected_colors() -> None:
+    assert format_workflow_mode_part("plan") == "[cyan]flow plan[/cyan]"
+    assert format_workflow_mode("verify") == "[green]verify[/green]"

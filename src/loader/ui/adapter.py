@@ -194,6 +194,23 @@ class DefinitionOfDoneUpdated(Message):
     last_verification_result: str | None = None
 
 
+@dataclass
+class WorkflowModeChanged(Message):
+    """Workflow mode changed."""
+
+    workflow_mode: str
+    content: str
+
+
+@dataclass
+class ArtifactCreated(Message):
+    """A workflow artifact was created."""
+
+    content: str
+    artifact_kind: str
+    artifact_path: str
+
+
 class EventAdapter:
     """Adapts Agent callback events to Textual messages."""
 
@@ -436,5 +453,22 @@ class EventAdapter:
                         dod_status=event.dod_status or "",
                         pending_items_count=event.pending_items_count or 0,
                         last_verification_result=event.last_verification_result,
+                    )
+                )
+
+            case "workflow_mode":
+                self.app.post_message(
+                    WorkflowModeChanged(
+                        workflow_mode=event.workflow_mode or "",
+                        content=event.content,
+                    )
+                )
+
+            case "artifact":
+                self.app.post_message(
+                    ArtifactCreated(
+                        content=event.content,
+                        artifact_kind=event.artifact_kind or "",
+                        artifact_path=event.artifact_path or "",
                     )
                 )

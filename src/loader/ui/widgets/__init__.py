@@ -1,13 +1,14 @@
 """TUI widgets for Loader."""
 
-from .input_area import InputArea
-from .status_line import StatusLine
-from .tool_widget import ToolCallWidget
-from .diff_widget import DiffWidget
-from .streaming import StreamingText
-from .confirmation import ConfirmationModal
-from .model_select import ModelSelectModal
 from .approval_bar import ApprovalBar
+from .confirmation import ConfirmationModal
+from .diff_widget import DiffWidget
+from .input_area import InputArea
+from .model_select import ModelSelectModal
+from .question import QuestionModal
+from .status_line import StatusLine
+from .streaming import StreamingText
+from .tool_widget import ToolCallWidget
 
 __all__ = [
     "ApprovalBar",
@@ -18,4 +19,5 @@ __all__ = [
     "StreamingText",
     "ConfirmationModal",
     "ModelSelectModal",
+    "QuestionModal",
 ]

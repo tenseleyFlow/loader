@@ -15,6 +15,18 @@ def format_permission_mode(mode: str) -> str:
     return f"[{color}]{mode}[/{color}]"
 
 
+def format_workflow_mode(mode: str) -> str:
+    """Format the active workflow mode for Rich CLI surfaces."""
+
+    color = {
+        "clarify": "magenta",
+        "plan": "cyan",
+        "execute": "blue",
+        "verify": "green",
+    }.get(mode, "white")
+    return f"[{color}]{mode}[/{color}]"
+
+
 def format_dod_status(event: AgentEvent) -> str:
     """Format a definition-of-done status event for CLI output."""
     parts = [f"DoD: {event.dod_status or 'unknown'}"]

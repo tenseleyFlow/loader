@@ -3,7 +3,11 @@
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from ..status_helpers import format_definition_of_done_parts, format_permission_mode_part
+from ..status_helpers import (
+    format_definition_of_done_parts,
+    format_permission_mode_part,
+    format_workflow_mode_part,
+)
 
 
 class StatusLine(Static):
@@ -11,6 +15,7 @@ class StatusLine(Static):
 
     model: reactive[str] = reactive("")
     mode: reactive[str] = reactive("Native")
+    workflow_mode: reactive[str] = reactive("")
     permission_mode: reactive[str] = reactive("")
     activity: reactive[str] = reactive("")
     elapsed: reactive[float] = reactive(0.0)
@@ -50,6 +55,9 @@ class StatusLine(Static):
         # Mode
         if self.mode:
             parts.append(f"[dim]{self.mode}[/dim]")
+        workflow_mode = format_workflow_mode_part(self.workflow_mode)
+        if workflow_mode:
+            parts.append(workflow_mode)
         permission_mode = format_permission_mode_part(self.permission_mode)
         if permission_mode:
             parts.append(permission_mode)
@@ -70,6 +78,10 @@ class StatusLine(Static):
 
     def watch_permission_mode(self, permission_mode: str) -> None:
         """React to permission mode changes."""
+        self.refresh()
+
+    def watch_workflow_mode(self, workflow_mode: str) -> None:
+        """React to workflow mode changes."""
         self.refresh()
 
     def watch_dod_status(self, dod_status: str) -> None:
@@ -103,6 +115,10 @@ class StatusLine(Static):
     def update_permission_mode(self, permission_mode: str) -> None:
         """Update the active permission mode."""
         self.permission_mode = permission_mode
+
+    def update_workflow_mode(self, workflow_mode: str) -> None:
+        """Update the active workflow mode."""
+        self.workflow_mode = workflow_mode
 
     def update_definition_of_done(
         self,

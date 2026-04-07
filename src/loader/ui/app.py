@@ -15,6 +15,7 @@ from textual.worker import Worker, get_current_worker
 
 from ..agent.loop import Agent, AgentEvent
 from .adapter import (
+    ArtifactCreated,
     ClearStream,
     CompletionCheckPerformed,
     ConfidenceAssessed,
@@ -35,11 +36,13 @@ from .adapter import (
     ToolCallCompleted,
     ToolCallStarted,
     VerificationPerformed,
+    WorkflowModeChanged,
 )
 from .widgets import (
     ApprovalBar,
     DiffWidget,
     InputArea,
+    QuestionModal,
     StatusLine,
     StreamingText,
     ToolCallWidget,
@@ -65,6 +68,7 @@ class LoaderApp(App):
         agent: Agent,
         model_name: str = "",
         mode: str = "Native",
+        workflow_mode: str = "execute",
         permission_mode: str = "",
         **kwargs,
     ) -> None:
@@ -72,6 +76,7 @@ class LoaderApp(App):
         self.agent = agent
         self.model_name = model_name
         self.mode = mode
+        self.workflow_mode = workflow_mode
         self.permission_mode = permission_mode
         self.adapter = EventAdapter(self)
         self._start_time: float = 0.0
@@ -82,6 +87,7 @@ class LoaderApp(App):
         # Approval bar state
         self._pending_confirmation: asyncio.Future | None = None
         self._pending_command: str = ""
+        self._pending_question: asyncio.Future | None = None
 
     def _debug_log(self, message: str) -> None:
         """Write debug message to log file."""
@@ -107,6 +113,7 @@ class LoaderApp(App):
         status = self.query_one(StatusLine)
         status.model = self.model_name
         status.mode = self.mode
+        status.workflow_mode = self.workflow_mode
         status.permission_mode = self.permission_mode
 
         # Focus input
@@ -355,6 +362,36 @@ class LoaderApp(App):
             except RuntimeError:
                 approval_bar.hide_approval()
 
+    async def _request_user_question(
+        self,
+        question: str,
+        options: list[str] | None,
+    ) -> str:
+        """Show a question modal and wait for the user's answer."""
+
+        loop = asyncio.get_event_loop()
+        self._pending_question = loop.create_future()
+
+        def show_modal() -> None:
+            def on_answer(answer: str | None) -> None:
+                if self._pending_question and not self._pending_question.done():
+                    self._pending_question.set_result(answer or "")
+
+            self.push_screen(QuestionModal(question, options), on_answer)
+
+        try:
+            self.call_from_thread(show_modal)
+        except RuntimeError:
+            show_modal()
+
+        try:
+            result = await asyncio.wait_for(self._pending_question, timeout=900.0)
+            return str(result).strip()
+        except TimeoutError:
+            return ""
+        finally:
+            self._pending_question = None
+
     def on_approval_bar_approved(self, event: ApprovalBar.Approved) -> None:
         """Handle approval from the bar."""
         try:
@@ -414,11 +451,22 @@ class LoaderApp(App):
                 return False
             return await self._request_confirmation(tool_name, message, details)
 
+        async def on_user_question(
+            question: str,
+            options: list[str] | None,
+        ) -> str:
+            """Handle AskUserQuestion requests from the runtime."""
+
+            if worker.is_cancelled:
+                return ""
+            return await self._request_user_question(question, options)
+
         try:
             return await self.agent.run(
                 user_input,
                 on_event=on_event,
                 on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
             )
         except httpx.ReadTimeout:
             self._add_message(
@@ -607,6 +655,22 @@ class LoaderApp(App):
             message.last_verification_result,
         )
 
+    def on_workflow_mode_changed(self, message: WorkflowModeChanged) -> None:
+        """Handle workflow mode changes."""
+
+        self.workflow_mode = message.workflow_mode
+        self.query_one(StatusLine).update_workflow_mode(message.workflow_mode)
+
+    def on_artifact_created(self, message: ArtifactCreated) -> None:
+        """Handle workflow artifact creation."""
+
+        label = message.artifact_kind.replace("_", " ").title()
+        self._add_message(
+            f"[bold cyan]{label}[/bold cyan]\n[dim]{escape(message.artifact_path)}[/dim]\n"
+            f"{escape(message.content)}",
+            "artifact-container",
+        )
+
     def on_steering_received(self, message: SteeringReceived) -> None:
         """Handle steering message being processed by agent."""
         # Don't display anything - auto-steering is internal
@@ -747,6 +811,7 @@ class LoaderApp(App):
         msg_area.remove_children()
         self.agent.clear_history()
         self.query_one(StatusLine).clear_definition_of_done()
+        self.query_one(StatusLine).update_workflow_mode("execute")
         self._add_message("[dim]Conversation cleared.[/dim]")
 
     def action_cancel(self) -> None:

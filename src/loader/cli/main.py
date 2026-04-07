@@ -8,11 +8,15 @@ import httpx
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..runtime.permissions import PermissionMode
-from .rendering import format_dod_status, format_permission_mode
+from .rendering import (
+    format_dod_status,
+    format_permission_mode,
+    format_workflow_mode,
+)
 
 console = Console()
 
@@ -149,7 +153,8 @@ def clean_response(text: str) -> str:
 )
 @click.option("--react", is_flag=True, help="Force ReAct mode (text-based tool calling)")
 @click.option("--no-context", is_flag=True, help="Skip auto-detecting project context")
-@click.option("--plan", is_flag=True, help="Enable auto-planning for complex tasks (off by default)")
+@click.option("--plan", is_flag=True, help="Start the task in plan mode")
+@click.option("--clarify", is_flag=True, help="Start the task in clarify mode")
 @click.option("--no-recover", is_flag=True, help="Disable auto-recovery from tool errors")
 @click.option("--no-tui", is_flag=True, help="Use simple Rich output instead of full TUI")
 @click.option("--ctx", type=int, default=8192, help="Context window size (default: 8192, smaller = faster)")
@@ -171,6 +176,7 @@ def main(
     react: bool,
     no_context: bool,
     plan: bool,
+    clarify: bool,
     no_recover: bool,
     no_tui: bool,
     ctx: int,
@@ -185,7 +191,7 @@ def main(
 ) -> None:
     """Loader - Local AI coding assistant."""
     asyncio.run(_main(
-        model, select_model, backend, yes, permission_mode, react, no_context, plan, no_recover,
+        model, select_model, backend, yes, permission_mode, react, no_context, plan, clarify, no_recover,
         no_tui, ctx, gpu, timeout, decompose, critique, confidence, verify, reason, prompt
     ))
 
@@ -199,6 +205,7 @@ async def _main(
     react: bool,
     no_context: bool,
     plan: bool,
+    clarify: bool,
     no_recover: bool,
     no_tui: bool,
     ctx: int | None,
@@ -215,6 +222,9 @@ async def _main(
     from ..config import get_default_model, get_last_model, set_last_model
     from ..llm.ollama import OllamaBackend
     from ..tools.base import create_default_registry
+
+    if plan and clarify:
+        raise click.UsageError("Choose only one of --plan or --clarify.")
 
     # Handle model selection
     if select_model:
@@ -272,9 +282,10 @@ async def _main(
     config = AgentConfig(
         force_react=react,
         auto_context=not no_context,
-        auto_plan=plan,  # Off by default, enable with --plan
+        auto_plan=False,
         auto_recover=not no_recover,
         permission_mode=PermissionMode.from_str(permission_mode),
+        workflow_mode_override="clarify" if clarify else ("plan" if plan else None),
         reasoning=reasoning_config,
     )
     agent = Agent(backend=llm, registry=registry, config=config)
@@ -299,6 +310,7 @@ async def _main(
         status_parts = [
             f"Model: {model}",
             f"Mode: {mode_str}",
+            f"Workflow: {format_workflow_mode(config.workflow_mode_override or 'execute')}",
             f"Permissions: {format_permission_mode(permission_mode)}",
         ]
         if agent.project_context:
@@ -321,6 +333,7 @@ async def _main(
         status_parts = [
             f"Model: {model}",
             f"Mode: {mode_str}",
+            f"Workflow: {format_workflow_mode(config.workflow_mode_override or 'execute')}",
             f"Permissions: {format_permission_mode(permission_mode)}",
         ]
         if agent.project_context:
@@ -343,6 +356,7 @@ async def _main(
             agent=agent,
             model_name=model,
             mode=mode_str,
+            workflow_mode=config.workflow_mode_override or "execute",
             permission_mode=permission_mode,
         )
         await app.run_async()
@@ -386,6 +400,18 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
                 console.print()
         elif event.type == "plan":
             console.print(Panel(event.content, title="[bold]Plan[/bold]", border_style="blue"))
+        elif event.type == "workflow_mode":
+            console.print(
+                f"[dim]Workflow: {format_workflow_mode(event.workflow_mode or 'execute')}[/dim]"
+            )
+        elif event.type == "artifact":
+            console.print(
+                Panel(
+                    f"{event.content}\n[dim]{event.artifact_path}[/dim]",
+                    title=f"[bold cyan]{event.artifact_kind or 'artifact'}[/bold cyan]",
+                    border_style="cyan",
+                )
+            )
         elif event.type == "step":
             console.print(f"\n[bold yellow]{event.step_info}[/bold yellow]")
         elif event.type == "tool_call":
@@ -418,7 +444,11 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
             pass  # We'll print the full response at the end
 
     try:
-        response = await agent.run(prompt, on_event=on_event)
+        response = await agent.run(
+            prompt,
+            on_event=on_event,
+            on_user_question=_ask_user_question_cli,
+        )
         if not streamed_response:
             console.print(Markdown(clean_response(response)))
     except httpx.ReadTimeout:
@@ -432,7 +462,11 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
         if Confirm.ask("Proceed?"):
             agent.registry.skip_confirmation = True
             streamed_response = False  # Reset for continuation
-            response = await agent.run("Continue with the previous action.", on_event=on_event)
+            response = await agent.run(
+                "Continue with the previous action.",
+                on_event=on_event,
+                on_user_question=_ask_user_question_cli,
+            )
             if not streamed_response:
                 console.print(Markdown(clean_response(response)))
             agent.registry.skip_confirmation = skip_confirmation
@@ -507,6 +541,18 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                     console.print(f" [dim]({elapsed:.1f}s)[/dim]")
                     thinking_start = None
                 console.print(Panel(event.content, title="[bold]Plan[/bold]", border_style="blue"))
+            elif event.type == "workflow_mode":
+                console.print(
+                    f"\n[dim]Workflow: {format_workflow_mode(event.workflow_mode or 'execute')}[/dim]"
+                )
+            elif event.type == "artifact":
+                console.print(
+                    Panel(
+                        f"{event.content}\n[dim]{event.artifact_path}[/dim]",
+                        title=f"[bold cyan]{event.artifact_kind or 'artifact'}[/bold cyan]",
+                        border_style="cyan",
+                    )
+                )
             elif event.type == "step":
                 console.print(f"\n[bold yellow]{event.step_info}[/bold yellow]")
             elif event.type == "tool_call":
@@ -541,7 +587,11 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                 console.print(Panel(event.content, title="[red]Error[/red]", border_style="red"))
 
         try:
-            response = await agent.run(user_input, on_event=on_event)
+            response = await agent.run(
+                user_input,
+                on_event=on_event,
+                on_user_question=_ask_user_question_cli,
+            )
             console.print()
             # Only print markdown response if we didn't stream it
             if not streamed_response:
@@ -562,7 +612,11 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                 agent.registry.skip_confirmation = True
                 streamed_response = False  # Reset for continuation
                 try:
-                    response = await agent.run("Continue with the previous action.", on_event=on_event)
+                    response = await agent.run(
+                        "Continue with the previous action.",
+                        on_event=on_event,
+                        on_user_question=_ask_user_question_cli,
+                    )
                     console.print()
                     if not streamed_response:
                         console.print(Markdown(clean_response(response)))
@@ -571,6 +625,30 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                     agent.registry.skip_confirmation = skip_confirmation
             else:
                 console.print("[red]Aborted.[/red]\n")
+
+
+async def _ask_user_question_cli(
+    question: str,
+    options: list[str] | None,
+) -> str:
+    """Prompt the CLI user for an AskUserQuestion response."""
+
+    console.print()
+    console.print(
+        Panel(question, title="[bold cyan]Question[/bold cyan]", border_style="cyan")
+    )
+    if options:
+        for index, option in enumerate(options, start=1):
+            console.print(f"  [cyan]{index}.[/cyan] {option}")
+        answer = await asyncio.to_thread(Prompt.ask, "Answer", default="1")
+        answer = answer.strip()
+        if answer.isdigit():
+            selected = int(answer) - 1
+            if 0 <= selected < len(options):
+                return options[selected]
+        return answer
+
+    return await asyncio.to_thread(Prompt.ask, "Answer")
 
 
 if __name__ == "__main__":

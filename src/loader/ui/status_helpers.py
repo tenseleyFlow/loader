@@ -45,3 +45,18 @@ def format_permission_mode_part(mode: str) -> str | None:
         "danger-full-access": "red",
     }.get(mode, "white")
     return f"[{color}]perm {mode}[/{color}]"
+
+
+def format_workflow_mode_part(mode: str) -> str | None:
+    """Format the active workflow mode for the status line."""
+
+    if not mode:
+        return None
+
+    color = {
+        "clarify": "magenta",
+        "plan": "cyan",
+        "execute": "blue",
+        "verify": "green",
+    }.get(mode, "white")
+    return f"[{color}]flow {mode}[/{color}]"
