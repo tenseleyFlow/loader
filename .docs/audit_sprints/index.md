@@ -4,7 +4,7 @@ These sprints translate the 2026-04-07 audit in `.docs/audit.txt` into a post-Sp
 
 The repo has moved since the audit snapshot. On this planning branch:
 
-- `uv run pytest -q` is green with `184 passed`
+- `uv run pytest -q` is green with `185 passed`
 - Sprint 08's prompt builder, turn-phase tracking, and permission inspection surfaces are already present on `HEAD`
 - the central debt still remains:
   - `runtime/*` still reaches into `Agent` directly instead of working through a typed runtime context
