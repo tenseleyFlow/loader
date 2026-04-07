@@ -28,6 +28,18 @@ def non_streaming_clarify_config() -> AgentConfig:
     )
 
 
+def non_streaming_pressure_clarify_config() -> AgentConfig:
+    """Deterministic config that allows a third clarify round for pressure passes."""
+
+    return AgentConfig(
+        auto_context=False,
+        stream=False,
+        max_iterations=10,
+        workflow_mode_override="clarify",
+        clarify_max_rounds=3,
+    )
+
+
 def workflow_modes(run) -> list[str]:
     """Return emitted workflow modes in order."""
 
@@ -422,6 +434,7 @@ async def test_second_round_fallback_question_uses_workspace_grounding(
         on_user_question=answer,
     )
 
+    round_two_prompt = backend.invocations[2].messages[-1].content
     assert len(asked_questions) == 2
     assert "src/loader/runtime/" in asked_questions[1]
     assert "currently contains" in asked_questions[1]
@@ -429,7 +442,7 @@ async def test_second_round_fallback_question_uses_workspace_grounding(
         "WorkflowLaneRunner" in asked_questions[1]
         or "Intent-aware clarify strategy" in asked_questions[1]
     )
-    assert "scoped" in asked_questions[1].lower()
+    assert "Focus slot: likely touchpoints" in round_two_prompt
     assert [
         event.tool_name
         for event in run.events
@@ -544,6 +557,375 @@ async def test_second_round_non_goal_prompt_uses_slot_aware_repo_facts(
     assert len(asked_questions) == 2
     assert "clarify_strategy.py" in asked_questions[1]
     assert "unchanged" in asked_questions[1].lower()
+
+
+@pytest.mark.asyncio
+async def test_third_round_example_pressure_question_uses_counterexample_surface(
+    temp_dir: Path,
+) -> None:
+    seed_runtime_workspace(temp_dir)
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before I proceed.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": "What part should change most?",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(content=""),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep the clarify workflow more grounded.",
+                        "",
+                        "## In Scope",
+                        "- Stay inside workflow lane handling.",
+                        "",
+                        "## Non Goals",
+                        "- Do not broaden into the CLI surface.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Escalate before changing unrelated modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Assumptions",
+                        "- The user wants a narrow runtime behavior fix.",
+                        "",
+                        "## Acceptance Criteria",
+                        "- workflow_lanes.py remains the primary touchpoint.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="I can move forward now."),
+            CompletionResponse(content="Done."),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    asked_questions: list[str] = []
+    answers = iter(
+        [
+            "Make it nicer.",
+            "Still make the runtime nicer.",
+            (
+                "Keep workflow_lanes.py as the concrete touchpoint and leave "
+                "clarify_strategy.py alone."
+            ),
+        ]
+    )
+
+    async def answer(question: str, _: list[str] | None) -> str:
+        asked_questions.append(question)
+        return next(answers)
+
+    await run_scenario(
+        "Tighten Loader runtime clarify behavior.",
+        backend,
+        config=non_streaming_pressure_clarify_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    round_three_prompt = backend.invocations[4].messages[-1].content
+    assert "Focus slot: likely touchpoints" in round_three_prompt
+    assert "Pressure pass: example" in round_three_prompt
+    assert "Relevant repo facts:" in round_three_prompt
+    assert "clarify_strategy.py" in round_three_prompt
+    assert len(asked_questions) == 3
+    assert "counterexample surface" in asked_questions[2]
+    assert "clarify_strategy.py" in asked_questions[2]
+
+
+@pytest.mark.asyncio
+async def test_third_round_tradeoff_pressure_question_uses_nearby_repo_fact(
+    temp_dir: Path,
+) -> None:
+    seed_runtime_workspace(temp_dir)
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before I proceed.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": "Which runtime file should I focus on first?",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep clarify behavior grounded in brownfield repo facts.",
+                        "",
+                        "## In Scope",
+                        "- Focus on runtime lane handling first.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Acceptance Criteria",
+                        "- The next round clarifies what stays unchanged.",
+                    ]
+                )
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep clarify behavior grounded in brownfield repo facts.",
+                        "",
+                        "## In Scope",
+                        "- Focus on runtime lane handling first.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Acceptance Criteria",
+                        "- The next round still needs a clearer stop boundary.",
+                    ]
+                )
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep clarify behavior grounded in brownfield repo facts.",
+                        "",
+                        "## In Scope",
+                        "- Focus on runtime lane handling first.",
+                        "",
+                        "## Non Goals",
+                        "- Leave clarify strategy behavior unchanged for now.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Stop and confirm before broadening beyond runtime lanes.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Acceptance Criteria",
+                        "- workflow_lanes.py remains the primary touchpoint.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="I can move forward now."),
+            CompletionResponse(content="Done."),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    asked_questions: list[str] = []
+    answers = iter(
+        [
+            "Start with src/loader/runtime/workflow_lanes.py.",
+            "Scope it to the runtime lane code.",
+            "Keep clarify_strategy.py unchanged while we tighten the workflow lanes.",
+        ]
+    )
+
+    async def answer(question: str, _: list[str] | None) -> str:
+        asked_questions.append(question)
+        return next(answers)
+
+    await run_scenario(
+        "Tighten Loader runtime clarify behavior.",
+        backend,
+        config=non_streaming_pressure_clarify_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    round_three_prompt = backend.invocations[4].messages[-1].content
+    assert "Focus slot: non-goals" in round_three_prompt
+    assert "Pressure pass: tradeoff" in round_three_prompt
+    assert "Relevant repo facts:" in round_three_prompt
+    assert "clarify_strategy.py" in round_three_prompt
+    assert len(asked_questions) == 3
+    assert "broader edits would be easier" in asked_questions[2]
+    assert "clarify_strategy.py" in asked_questions[2]
+
+
+@pytest.mark.asyncio
+async def test_third_round_assumption_question_uses_nearby_risk_fact(
+    temp_dir: Path,
+) -> None:
+    seed_runtime_workspace(temp_dir)
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before I proceed.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": "What result matters most for this runtime pass?",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Make clarify follow-up feel more grounded.",
+                        "",
+                        "## In Scope",
+                        "- Focus on one runtime seam at a time.",
+                        "",
+                        "## Non Goals",
+                        "- Do not broaden into unrelated CLI changes.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Stop and confirm before touching unrelated modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Acceptance Criteria",
+                        "- The next clarify round identifies the right touchpoint cleanly.",
+                    ]
+                )
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Make clarify follow-up feel more grounded.",
+                        "",
+                        "## In Scope",
+                        "- Focus on one runtime seam at a time.",
+                        "",
+                        "## Non Goals",
+                        "- Do not broaden into unrelated CLI changes.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Stop and confirm before touching unrelated modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Acceptance Criteria",
+                        "- The next clarify round still needs a clearer touchpoint call.",
+                    ]
+                )
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Make clarify follow-up feel more grounded.",
+                        "",
+                        "## In Scope",
+                        "- Focus on one runtime seam at a time.",
+                        "",
+                        "## Non Goals",
+                        "- Do not broaden into unrelated CLI changes.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Stop and confirm before touching unrelated modules.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Acceptance Criteria",
+                        "- workflow_lanes.py remains the primary touchpoint.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="I can move forward now."),
+            CompletionResponse(content="Done."),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    asked_questions: list[str] = []
+    answers = iter(
+        [
+            "Anchor the next clarify round in brownfield runtime evidence.",
+            "The runtime lane coordinator is closest.",
+            (
+                "Treat clarify_strategy.py as the risky nearby seam and stay "
+                "anchored in workflow_lanes.py."
+            ),
+        ]
+    )
+
+    async def answer(question: str, _: list[str] | None) -> str:
+        asked_questions.append(question)
+        return next(answers)
+
+    await run_scenario(
+        "Tighten Loader runtime clarify behavior.",
+        backend,
+        config=non_streaming_pressure_clarify_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    round_three_prompt = backend.invocations[4].messages[-1].content
+    assert "Focus slot: likely touchpoints" in round_three_prompt
+    assert "Pressure pass: assumption" in round_three_prompt
+    assert "Relevant repo facts:" in round_three_prompt
+    assert "clarify_strategy.py" in round_three_prompt
+    assert len(asked_questions) == 3
+    assert "risky" in asked_questions[2].lower()
+    assert "clarify_strategy.py" in asked_questions[2]
 
 
 @pytest.mark.asyncio
