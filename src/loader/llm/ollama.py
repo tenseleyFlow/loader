@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from ..agent.parsing import parse_tool_calls
 from ..runtime.capabilities import CapabilityProfile, resolve_capability_profile
 from .base import (
     CompletionResponse,
@@ -223,45 +224,32 @@ class OllamaBackend(LLMBackend):
             })
         return formatted
 
-    def _parse_tool_calls(self, response_text: str) -> tuple[str, list[ToolCall]]:
-        """Parse tool calls from response text.
+    @staticmethod
+    def _allowed_tool_names(tools: list[dict[str, Any]] | None) -> list[str] | None:
+        """Return the tool names currently exposed to the model, if any."""
 
-        Models may format tool calls differently. We handle:
-        1. JSON tool call blocks
-        2. XML-style <tool_call> blocks
-        3. Plain text with no tool calls
-        """
-        tool_calls = []
-        content = response_text
+        if not tools:
+            return None
+        names = [
+            str(tool.get("name", "")).strip()
+            for tool in tools
+            if isinstance(tool, dict) and tool.get("name")
+        ]
+        return names or None
 
-        import re
+    def _parse_tool_calls(
+        self,
+        response_text: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, list[ToolCall]]:
+        """Parse text tool calls through the shared parser."""
 
-        # Pattern for tool call JSON blocks - handle both "arguments" and "parameters"
-        json_pattern = r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"(?:arguments|parameters)"\s*:\s*(\{[^{}]*\})[^{}]*\}'
-        matches = re.findall(json_pattern, response_text, re.DOTALL)
-
-        for i, (name, args_str) in enumerate(matches):
-            try:
-                args = json.loads(args_str)
-                tool_calls.append(ToolCall(
-                    id=f"call_{i}",
-                    name=name,
-                    arguments=args,
-                ))
-            except json.JSONDecodeError:
-                pass
-
-        # Remove tool call JSON from content
-        if tool_calls:
-            content = re.sub(json_pattern, "", content)
-
-        # Also remove any <tool_call> tags
-        content = re.sub(r"</?tool_call>", "", content)
-
-        # Clean up whitespace
-        content = re.sub(r"\n{3,}", "\n\n", content)
-
-        return content.strip(), tool_calls
+        parsed = parse_tool_calls(
+            response_text,
+            allowed_tool_names=self._allowed_tool_names(tools),
+        )
+        return parsed.content, parsed.tool_calls
 
     async def complete(
         self,
@@ -331,7 +319,7 @@ class OllamaBackend(LLMBackend):
                 ))
         else:
             # Try to parse tool calls from text
-            content, tool_calls = self._parse_tool_calls(content)
+            content, tool_calls = self._parse_tool_calls(content, tools=tools)
 
         return CompletionResponse(
             content=content,
@@ -387,7 +375,7 @@ class OllamaBackend(LLMBackend):
             else:
                 response.raise_for_status()
                 # Stream the response
-                async for chunk in self._stream_response(response):
+                async for chunk in self._stream_response(response, tools=tools):
                     yield chunk
                 return
 
@@ -399,7 +387,7 @@ class OllamaBackend(LLMBackend):
             json=payload,
         ) as response:
             response.raise_for_status()
-            async for chunk in self._stream_response(response):
+            async for chunk in self._stream_response(response, tools=tools):
                 yield chunk
 
     def _debug_log(self, message: str) -> None:
@@ -410,7 +398,12 @@ class OllamaBackend(LLMBackend):
         except Exception:
             pass
 
-    async def _stream_response(self, response) -> AsyncIterator[StreamChunk]:
+    async def _stream_response(
+        self,
+        response,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
         """Internal helper to stream response chunks."""
 
         full_content = ""
@@ -465,7 +458,10 @@ class OllamaBackend(LLMBackend):
                     else:
                         self._debug_log(f"is_done: parsing tool calls from text (len={len(full_content)})")
                         self._debug_log(f"is_done: full_content = {repr(full_content[:500])}")
-                        clean_content, tool_calls = self._parse_tool_calls(full_content)
+                        clean_content, tool_calls = self._parse_tool_calls(
+                            full_content,
+                            tools=tools,
+                        )
                         self._debug_log(f"is_done: parsed {len(tool_calls)} tool calls")
                         display_content = clean_content
 
