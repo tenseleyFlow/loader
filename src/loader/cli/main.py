@@ -17,13 +17,17 @@ from ..runtime.inspection import (
     DoctorReport,
     PermissionCheckResult,
     PermissionSnapshot,
+    PromptDiffSnapshot,
     PromptPreview,
     StatusSnapshot,
+    WorkflowArtifactDiffSnapshot,
     WorkflowTimelineSnapshot,
     collect_doctor_report,
     collect_permission_snapshot,
+    collect_prompt_diff,
     collect_prompt_preview,
     collect_status_snapshot,
+    collect_workflow_artifact_diffs,
     collect_workflow_timeline,
     dry_run_permission_check,
     list_session_summaries,
@@ -953,6 +957,15 @@ def prompt_show_cli(
     )
 
 
+@prompt_cli.command("diff")
+@click.option("--full", is_flag=True, help="Show the full unified prompt diff")
+@click.argument("session_id", required=False)
+def prompt_diff_cli(full: bool, session_id: str | None) -> None:
+    """Compare the latest persisted prompt contracts."""
+
+    _prompt_diff_main(session_id=session_id, full=full)
+
+
 @workflow_cli.command("show")
 @click.option(
     "--mode",
@@ -984,11 +997,15 @@ def prompt_show_cli(
     show_default=True,
     help="Show only the most recent matching entries",
 )
+@click.option("--diff", "show_diff", is_flag=True, help="Show persisted artifact diffs")
+@click.option("--full-diff", is_flag=True, help="Show the full unified artifact diffs")
 @click.argument("session_id", required=False)
 def workflow_show_cli(
     mode: str | None,
     kind: str | None,
     limit: int,
+    show_diff: bool,
+    full_diff: bool,
     session_id: str | None,
 ) -> None:
     """Show the persisted workflow timeline for the latest or named session."""
@@ -998,6 +1015,8 @@ def workflow_show_cli(
         mode=mode,
         kind=kind,
         limit=limit,
+        show_diff=show_diff,
+        full_diff=full_diff,
     )
 
 
@@ -1049,6 +1068,7 @@ def _loader_help_text() -> str:
             "  loader status              Show persisted runtime status",
             "  loader explore <prompt>    Run a fast read-only lookup query",
             "  loader prompt show         Preview the current prompt contract",
+            "  loader prompt diff         Compare the latest persisted prompt contracts",
             "  loader permissions show    Display normalized permission rules",
             "  loader permissions check   Dry-run one permission decision",
             "  loader workflow show       Show the persisted workflow timeline",
@@ -1079,6 +1099,7 @@ def _prompt_help_text() -> str:
             "",
             "Commands:",
             "  show [task]  Render the current prompt contract without a model call",
+            "  diff [id]    Compare the latest persisted prompt contracts",
         ]
     )
 
@@ -1090,6 +1111,7 @@ def _workflow_help_text() -> str:
             "",
             "Commands:",
             "  show [id]  Show the persisted workflow timeline with optional filters",
+            "            Add --diff to compare the latest persisted artifacts",
         ]
     )
 
@@ -1518,6 +1540,8 @@ def _workflow_show_main(
     mode: str | None,
     kind: str | None,
     limit: int | None,
+    show_diff: bool,
+    full_diff: bool,
 ) -> None:
     try:
         snapshot: WorkflowTimelineSnapshot = collect_workflow_timeline(
@@ -1570,6 +1594,13 @@ def _workflow_show_main(
             snapshot.workflow_ledger,
             title="[bold blue]Workflow Ledger[/bold blue]",
         )
+    if show_diff:
+        console.print()
+        artifact_diffs = collect_workflow_artifact_diffs(session_id=session_id)
+        _print_workflow_artifact_diffs(
+            artifact_diffs,
+            show_full=full_diff,
+        )
     console.print()
     _print_workflow_timeline_entries(
         snapshot.entries,
@@ -1598,6 +1629,24 @@ def _prompt_show_main(
         force_react=react,
     )
     _print_prompt_preview(preview)
+
+
+def _prompt_diff_main(
+    *,
+    session_id: str | None,
+    full: bool,
+) -> None:
+    try:
+        snapshot: PromptDiffSnapshot = collect_prompt_diff(session_id=session_id)
+    except FileNotFoundError:
+        console.print(f"[red]Session not found:[/red] {session_id}")
+        raise SystemExit(1) from None
+
+    if snapshot.session_id is None or snapshot.current is None:
+        console.print("[yellow]No persisted prompt history found.[/yellow]")
+        return
+
+    _print_prompt_diff(snapshot, show_full=full)
 
 
 def _permissions_check_main(
@@ -1785,6 +1834,104 @@ def _print_prompt_preview(preview: PromptPreview) -> None:
             border_style="blue",
         )
     )
+
+
+def _print_prompt_diff(snapshot: PromptDiffSnapshot, *, show_full: bool) -> None:
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Workspace", str(snapshot.project_root))
+    table.add_row("Session", snapshot.session_id or "none")
+    table.add_row("Task", snapshot.current_task or "none")
+    table.add_row(
+        "Current",
+        _format_prompt_snapshot(snapshot.current) if snapshot.current else "none",
+    )
+    table.add_row(
+        "Previous",
+        _format_prompt_snapshot(snapshot.previous) if snapshot.previous else "none",
+    )
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Prompt Diff[/bold blue]",
+            border_style="blue",
+        )
+    )
+
+    if snapshot.highlights:
+        console.print()
+        _print_workflow_highlights(
+            snapshot.highlights,
+            title="[bold blue]Prompt Changes[/bold blue]",
+        )
+
+    if show_full:
+        body = snapshot.unified_diff or "[dim]No prompt body diff available.[/dim]"
+        console.print()
+        console.print(
+            Panel(
+                body,
+                title="[bold blue]Prompt Unified Diff[/bold blue]",
+                border_style="blue",
+            )
+        )
+
+
+def _format_prompt_snapshot(snapshot) -> str:
+    parts = [snapshot.workflow_mode, snapshot.permission_mode, snapshot.prompt_format]
+    if snapshot.prompt_sections:
+        parts.append(f"sections={len(snapshot.prompt_sections)}")
+    return " / ".join(parts)
+
+
+def _print_workflow_artifact_diffs(
+    snapshot: WorkflowArtifactDiffSnapshot,
+    *,
+    show_full: bool,
+) -> None:
+    if not snapshot.entries:
+        console.print("[dim]No persisted artifact diffs are available for this session.[/dim]")
+        return
+
+    if snapshot.highlights:
+        _print_workflow_highlights(
+            snapshot.highlights,
+            title="[bold blue]Artifact Changes[/bold blue]",
+        )
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Kind", style="white")
+    table.add_column("Current", style="white")
+    table.add_column("Previous", style="white")
+    table.add_column("Summary", style="dim")
+
+    for entry in snapshot.entries:
+        table.add_row(
+            entry.kind,
+            entry.current_path.name,
+            entry.previous_path.name if entry.previous_path else "none",
+            "; ".join(entry.highlights[:2]) or "none",
+        )
+
+    console.print(
+        Panel(
+            table,
+            title="[bold blue]Artifact Diff Summary[/bold blue]",
+            border_style="blue",
+        )
+    )
+
+    if show_full:
+        for entry in snapshot.entries:
+            console.print()
+            console.print(
+                Panel(
+                    entry.unified_diff or "[dim]No diff available.[/dim]",
+                    title=f"[bold blue]{entry.kind} Diff[/bold blue]",
+                    border_style="blue",
+                )
+            )
 
 
 def _print_workflow_timeline_entries(

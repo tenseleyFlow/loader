@@ -15,13 +15,16 @@ from loader.runtime.inspection import (
     CheckStatus,
     collect_doctor_report,
     collect_permission_snapshot,
+    collect_prompt_diff,
     collect_prompt_preview,
     collect_status_snapshot,
+    collect_workflow_artifact_diffs,
     collect_workflow_timeline,
     dry_run_permission_check,
     list_session_summaries,
     load_session_detail,
 )
+from loader.runtime.prompt_history import PromptSnapshot
 from loader.runtime.session import SessionSnapshot, SessionStore
 from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
 from loader.runtime.workflow_policy import WorkflowTimelineEntry
@@ -136,6 +139,31 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+        prompt_history=[
+            PromptSnapshot(
+                timestamp="2026-04-06T12:04:00Z",
+                workflow_mode="verify",
+                permission_mode="prompt",
+                current_task="Fix the failing tests",
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+                content="# Introduction\nverify parser fix\n",
+            ),
+            PromptSnapshot(
+                timestamp="2026-04-06T12:05:00Z",
+                workflow_mode="execute",
+                permission_mode="prompt",
+                current_task="Fix the failing tests",
+                prompt_format="native",
+                prompt_sections=[
+                    "Runtime Config",
+                    "Workflow Context",
+                    "Mode Guidance",
+                    "Project Context",
+                ],
+                content="# Introduction\nexecute parser fix\n# Project Context\npython\n",
+            ),
+        ],
         workflow_reason_code="verification_failed_reentry",
         workflow_reason_summary="verification failed; returning to execute for fixes",
         workflow_decision_kind="reentry",
@@ -153,6 +181,40 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
 
 
 def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
+    slug = "tighten-loader-workflow-behavior"
+    brief_old = temp_dir / ".loader" / "briefs" / f"20260406T150000Z-{slug}.md"
+    brief_new = temp_dir / ".loader" / "briefs" / f"20260406T150200Z-{slug}.md"
+    brief_old.write_text(
+        "# Task Brief\n\n## Likely Touchpoints\n- planned.txt\n\n## Acceptance Criteria\n- planned.txt exists.\n"
+    )
+    brief_new.write_text(
+        "# Task Brief\n\n## Likely Touchpoints\n- notes.txt\n\n## Acceptance Criteria\n- notes.txt exists.\n"
+    )
+    plan_old_root = temp_dir / ".loader" / "plans" / f"20260406T150100Z-{slug}"
+    plan_new_root = temp_dir / ".loader" / "plans" / f"20260406T150300Z-{slug}"
+    plan_old_root.mkdir(parents=True, exist_ok=True)
+    plan_new_root.mkdir(parents=True, exist_ok=True)
+    (plan_old_root / "implementation.md").write_text(
+        "# Implementation Plan\n\n## File Changes\n- Create planned.txt.\n"
+    )
+    (plan_old_root / "verification.md").write_text(
+        "# Verification Plan\n\n## Acceptance Criteria\n- planned.txt exists.\n"
+    )
+    (plan_new_root / "implementation.md").write_text(
+        "# Implementation Plan\n\n## File Changes\n- Keep notes.txt as the runtime artifact.\n"
+    )
+    (plan_new_root / "verification.md").write_text(
+        "# Verification Plan\n\n## Acceptance Criteria\n- notes.txt exists.\n"
+    )
+
+    dod = create_definition_of_done("Tighten Loader workflow behavior")
+    dod.status = "fixing"
+    dod.clarify_brief = str(brief_new)
+    dod.implementation_plan = str(plan_new_root / "implementation.md")
+    dod.verification_plan = str(plan_new_root / "verification.md")
+    dod.acceptance_criteria = ["notes.txt exists in the workspace root."]
+    dod_path = DefinitionOfDoneStore(temp_dir).save(dod)
+
     snapshot = SessionSnapshot(
         session_id="20260406T150000Z-feedface",
         created_at="2026-04-06T15:00:00Z",
@@ -161,10 +223,38 @@ def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
             Message(role=Role.USER, content="Tighten Loader workflow behavior"),
             Message(role=Role.ASSISTANT, content="I refreshed the workflow contract."),
         ],
+        active_dod_path=str(dod_path),
         current_task="Tighten Loader workflow behavior",
         workflow_mode="execute",
         permission_mode="prompt",
         permission_prompting_enabled=True,
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+        prompt_history=[
+            PromptSnapshot(
+                timestamp="2026-04-06T15:02:00Z",
+                workflow_mode="plan",
+                permission_mode="prompt",
+                current_task="Tighten Loader workflow behavior",
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+                content="# Introduction\nplan around planned.txt\n",
+            ),
+            PromptSnapshot(
+                timestamp="2026-04-06T15:04:00Z",
+                workflow_mode="execute",
+                permission_mode="prompt",
+                current_task="Tighten Loader workflow behavior",
+                prompt_format="native",
+                prompt_sections=[
+                    "Runtime Config",
+                    "Workflow Context",
+                    "Mode Guidance",
+                    "Project Context",
+                ],
+                content="# Introduction\nexecute around notes.txt\n# Project Context\npython\n",
+            ),
+        ],
         workflow_reason_code="full_replan_completed",
         workflow_reason_summary="clarify and plan artifacts refreshed; returning to execute",
         workflow_decision_kind="handoff",
@@ -200,6 +290,11 @@ def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
                     ),
                 ],
                 signal_summary=["recent_reentry=1", "stale_plan=true"],
+                artifact_paths=[
+                    str(brief_new),
+                    str(plan_new_root / "implementation.md"),
+                    str(plan_new_root / "verification.md"),
+                ],
             ),
             WorkflowTimelineEntry(
                 timestamp="2026-04-06T15:03:00Z",
@@ -459,6 +554,43 @@ def test_collect_workflow_timeline_supports_filters_and_highlights(
     )
 
 
+def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id, _ = _persist_session_with_dod(temp_dir)
+
+    diff = collect_prompt_diff(project_root=temp_dir)
+
+    assert diff.session_id == session_id
+    assert diff.previous is not None
+    assert diff.current is not None
+    assert diff.current.workflow_mode == "execute"
+    assert diff.previous.workflow_mode == "verify"
+    assert any("Workflow mode changed:" in item for item in diff.highlights)
+    assert "---" in diff.unified_diff
+    assert "execute parser fix" in diff.unified_diff
+
+
+def test_collect_workflow_artifact_diffs_reads_versioned_artifacts(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_rich_workflow(temp_dir)
+
+    snapshot = collect_workflow_artifact_diffs(project_root=temp_dir)
+
+    assert snapshot.session_id == session_id
+    assert len(snapshot.entries) == 3
+    assert {entry.kind for entry in snapshot.entries} == {
+        "clarify_brief",
+        "implementation_plan",
+        "verification_plan",
+    }
+    assert any("notes.txt" in entry.unified_diff for entry in snapshot.entries)
+    assert snapshot.highlights
+
+
 def test_status_and_session_commands_render_persisted_state(
     temp_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -575,6 +707,31 @@ def test_workflow_show_command_supports_filters_and_highlights(
     assert "gates=non_goals,decision_boundaries" in clarify_result.output
 
 
+def test_workflow_show_can_render_artifact_diffs(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_rich_workflow(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(
+        cli_main_module.workflow_cli,
+        ["show", "--diff", "--full-diff"],
+    )
+
+    assert result.exit_code == 0
+    assert "Artifact Changes" in result.output
+    assert "Artifact Diff Summary" in result.output
+    assert "clarify_brief" in result.output
+    assert "implementation_plan" in result.output
+    assert "verification_plan" in result.output
+    assert "notes.txt" in result.output
+
+
 def test_collect_prompt_preview_uses_persisted_runtime_state(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
     _ensure_loader_dirs(temp_dir)
@@ -632,6 +789,27 @@ def test_prompt_show_command_renders_preview_without_model_call(
     assert preview.prompt_format in result.output
     assert "Workflow Context" in result.output
     assert "Execute Mode" in result.output
+
+
+def test_prompt_diff_command_renders_persisted_prompt_changes(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_dod(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(cli_main_module.prompt_cli, ["diff", "--full"])
+
+    assert result.exit_code == 0
+    assert "Prompt Diff" in result.output
+    assert "Prompt Changes" in result.output
+    assert "Workflow mode changed:" in result.output
+    assert "Prompt Unified Diff" in result.output
+    assert "execute parser fix" in result.output
 
 
 def test_permission_snapshot_and_dry_run_reflect_rules(temp_dir: Path) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from .permissions import (
     permission_path_hint,
     summarize_permission_input,
 )
+from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
 from .session import SessionSnapshot, SessionStore
 from .workflow_ledger import WorkflowLedger, workflow_ledger_highlights
@@ -253,6 +255,41 @@ class WorkflowTimelineSnapshot:
     highlights: list[str] = field(default_factory=list)
     entries: list[WorkflowTimelineEntry] = field(default_factory=list)
     workflow_ledger: WorkflowLedger = field(default_factory=WorkflowLedger)
+
+
+@dataclass(slots=True)
+class PromptDiffSnapshot:
+    """Operator-facing diff between persisted prompt contracts."""
+
+    project_root: Path
+    session_id: str | None
+    current_task: str | None
+    current: PromptSnapshot | None
+    previous: PromptSnapshot | None
+    highlights: list[str] = field(default_factory=list)
+    unified_diff: str = ""
+
+
+@dataclass(slots=True)
+class ArtifactDiffEntry:
+    """One persisted artifact diff entry."""
+
+    kind: str
+    current_path: Path
+    previous_path: Path | None
+    highlights: list[str] = field(default_factory=list)
+    unified_diff: str = ""
+
+
+@dataclass(slots=True)
+class WorkflowArtifactDiffSnapshot:
+    """Operator-facing diff across persisted workflow artifacts."""
+
+    project_root: Path
+    session_id: str | None
+    current_task: str | None
+    entries: list[ArtifactDiffEntry] = field(default_factory=list)
+    highlights: list[str] = field(default_factory=list)
 
 
 def capability_summary(profile: CapabilityProfile) -> str:
@@ -597,6 +634,121 @@ def collect_prompt_preview(
     )
 
 
+def collect_prompt_diff(
+    session_id: str | None = None,
+    *,
+    project_root: Path | str | None = None,
+) -> PromptDiffSnapshot:
+    """Load the latest persisted prompt-contract diff for one session."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    store = SessionStore(resolved_root)
+    snapshot = store.load(session_id) if session_id else store.load_latest()
+    if snapshot is None:
+        return PromptDiffSnapshot(
+            project_root=resolved_root,
+            session_id=None,
+            current_task=None,
+            current=None,
+            previous=None,
+            highlights=[],
+            unified_diff="",
+        )
+
+    current = snapshot.prompt_history[-1] if snapshot.prompt_history else None
+    previous = _previous_prompt_snapshot(snapshot.prompt_history)
+    highlights = _prompt_diff_highlights(previous, current)
+    unified_diff = _unified_diff(
+        previous.content if previous is not None else "",
+        current.content if current is not None else "",
+        from_label=_prompt_snapshot_label(previous, fallback="previous prompt"),
+        to_label=_prompt_snapshot_label(current, fallback="current prompt"),
+    )
+    return PromptDiffSnapshot(
+        project_root=resolved_root,
+        session_id=snapshot.session_id,
+        current_task=snapshot.current_task,
+        current=current,
+        previous=previous,
+        highlights=highlights,
+        unified_diff=unified_diff,
+    )
+
+
+def collect_workflow_artifact_diffs(
+    session_id: str | None = None,
+    *,
+    project_root: Path | str | None = None,
+) -> WorkflowArtifactDiffSnapshot:
+    """Load persisted workflow-artifact diffs for the latest or named session."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    store = SessionStore(resolved_root)
+    snapshot = store.load(session_id) if session_id else store.load_latest()
+    if snapshot is None:
+        return WorkflowArtifactDiffSnapshot(
+            project_root=resolved_root,
+            session_id=None,
+            current_task=None,
+            entries=[],
+            highlights=[],
+        )
+
+    dod = _load_dod(snapshot.active_dod_path, project_root=resolved_root)
+    if dod is None:
+        return WorkflowArtifactDiffSnapshot(
+            project_root=resolved_root,
+            session_id=snapshot.session_id,
+            current_task=snapshot.current_task,
+            entries=[],
+            highlights=[],
+        )
+
+    entries: list[ArtifactDiffEntry] = []
+    for kind, path_str in (
+        ("clarify_brief", dod.clarify_brief),
+        ("implementation_plan", dod.implementation_plan),
+        ("verification_plan", dod.verification_plan),
+    ):
+        if not path_str:
+            continue
+        current_path = Path(path_str)
+        if not current_path.exists():
+            continue
+        previous_path = _previous_artifact_path(current_path)
+        previous_text = previous_path.read_text() if previous_path and previous_path.exists() else ""
+        current_text = current_path.read_text()
+        entries.append(
+            ArtifactDiffEntry(
+                kind=kind,
+                current_path=current_path,
+                previous_path=previous_path,
+                highlights=_artifact_diff_highlights(
+                    kind=kind,
+                    current_path=current_path,
+                    previous_path=previous_path,
+                    previous_text=previous_text,
+                    current_text=current_text,
+                ),
+                unified_diff=_unified_diff(
+                    previous_text,
+                    current_text,
+                    from_label=str(previous_path) if previous_path else f"previous {kind}",
+                    to_label=str(current_path),
+                ),
+            )
+        )
+
+    highlights = [entry.highlights[0] for entry in entries if entry.highlights]
+    return WorkflowArtifactDiffSnapshot(
+        project_root=resolved_root,
+        session_id=snapshot.session_id,
+        current_task=snapshot.current_task,
+        entries=entries,
+        highlights=highlights,
+    )
+
+
 def collect_permission_snapshot(
     project_root: Path | str | None = None,
     *,
@@ -748,6 +900,161 @@ def dry_run_permission_check(
             if outcome.matched_disposition is not None
             else None
         ),
+    )
+
+
+def _previous_prompt_snapshot(
+    history: list[PromptSnapshot],
+) -> PromptSnapshot | None:
+    if len(history) < 2:
+        return None
+    current = history[-1]
+    for snapshot in reversed(history[:-1]):
+        if not snapshot.matches_contract(current):
+            return snapshot
+    return history[-2]
+
+
+def _prompt_snapshot_label(
+    snapshot: PromptSnapshot | None,
+    *,
+    fallback: str,
+) -> str:
+    if snapshot is None:
+        return fallback
+    return (
+        f"{snapshot.timestamp} "
+        f"{snapshot.workflow_mode}/{snapshot.permission_mode}/{snapshot.prompt_format}"
+    )
+
+
+def _prompt_diff_highlights(
+    previous: PromptSnapshot | None,
+    current: PromptSnapshot | None,
+) -> list[str]:
+    if current is None:
+        return []
+    if previous is None:
+        return ["No earlier prompt snapshot is available for comparison."]
+
+    highlights: list[str] = []
+    if previous.workflow_mode != current.workflow_mode:
+        highlights.append(
+            f"Workflow mode changed: {previous.workflow_mode} -> {current.workflow_mode}"
+        )
+    if previous.permission_mode != current.permission_mode:
+        highlights.append(
+            "Permission mode changed: "
+            f"{previous.permission_mode} -> {current.permission_mode}"
+        )
+    if previous.prompt_format != current.prompt_format:
+        highlights.append(
+            f"Prompt format changed: {previous.prompt_format} -> {current.prompt_format}"
+        )
+    if previous.current_task != current.current_task:
+        highlights.append("Task framing changed across prompt snapshots.")
+    added_sections = [item for item in current.prompt_sections if item not in previous.prompt_sections]
+    removed_sections = [item for item in previous.prompt_sections if item not in current.prompt_sections]
+    if added_sections:
+        highlights.append("Added sections: " + ", ".join(added_sections))
+    if removed_sections:
+        highlights.append("Removed sections: " + ", ".join(removed_sections))
+    additions, removals = _line_change_counts(previous.content, current.content)
+    highlights.append(f"Prompt body lines changed: +{additions} / -{removals}")
+    return highlights
+
+
+def _previous_artifact_path(current_path: Path) -> Path | None:
+    name = current_path.name
+    if name in {"implementation.md", "verification.md"}:
+        parent = current_path.parent
+        if "-" not in parent.name:
+            return None
+        slug = parent.name.split("-", maxsplit=1)[1]
+        candidates = sorted(
+            item
+            for item in parent.parent.glob(f"*-{slug}")
+            if item.is_dir() and (item / name).exists()
+        )
+        previous_dir = _previous_sorted_item(candidates, parent)
+        if previous_dir is None:
+            return None
+        return previous_dir / name
+
+    stem = current_path.stem
+    if "-" not in stem:
+        return None
+    slug = stem.split("-", maxsplit=1)[1]
+    candidates = sorted(
+        item
+        for item in current_path.parent.glob(f"*-{slug}{current_path.suffix}")
+        if item.is_file()
+    )
+    return _previous_sorted_item(candidates, current_path)
+
+
+def _previous_sorted_item(items: list[Any], current: Any) -> Any | None:
+    previous: Any | None = None
+    for item in items:
+        if item == current:
+            return previous
+        previous = item
+    return previous
+
+
+def _artifact_diff_highlights(
+    *,
+    kind: str,
+    current_path: Path,
+    previous_path: Path | None,
+    previous_text: str,
+    current_text: str,
+) -> list[str]:
+    label = kind.replace("_", " ")
+    if previous_path is None:
+        return [f"{label}: no previous artifact version is available."]
+    additions, removals = _line_change_counts(previous_text, current_text)
+    if not additions and not removals:
+        return [f"{label}: no content changes between persisted versions."]
+    return [
+        f"{label}: +{additions} / -{removals} lines vs {previous_path.name}",
+        f"current={current_path.name}",
+    ]
+
+
+def _line_change_counts(previous_text: str, current_text: str) -> tuple[int, int]:
+    additions = 0
+    removals = 0
+    diff_lines = difflib.unified_diff(
+        previous_text.splitlines(),
+        current_text.splitlines(),
+        lineterm="",
+    )
+    for line in diff_lines:
+        if line.startswith(("---", "+++", "@@")):
+            continue
+        if line.startswith("+"):
+            additions += 1
+        elif line.startswith("-"):
+            removals += 1
+    return additions, removals
+
+
+def _unified_diff(
+    previous_text: str,
+    current_text: str,
+    *,
+    from_label: str,
+    to_label: str,
+) -> str:
+    return "\n".join(
+        difflib.unified_diff(
+            previous_text.splitlines(),
+            current_text.splitlines(),
+            fromfile=from_label,
+            tofile=to_label,
+            lineterm="",
+        )
     )
 
 
