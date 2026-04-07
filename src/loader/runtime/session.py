@@ -19,7 +19,7 @@ from .compaction import (
     estimate_message_tokens,
 )
 
-SESSION_VERSION = 3
+SESSION_VERSION = 4
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -84,6 +84,14 @@ def normalize_prompt_sections(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def normalize_string_list(value: Any) -> list[str]:
+    """Coerce persisted string-list metadata into a normalized list."""
+
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 @dataclass(slots=True)
 class SessionCompaction:
     """Metadata describing the latest transcript compaction."""
@@ -134,6 +142,8 @@ class SessionSnapshot:
     permission_rules_source: str | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
+    workflow_artifact_status: str = "none"
+    workflow_artifact_sources: list[str] = field(default_factory=list)
     active_turn_phase: str | None = None
     compaction: SessionCompaction | None = None
     version: int = SESSION_VERSION
@@ -155,6 +165,8 @@ class SessionSnapshot:
             "permission_rules_source": self.permission_rules_source,
             "prompt_format": self.prompt_format,
             "prompt_sections": list(self.prompt_sections),
+            "workflow_artifact_status": self.workflow_artifact_status,
+            "workflow_artifact_sources": list(self.workflow_artifact_sources),
             "active_turn_phase": self.active_turn_phase,
             "compaction": self.compaction.to_dict() if self.compaction else None,
         }
@@ -184,6 +196,12 @@ class SessionSnapshot:
             permission_rules_source=data.get("permission_rules_source"),
             prompt_format=data.get("prompt_format"),
             prompt_sections=normalize_prompt_sections(data.get("prompt_sections")),
+            workflow_artifact_status=str(
+                data.get("workflow_artifact_status", "none")
+            ),
+            workflow_artifact_sources=normalize_string_list(
+                data.get("workflow_artifact_sources")
+            ),
             active_turn_phase=data.get("active_turn_phase"),
             compaction=(
                 SessionCompaction.from_dict(data["compaction"])
@@ -316,6 +334,8 @@ class ConversationSession:
     permission_rules_source: str | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
+    workflow_artifact_status: str = "none"
+    workflow_artifact_sources: list[str] = field(default_factory=list)
     active_turn_phase: str | None = None
     compaction: SessionCompaction | None = None
     rotate_after_bytes: int = DEFAULT_ROTATE_AFTER_BYTES
@@ -366,6 +386,8 @@ class ConversationSession:
         self.active_dod_path = None
         self.current_task = None
         self.workflow_mode = "execute"
+        self.workflow_artifact_status = "none"
+        self.workflow_artifact_sources = []
         self.compaction = None
         self.usage_totals = {}
         self.touch()
@@ -388,6 +410,8 @@ class ConversationSession:
         permission_rules_source: str | None = None,
         prompt_format: str | None = None,
         prompt_sections: list[str] | None = None,
+        workflow_artifact_status: str | None = None,
+        workflow_artifact_sources: list[str] | None = None,
         active_turn_phase: str | None | object = _UNSET,
     ) -> None:
         """Update persisted runtime state that lives beside the messages."""
@@ -412,6 +436,12 @@ class ConversationSession:
             self.prompt_format = prompt_format
         if prompt_sections is not None:
             self.prompt_sections = normalize_prompt_sections(prompt_sections)
+        if workflow_artifact_status is not None:
+            self.workflow_artifact_status = workflow_artifact_status
+        if workflow_artifact_sources is not None:
+            self.workflow_artifact_sources = normalize_string_list(
+                workflow_artifact_sources
+            )
         if active_turn_phase is not _UNSET:
             self.active_turn_phase = active_turn_phase
         self.touch()
@@ -486,6 +516,8 @@ class ConversationSession:
             permission_rules_source=self.permission_rules_source,
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
+            workflow_artifact_status=self.workflow_artifact_status,
+            workflow_artifact_sources=list(self.workflow_artifact_sources),
             active_turn_phase=self.active_turn_phase,
             compaction=self.compaction,
         )
@@ -534,6 +566,8 @@ class ConversationSession:
         instance.permission_rules_source = snapshot.permission_rules_source
         instance.prompt_format = snapshot.prompt_format
         instance.prompt_sections = list(snapshot.prompt_sections)
+        instance.workflow_artifact_status = snapshot.workflow_artifact_status
+        instance.workflow_artifact_sources = list(snapshot.workflow_artifact_sources)
         instance.active_turn_phase = snapshot.active_turn_phase
         instance.compaction = snapshot.compaction
         instance.rotate_after_bytes = rotate_after_bytes

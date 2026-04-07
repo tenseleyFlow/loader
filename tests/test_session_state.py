@@ -172,6 +172,33 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     ]
 
 
+def test_session_persists_workflow_artifact_state(temp_dir: Path) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+    )
+
+    session.update_runtime_state(
+        workflow_artifact_status="active",
+        workflow_artifact_sources=["clarify_brief", "implementation_plan"],
+    )
+
+    reloaded = ConversationSession.load(
+        project_root=temp_dir,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        session_id=session.session_id,
+    )
+
+    assert reloaded is not None
+    assert reloaded.workflow_artifact_status == "active"
+    assert reloaded.workflow_artifact_sources == [
+        "clarify_brief",
+        "implementation_plan",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_turn_summary_usage_rolls_up_into_session_totals(temp_dir: Path) -> None:
     backend = ScriptedBackend(

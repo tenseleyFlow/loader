@@ -113,6 +113,8 @@ async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
     brief_markdown = Path(dod.clarify_brief).read_text()
     assert "single-question clarify brief" in brief_markdown
     assert "return control to `execute` mode" in brief_markdown
+    assert run.agent.session.workflow_artifact_status == "active"
+    assert run.agent.session.workflow_artifact_sources == ["clarify_brief"]
     assert "runtime behavior" in dod.acceptance_criteria[0].lower()
     assert "## Clarify Mode" in backend.invocations[0].messages[0].content
 
@@ -192,6 +194,11 @@ async def test_complex_prompt_routes_to_plan_and_uses_verification_artifact(
     assert "single-pass planning artifact generation" in implementation_markdown
     assert "planner/critic consensus loop" in implementation_markdown
     assert "single-pass planning artifact generation" in verification_markdown
+    assert run.agent.session.workflow_artifact_status == "active"
+    assert run.agent.session.workflow_artifact_sources == [
+        "implementation_plan",
+        "verification_plan",
+    ]
     assert dod.verification_commands == [f"test -f {target}"]
     assert "## Plan Mode" in backend.invocations[0].messages[0].content
     verify_calls = [

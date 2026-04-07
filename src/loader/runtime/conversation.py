@@ -403,20 +403,32 @@ class ConversationRuntime:
             Path(dod.implementation_plan) if dod.implementation_plan else None,
             Path(dod.verification_plan) if dod.verification_plan else None,
         )
-        if bridge and not any(
-            message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
-            for message in self.context.legacy.message_history()[-4:]
-        ):
-            self.context.session.append(
-                Message(
-                    role=Role.USER,
-                    content=(
-                        "[WORKFLOW BRIDGE]\n"
-                        f"{bridge}\n\n"
-                        "Honor these artifacts while you execute the task. "
-                        "Keep TodoWrite current when the work spans multiple steps."
-                    ),
+        artifact_sources = self._workflow_artifact_sources(dod)
+        if bridge:
+            recent_bridge = any(
+                message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
+                for message in self.context.legacy.message_history()[-4:]
+            )
+            if not recent_bridge:
+                self.context.session.append(
+                    Message(
+                        role=Role.USER,
+                        content=(
+                            "[WORKFLOW BRIDGE]\n"
+                            f"{bridge}\n\n"
+                            "Honor these artifacts while you execute the task. "
+                            "Keep TodoWrite current when the work spans multiple steps."
+                        ),
+                    )
                 )
+            self.context.session.update_runtime_state(
+                workflow_artifact_status="reused" if recent_bridge else "active",
+                workflow_artifact_sources=artifact_sources,
+            )
+        else:
+            self.context.session.update_runtime_state(
+                workflow_artifact_status="none",
+                workflow_artifact_sources=[],
             )
         return task
 
@@ -743,6 +755,17 @@ class ConversationRuntime:
     @staticmethod
     def _artifact_exists(path_str: str | None) -> bool:
         return bool(path_str and Path(path_str).exists())
+
+    @classmethod
+    def _workflow_artifact_sources(cls, dod: DefinitionOfDone) -> list[str]:
+        sources: list[str] = []
+        if cls._artifact_exists(dod.clarify_brief):
+            sources.append("clarify_brief")
+        if cls._artifact_exists(dod.implementation_plan):
+            sources.append("implementation_plan")
+        if cls._artifact_exists(dod.verification_plan):
+            sources.append("verification_plan")
+        return sources
 
     @staticmethod
     def _fallback_clarify_question(task: str, response_content: str) -> str:
