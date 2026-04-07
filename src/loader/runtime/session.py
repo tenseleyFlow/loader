@@ -19,7 +19,7 @@ from .compaction import (
     estimate_message_tokens,
 )
 
-SESSION_VERSION = 3
+SESSION_VERSION = 4
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -84,6 +84,23 @@ def normalize_prompt_sections(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def normalize_optional_text(value: Any) -> str | None:
+    """Coerce persisted optional text fields."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def normalize_optional_float(value: Any) -> float | None:
+    """Coerce persisted numeric workflow scores."""
+
+    if value is None:
+        return None
+    return float(value)
+
+
 @dataclass(slots=True)
 class SessionCompaction:
     """Metadata describing the latest transcript compaction."""
@@ -135,6 +152,15 @@ class SessionSnapshot:
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
     active_turn_phase: str | None = None
+    workflow_reason_code: str | None = None
+    workflow_reason_summary: str | None = None
+    workflow_decision_kind: str | None = None
+    workflow_ambiguity_score: float | None = None
+    workflow_complexity_score: float | None = None
+    workflow_scheduled_next_mode: str | None = None
+    last_turn_transition_summary: str | None = None
+    last_turn_transition_kind: str | None = None
+    last_turn_transition_reason_code: str | None = None
     compaction: SessionCompaction | None = None
     version: int = SESSION_VERSION
 
@@ -156,6 +182,15 @@ class SessionSnapshot:
             "prompt_format": self.prompt_format,
             "prompt_sections": list(self.prompt_sections),
             "active_turn_phase": self.active_turn_phase,
+            "workflow_reason_code": self.workflow_reason_code,
+            "workflow_reason_summary": self.workflow_reason_summary,
+            "workflow_decision_kind": self.workflow_decision_kind,
+            "workflow_ambiguity_score": self.workflow_ambiguity_score,
+            "workflow_complexity_score": self.workflow_complexity_score,
+            "workflow_scheduled_next_mode": self.workflow_scheduled_next_mode,
+            "last_turn_transition_summary": self.last_turn_transition_summary,
+            "last_turn_transition_kind": self.last_turn_transition_kind,
+            "last_turn_transition_reason_code": self.last_turn_transition_reason_code,
             "compaction": self.compaction.to_dict() if self.compaction else None,
         }
 
@@ -185,6 +220,33 @@ class SessionSnapshot:
             prompt_format=data.get("prompt_format"),
             prompt_sections=normalize_prompt_sections(data.get("prompt_sections")),
             active_turn_phase=data.get("active_turn_phase"),
+            workflow_reason_code=normalize_optional_text(
+                data.get("workflow_reason_code")
+            ),
+            workflow_reason_summary=normalize_optional_text(
+                data.get("workflow_reason_summary")
+            ),
+            workflow_decision_kind=normalize_optional_text(
+                data.get("workflow_decision_kind")
+            ),
+            workflow_ambiguity_score=normalize_optional_float(
+                data.get("workflow_ambiguity_score")
+            ),
+            workflow_complexity_score=normalize_optional_float(
+                data.get("workflow_complexity_score")
+            ),
+            workflow_scheduled_next_mode=normalize_optional_text(
+                data.get("workflow_scheduled_next_mode")
+            ),
+            last_turn_transition_summary=normalize_optional_text(
+                data.get("last_turn_transition_summary")
+            ),
+            last_turn_transition_kind=normalize_optional_text(
+                data.get("last_turn_transition_kind")
+            ),
+            last_turn_transition_reason_code=normalize_optional_text(
+                data.get("last_turn_transition_reason_code")
+            ),
             compaction=(
                 SessionCompaction.from_dict(data["compaction"])
                 if data.get("compaction")
@@ -317,6 +379,15 @@ class ConversationSession:
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
     active_turn_phase: str | None = None
+    workflow_reason_code: str | None = None
+    workflow_reason_summary: str | None = None
+    workflow_decision_kind: str | None = None
+    workflow_ambiguity_score: float | None = None
+    workflow_complexity_score: float | None = None
+    workflow_scheduled_next_mode: str | None = None
+    last_turn_transition_summary: str | None = None
+    last_turn_transition_kind: str | None = None
+    last_turn_transition_reason_code: str | None = None
     compaction: SessionCompaction | None = None
     rotate_after_bytes: int = DEFAULT_ROTATE_AFTER_BYTES
     max_rotated_files: int = MAX_ROTATED_FILES
@@ -366,6 +437,16 @@ class ConversationSession:
         self.active_dod_path = None
         self.current_task = None
         self.workflow_mode = "execute"
+        self.workflow_reason_code = None
+        self.workflow_reason_summary = None
+        self.workflow_decision_kind = None
+        self.workflow_ambiguity_score = None
+        self.workflow_complexity_score = None
+        self.workflow_scheduled_next_mode = None
+        self.active_turn_phase = None
+        self.last_turn_transition_summary = None
+        self.last_turn_transition_kind = None
+        self.last_turn_transition_reason_code = None
         self.compaction = None
         self.usage_totals = {}
         self.touch()
@@ -389,6 +470,15 @@ class ConversationSession:
         prompt_format: str | None = None,
         prompt_sections: list[str] | None = None,
         active_turn_phase: str | None | object = _UNSET,
+        workflow_reason_code: str | None | object = _UNSET,
+        workflow_reason_summary: str | None | object = _UNSET,
+        workflow_decision_kind: str | None | object = _UNSET,
+        workflow_ambiguity_score: float | None | object = _UNSET,
+        workflow_complexity_score: float | None | object = _UNSET,
+        workflow_scheduled_next_mode: str | None | object = _UNSET,
+        last_turn_transition_summary: str | None | object = _UNSET,
+        last_turn_transition_kind: str | None | object = _UNSET,
+        last_turn_transition_reason_code: str | None | object = _UNSET,
     ) -> None:
         """Update persisted runtime state that lives beside the messages."""
 
@@ -414,6 +504,40 @@ class ConversationSession:
             self.prompt_sections = normalize_prompt_sections(prompt_sections)
         if active_turn_phase is not _UNSET:
             self.active_turn_phase = active_turn_phase
+        if workflow_reason_code is not _UNSET:
+            self.workflow_reason_code = normalize_optional_text(workflow_reason_code)
+        if workflow_reason_summary is not _UNSET:
+            self.workflow_reason_summary = normalize_optional_text(
+                workflow_reason_summary
+            )
+        if workflow_decision_kind is not _UNSET:
+            self.workflow_decision_kind = normalize_optional_text(
+                workflow_decision_kind
+            )
+        if workflow_ambiguity_score is not _UNSET:
+            self.workflow_ambiguity_score = normalize_optional_float(
+                workflow_ambiguity_score
+            )
+        if workflow_complexity_score is not _UNSET:
+            self.workflow_complexity_score = normalize_optional_float(
+                workflow_complexity_score
+            )
+        if workflow_scheduled_next_mode is not _UNSET:
+            self.workflow_scheduled_next_mode = normalize_optional_text(
+                workflow_scheduled_next_mode
+            )
+        if last_turn_transition_summary is not _UNSET:
+            self.last_turn_transition_summary = normalize_optional_text(
+                last_turn_transition_summary
+            )
+        if last_turn_transition_kind is not _UNSET:
+            self.last_turn_transition_kind = normalize_optional_text(
+                last_turn_transition_kind
+            )
+        if last_turn_transition_reason_code is not _UNSET:
+            self.last_turn_transition_reason_code = normalize_optional_text(
+                last_turn_transition_reason_code
+            )
         self.touch()
         self.persist()
 
@@ -487,6 +611,15 @@ class ConversationSession:
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
             active_turn_phase=self.active_turn_phase,
+            workflow_reason_code=self.workflow_reason_code,
+            workflow_reason_summary=self.workflow_reason_summary,
+            workflow_decision_kind=self.workflow_decision_kind,
+            workflow_ambiguity_score=self.workflow_ambiguity_score,
+            workflow_complexity_score=self.workflow_complexity_score,
+            workflow_scheduled_next_mode=self.workflow_scheduled_next_mode,
+            last_turn_transition_summary=self.last_turn_transition_summary,
+            last_turn_transition_kind=self.last_turn_transition_kind,
+            last_turn_transition_reason_code=self.last_turn_transition_reason_code,
             compaction=self.compaction,
         )
         return self.store.save(snapshot)
@@ -535,6 +668,17 @@ class ConversationSession:
         instance.prompt_format = snapshot.prompt_format
         instance.prompt_sections = list(snapshot.prompt_sections)
         instance.active_turn_phase = snapshot.active_turn_phase
+        instance.workflow_reason_code = snapshot.workflow_reason_code
+        instance.workflow_reason_summary = snapshot.workflow_reason_summary
+        instance.workflow_decision_kind = snapshot.workflow_decision_kind
+        instance.workflow_ambiguity_score = snapshot.workflow_ambiguity_score
+        instance.workflow_complexity_score = snapshot.workflow_complexity_score
+        instance.workflow_scheduled_next_mode = snapshot.workflow_scheduled_next_mode
+        instance.last_turn_transition_summary = snapshot.last_turn_transition_summary
+        instance.last_turn_transition_kind = snapshot.last_turn_transition_kind
+        instance.last_turn_transition_reason_code = (
+            snapshot.last_turn_transition_reason_code
+        )
         instance.compaction = snapshot.compaction
         instance.rotate_after_bytes = rotate_after_bytes
         instance.max_rotated_files = max_rotated_files

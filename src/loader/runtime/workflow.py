@@ -54,14 +54,76 @@ class WorkflowMode(StrEnum):
         raise ValueError(f"Unknown workflow mode: {value}")
 
 
+class WorkflowDecisionKind(StrEnum):
+    """Classification for why a workflow mode was selected."""
+
+    INITIAL_ROUTE = "initial_route"
+    REQUESTED = "requested"
+    ARTIFACT_REUSE = "artifact_reuse"
+    HANDOFF = "handoff"
+    REENTRY = "reentry"
+    FORCED = "forced"
+
+
 @dataclass(slots=True)
 class ModeDecision:
     """Router output for the entry point of a task turn."""
 
     mode: WorkflowMode
-    reason: str
+    reason_code: str
+    reason_summary: str
+    decision_kind: WorkflowDecisionKind = WorkflowDecisionKind.INITIAL_ROUTE
     ambiguity_score: float = 0.0
     complexity_score: float = 0.0
+    scheduled_next_mode: WorkflowMode | None = None
+
+    @property
+    def reason(self) -> str:
+        return self.reason_summary
+
+    @classmethod
+    def transition(
+        cls,
+        mode: WorkflowMode,
+        *,
+        reason_code: str,
+        reason_summary: str,
+        decision_kind: WorkflowDecisionKind = WorkflowDecisionKind.HANDOFF,
+        ambiguity_score: float = 0.0,
+        complexity_score: float = 0.0,
+        scheduled_next_mode: WorkflowMode | None = None,
+    ) -> ModeDecision:
+        """Build a non-router workflow decision for handoffs and reentry."""
+
+        return cls(
+            mode=mode,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            decision_kind=decision_kind,
+            ambiguity_score=ambiguity_score,
+            complexity_score=complexity_score,
+            scheduled_next_mode=scheduled_next_mode,
+        )
+
+    def with_context(
+        self,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str | None = None,
+        decision_kind: WorkflowDecisionKind | None = None,
+        scheduled_next_mode: WorkflowMode | None = None,
+    ) -> ModeDecision:
+        """Return a copy with updated contextual routing metadata."""
+
+        return ModeDecision(
+            mode=self.mode,
+            reason_code=reason_code or self.reason_code,
+            reason_summary=reason_summary or self.reason_summary,
+            decision_kind=decision_kind or self.decision_kind,
+            ambiguity_score=self.ambiguity_score,
+            complexity_score=self.complexity_score,
+            scheduled_next_mode=scheduled_next_mode,
+        )
 
 
 @dataclass(slots=True)
@@ -145,7 +207,9 @@ class ClarifyBrief:
         if not self.likely_touchpoints:
             self.likely_touchpoints = ["Identify exact files during planning or execution."]
         if not self.assumptions:
-            self.assumptions = ["Unspecified details stay unchanged unless evidence says otherwise."]
+            self.assumptions = [
+                "Unspecified details stay unchanged unless evidence says otherwise.",
+            ]
         if not self.acceptance_criteria:
             self.acceptance_criteria = list(
                 dict.fromkeys(self.desired_outcome + self.in_scope[:2])
@@ -326,13 +390,17 @@ class ModeRouter:
         if requested_mode is not None:
             return ModeDecision(
                 mode=requested_mode,
-                reason=f"explicit {requested_mode.value} request",
+                reason_code="explicit_request",
+                reason_summary=f"explicit {requested_mode.value} request",
+                decision_kind=WorkflowDecisionKind.REQUESTED,
             )
 
         if has_plan:
             return ModeDecision(
                 mode=WorkflowMode.EXECUTE,
-                reason="reusing existing plan artifacts",
+                reason_code="existing_plan_artifacts",
+                reason_summary="reusing existing plan artifacts",
+                decision_kind=WorkflowDecisionKind.ARTIFACT_REUSE,
             )
 
         ambiguity = self._ambiguity_score(task)
@@ -341,22 +409,29 @@ class ModeRouter:
         if allow_clarify and not has_brief and ambiguity >= self.clarify_threshold:
             return ModeDecision(
                 mode=WorkflowMode.CLARIFY,
-                reason="prompt is broad or missing boundaries",
+                reason_code="task_is_ambiguous",
+                reason_summary="prompt is broad or missing boundaries",
                 ambiguity_score=ambiguity,
                 complexity_score=complexity,
+                scheduled_next_mode=WorkflowMode.EXECUTE,
             )
 
         if complexity >= self.plan_threshold:
             return ModeDecision(
                 mode=WorkflowMode.PLAN,
-                reason="task looks complex enough to benefit from a persisted plan",
+                reason_code="task_is_complex",
+                reason_summary=(
+                    "task looks complex enough to benefit from a persisted plan"
+                ),
                 ambiguity_score=ambiguity,
                 complexity_score=complexity,
+                scheduled_next_mode=WorkflowMode.EXECUTE,
             )
 
         return ModeDecision(
             mode=WorkflowMode.EXECUTE,
-            reason="task appears concrete enough for direct execution",
+            reason_code="task_is_concrete",
+            reason_summary="task appears concrete enough for direct execution",
             ambiguity_score=ambiguity,
             complexity_score=complexity,
         )
@@ -470,10 +545,22 @@ def sync_todos_to_definition_of_done(
     """Reflect todo state into DoD pending/completed items."""
 
     special_pending = [
-        item for item in dod.pending_items if item in {"Complete the requested work", "Collect verification evidence"}
+        item
+        for item in dod.pending_items
+        if item
+        in {
+            "Complete the requested work",
+            "Collect verification evidence",
+        }
     ]
     special_completed = [
-        item for item in dod.completed_items if item in {"Complete the requested work", "Collect verification evidence"}
+        item
+        for item in dod.completed_items
+        if item
+        in {
+            "Complete the requested work",
+            "Collect verification evidence",
+        }
     ]
 
     pending: list[str] = []

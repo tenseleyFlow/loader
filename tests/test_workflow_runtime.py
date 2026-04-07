@@ -50,7 +50,10 @@ async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
                         id="ask-1",
                         name="AskUserQuestion",
                         arguments={
-                            "question": "What should stay out of scope for this Loader improvement?",
+                            "question": (
+                                "What should stay out of scope for this Loader "
+                                "improvement?"
+                            ),
                         },
                     )
                 ],
@@ -112,6 +115,10 @@ async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
     assert Path(dod.clarify_brief).exists()
     assert "runtime behavior" in dod.acceptance_criteria[0].lower()
     assert "## Clarify Mode" in backend.invocations[0].messages[0].content
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.workflow_mode == "execute"
+    assert run.agent.last_turn_summary.workflow_reason_code == "post_clarify_task_is_concrete"
+    assert run.agent.last_turn_summary.workflow_decision_kind == "handoff"
 
 
 @pytest.mark.asyncio
@@ -186,6 +193,12 @@ async def test_complex_prompt_routes_to_plan_and_uses_verification_artifact(
     assert Path(dod.verification_plan).exists()
     assert dod.verification_commands == [f"test -f {target}"]
     assert "## Plan Mode" in backend.invocations[0].messages[0].content
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.workflow_mode == "verify"
+    assert run.agent.last_turn_summary.workflow_reason_code == (
+        "definition_of_done_requires_verification"
+    )
+    assert run.agent.last_turn_summary.workflow_decision_kind == "handoff"
     verify_calls = [
         event
         for event in run.events

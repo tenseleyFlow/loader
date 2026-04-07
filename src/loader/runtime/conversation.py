@@ -20,16 +20,18 @@ from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer, merge_usage
 from .hooks import build_default_tool_hooks
-from .phases import TurnPhase, TurnPhaseTracker
+from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
 from .repair import ResponseRepairer
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .workflow import (
     VERIFICATION_SEPARATOR,
     ClarifyBrief,
+    ModeDecision,
     ModeRouter,
     PlanningArtifacts,
     WorkflowArtifactStore,
+    WorkflowDecisionKind,
     WorkflowMode,
     build_execute_bridge,
     sync_todos_to_definition_of_done,
@@ -77,6 +79,7 @@ class ConversationRuntime:
             TurnPhase.PREPARE,
             emit,
             detail="Preparing runtime state",
+            reason_code="prepare_runtime",
         )
         await self._prepare_runtime_capabilities()
 
@@ -174,6 +177,7 @@ class ConversationRuntime:
                 TurnPhase.ASSISTANT,
                 emit,
                 detail="Requesting assistant response",
+                reason_code="request_assistant_response",
             )
             await emit(AgentEvent(type="thinking"))
             assistant_turn = await self.turn_requester.request_turn(
@@ -192,6 +196,8 @@ class ConversationRuntime:
                     TurnPhase.REPAIR,
                     emit,
                     detail="Repairing empty assistant response",
+                    reason_code="repair_empty_response",
+                    kind=TurnTransitionKind.RETRY,
                 )
                 empty_retry_count += 1
                 empty_decision = self.repairer.handle_empty_response(
@@ -232,6 +238,8 @@ class ConversationRuntime:
                     TurnPhase.REPAIR,
                     emit,
                     detail="Repairing raw-text tool fallback",
+                    reason_code="repair_raw_text_tool_fallback",
+                    kind=TurnTransitionKind.REROUTE,
                 )
                 await emit(AgentEvent(type="clear_stream"))
 
@@ -261,6 +269,7 @@ class ConversationRuntime:
                     TurnPhase.TOOLS,
                     emit,
                     detail="Executing tool batch",
+                    reason_code="execute_tool_batch",
                 )
                 assistant_message = Message(
                     role=Role.ASSISTANT,
@@ -291,7 +300,12 @@ class ConversationRuntime:
                 actions_taken.extend(batch_result.actions_taken)
                 consecutive_errors = batch_result.consecutive_errors
                 if batch_result.halted:
-                    return await self._finalize_turn(summary, emit)
+                    return await self._finalize_turn(
+                        summary,
+                        emit,
+                        reason_code="tool_batch_halted",
+                        reason_summary="Finalizing after halted tool batch",
+                    )
 
                 continue
 
@@ -305,6 +319,8 @@ class ConversationRuntime:
                     TurnPhase.REPAIR,
                     emit,
                     detail="Repairing fake tool narration",
+                    reason_code="repair_fake_tool_narration",
+                    kind=TurnTransitionKind.REROUTE,
                 )
                 self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
                 self.agent.session.append(Message(role=Role.USER, content=repair_message))
@@ -321,6 +337,8 @@ class ConversationRuntime:
                     TurnPhase.REPAIR,
                     emit,
                     detail="Repairing execution deflection",
+                    reason_code="repair_execution_deflection",
+                    kind=TurnTransitionKind.REROUTE,
                 )
                 self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
                 self.agent.session.append(
@@ -334,6 +352,7 @@ class ConversationRuntime:
                     TurnPhase.CRITIQUE,
                     emit,
                     detail="Evaluating self-critique",
+                    reason_code="evaluate_self_critique",
                 )
                 critique_decision = await self.completion_policy.maybe_self_critique(
                     content=content,
@@ -348,6 +367,7 @@ class ConversationRuntime:
                 TurnPhase.COMPLETION,
                 emit,
                 detail="Checking completion policy",
+                reason_code="completion_gate",
             )
             text_loop_decision = await self.completion_policy.maybe_stop_for_text_loop(
                 content=content,
@@ -355,7 +375,12 @@ class ConversationRuntime:
                 summary=summary,
             )
             if text_loop_decision.should_stop:
-                return await self._finalize_turn(summary, emit)
+                return await self._finalize_turn(
+                    summary,
+                    emit,
+                    reason_code="text_loop_bailout",
+                    reason_summary="Finalizing after text-loop bailout",
+                )
 
             self.agent.safeguards.record_response(content)
             effective_task = original_task or task
@@ -411,17 +436,27 @@ class ConversationRuntime:
             await emit(AgentEvent(type="response", content=final_response))
             break
 
-        return await self._finalize_turn(summary, emit)
+        return await self._finalize_turn(
+            summary,
+            emit,
+            reason_code="turn_complete",
+            reason_summary="Finalizing completed turn",
+        )
 
     async def _finalize_turn(
         self,
         summary: TurnSummary,
         emit: EventSink,
+        *,
+        reason_code: str,
+        reason_summary: str,
     ) -> TurnSummary:
         await self.phase_tracker.enter(
             TurnPhase.FINALIZE,
             emit,
-            detail="Finalizing turn summary",
+            detail=reason_summary,
+            reason_code=reason_code,
+            kind=TurnTransitionKind.TERMINAL,
         )
         final_summary = self.finalizer.finalize_summary(summary)
         self.phase_tracker.clear()
@@ -447,11 +482,10 @@ class ConversationRuntime:
             and self._artifact_exists(dod.verification_plan),
         )
         await self._set_workflow_mode(
-            decision.mode,
+            decision,
             dod=dod,
             emit=emit,
             summary=summary,
-            reason=decision.reason,
         )
 
         if decision.mode == WorkflowMode.CLARIFY:
@@ -470,11 +504,14 @@ class ConversationRuntime:
                 allow_clarify=False,
             )
             await self._set_workflow_mode(
-                decision.mode,
+                decision.with_context(
+                    reason_code=f"post_clarify_{decision.reason_code}",
+                    reason_summary=f"clarify handoff: {decision.reason_summary}",
+                    decision_kind=WorkflowDecisionKind.HANDOFF,
+                ),
                 dod=dod,
                 emit=emit,
                 summary=summary,
-                reason=f"clarify handoff: {decision.reason}",
             )
 
         if decision.mode == WorkflowMode.PLAN:
@@ -487,11 +524,15 @@ class ConversationRuntime:
                 on_user_question=on_user_question,
             )
             await self._set_workflow_mode(
-                WorkflowMode.EXECUTE,
+                ModeDecision.transition(
+                    WorkflowMode.EXECUTE,
+                    reason_code="plan_artifacts_created",
+                    reason_summary="plan artifacts created; switching to execute",
+                    decision_kind=WorkflowDecisionKind.HANDOFF,
+                ),
                 dod=dod,
                 emit=emit,
                 summary=summary,
-                reason="plan artifacts created; switching to execute",
             )
 
         bridge = build_execute_bridge(
@@ -518,25 +559,40 @@ class ConversationRuntime:
 
     async def _set_workflow_mode(
         self,
-        mode: WorkflowMode,
+        decision: ModeDecision,
         *,
         dod: DefinitionOfDone,
         emit: EventSink,
         summary: TurnSummary,
-        reason: str,
     ) -> None:
+        mode = decision.mode
         self.agent.set_workflow_mode(mode.value)
-        self.agent.session.update_runtime_state(workflow_mode=mode.value)
+        self.agent.session.update_runtime_state(
+            workflow_mode=mode.value,
+            workflow_reason_code=decision.reason_code,
+            workflow_reason_summary=decision.reason_summary,
+            workflow_decision_kind=decision.decision_kind.value,
+            workflow_ambiguity_score=decision.ambiguity_score,
+            workflow_complexity_score=decision.complexity_score,
+            workflow_scheduled_next_mode=(
+                decision.scheduled_next_mode.value
+                if decision.scheduled_next_mode is not None
+                else None
+            ),
+        )
         dod.current_mode = mode.value
         if not dod.mode_history or dod.mode_history[-1] != mode.value:
             dod.mode_history.append(mode.value)
         summary.workflow_mode = mode.value
+        summary.workflow_reason_code = decision.reason_code
+        summary.workflow_reason_summary = decision.reason_summary
+        summary.workflow_decision_kind = decision.decision_kind.value
         summary.definition_of_done = dod
         self.dod_store.save(dod)
         await emit(
             AgentEvent(
                 type="workflow_mode",
-                content=f"Workflow: {mode.value} ({reason})",
+                content=f"Workflow: {mode.value} ({decision.reason_summary})",
                 workflow_mode=mode.value,
                 definition_of_done=dod,
             )

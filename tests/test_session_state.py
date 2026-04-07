@@ -148,6 +148,15 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
         permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context", "Project Context"],
+        workflow_reason_code="task_is_complex",
+        workflow_reason_summary="task looks complex enough to benefit from a persisted plan",
+        workflow_decision_kind="initial_route",
+        workflow_ambiguity_score=0.2,
+        workflow_complexity_score=0.6,
+        workflow_scheduled_next_mode="execute",
+        last_turn_transition_summary="completion -> finalize [terminal] Finalizing completed turn",
+        last_turn_transition_kind="terminal",
+        last_turn_transition_reason_code="turn_complete",
     )
 
     reloaded = ConversationSession.load(
@@ -170,6 +179,19 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
         "Workflow Context",
         "Project Context",
     ]
+    assert reloaded.workflow_reason_code == "task_is_complex"
+    assert reloaded.workflow_reason_summary == (
+        "task looks complex enough to benefit from a persisted plan"
+    )
+    assert reloaded.workflow_decision_kind == "initial_route"
+    assert reloaded.workflow_ambiguity_score == pytest.approx(0.2)
+    assert reloaded.workflow_complexity_score == pytest.approx(0.6)
+    assert reloaded.workflow_scheduled_next_mode == "execute"
+    assert reloaded.last_turn_transition_summary == (
+        "completion -> finalize [terminal] Finalizing completed turn"
+    )
+    assert reloaded.last_turn_transition_kind == "terminal"
+    assert reloaded.last_turn_transition_reason_code == "turn_complete"
 
 
 @pytest.mark.asyncio

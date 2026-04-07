@@ -40,6 +40,9 @@ class AgentEvent:
     last_verification_result: str | None = None
     workflow_mode: str | None = None
     turn_phase: str | None = None
+    transition_kind: str | None = None
+    transition_summary: str | None = None
+    transition_reason_code: str | None = None
     artifact_kind: str | None = None
     artifact_path: str | None = None
 
@@ -69,4 +72,8 @@ class TurnSummary:
     trace: list[RuntimeTraceEvent] = field(default_factory=list)
     definition_of_done: DefinitionOfDone | None = None
     workflow_mode: str | None = None
+    workflow_reason_code: str | None = None
+    workflow_reason_summary: str | None = None
+    workflow_decision_kind: str | None = None
+    last_turn_transition_summary: str | None = None
     session_id: str | None = None

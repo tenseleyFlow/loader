@@ -105,6 +105,16 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+        workflow_reason_code="verification_failed_reentry",
+        workflow_reason_summary="verification failed; returning to execute for fixes",
+        workflow_decision_kind="reentry",
+        workflow_ambiguity_score=0.1,
+        workflow_complexity_score=0.7,
+        workflow_scheduled_next_mode="verify",
+        active_turn_phase="completion",
+        last_turn_transition_summary="completion -> finalize [terminal] Finalizing completed turn",
+        last_turn_transition_kind="terminal",
+        last_turn_transition_reason_code="turn_complete",
     )
     SessionStore(temp_dir).save(snapshot)
     return snapshot.session_id, str(dod_path)
@@ -226,6 +236,16 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
         "Workflow Context",
         "Mode Guidance",
     ]
+    assert snapshot.workflow_reason_code == "verification_failed_reentry"
+    assert snapshot.workflow_reason_summary == (
+        "verification failed; returning to execute for fixes"
+    )
+    assert snapshot.workflow_decision_kind == "reentry"
+    assert snapshot.workflow_scheduled_next_mode == "verify"
+    assert snapshot.active_turn_phase == "completion"
+    assert snapshot.last_turn_transition_summary == (
+        "completion -> finalize [terminal] Finalizing completed turn"
+    )
 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
@@ -237,6 +257,14 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
         temp_dir / ".loader" / "permission-rules.json"
     )
     assert sessions[0].prompt_format == "native"
+    assert sessions[0].workflow_reason_code == "verification_failed_reentry"
+    assert sessions[0].workflow_reason_summary == (
+        "verification failed; returning to execute for fixes"
+    )
+    assert sessions[0].workflow_decision_kind == "reentry"
+    assert sessions[0].last_turn_transition_summary == (
+        "completion -> finalize [terminal] Finalizing completed turn"
+    )
 
     assert detail.snapshot.session_id == session_id
     assert detail.is_current is True
@@ -245,6 +273,8 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert detail.snapshot.permission_rules_source == str(
         temp_dir / ".loader" / "permission-rules.json"
     )
+    assert detail.snapshot.workflow_reason_code == "verification_failed_reentry"
+    assert detail.snapshot.last_turn_transition_reason_code == "turn_complete"
 
 
 def test_status_and_session_commands_render_persisted_state(

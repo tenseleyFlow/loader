@@ -25,6 +25,10 @@ def _turn_phases(run) -> list[str]:
     ]
 
 
+def _turn_phase_events(run) -> list:
+    return [event for event in run.events if event.type == "turn_phase"]
+
+
 @pytest.mark.asyncio
 async def test_empty_output_enters_repair_phase(temp_dir: Path) -> None:
     backend = ScriptedBackend(
@@ -42,10 +46,22 @@ async def test_empty_output_enters_repair_phase(temp_dir: Path) -> None:
     )
 
     phases = _turn_phases(run)
+    repair_event = next(
+        event
+        for event in _turn_phase_events(run)
+        if event.turn_phase == "repair"
+    )
     assert "repair" in phases
     assert phases[:3] == ["prepare", "assistant", "repair"]
     assert phases[-2:] == ["completion", "finalize"]
+    assert repair_event.transition_kind == "retry"
+    assert repair_event.transition_reason_code == "repair_empty_response"
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.last_turn_transition_summary == (
+        "completion -> finalize [terminal] Finalizing completed turn"
+    )
     assert run.agent.session.active_turn_phase is None
+    assert run.agent.session.last_turn_transition_reason_code == "turn_complete"
 
 
 @pytest.mark.asyncio
@@ -97,4 +113,9 @@ async def test_completion_nudge_and_tool_batch_emit_named_phases(
     assert "tools" in phases
     assert phases[0] == "prepare"
     assert phases[-1] == "finalize"
+    assert run.agent.last_turn_summary is not None
+    assert run.agent.last_turn_summary.last_turn_transition_summary == (
+        "completion -> finalize [terminal] Finalizing completed turn"
+    )
+    assert run.agent.session.last_turn_transition_reason_code == "turn_complete"
     assert any(event.type == "completion_check" for event in run.events)

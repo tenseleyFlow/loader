@@ -19,11 +19,16 @@ from .executor import ToolExecutor
 from .memory import MemoryStore
 from .session import normalize_usage
 from .tracing import RuntimeTracer
-from .workflow import WorkflowMode, extract_verification_commands_from_markdown
+from .workflow import (
+    ModeDecision,
+    WorkflowDecisionKind,
+    WorkflowMode,
+    extract_verification_commands_from_markdown,
+)
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 WorkflowSetter = Callable[
-    [WorkflowMode, DefinitionOfDone, EventSink, TurnSummary, str],
+    [ModeDecision, DefinitionOfDone, EventSink, TurnSummary],
     Awaitable[None],
 ]
 
@@ -123,11 +128,15 @@ class TurnFinalizer:
             )
 
         await self.set_workflow_mode(
-            WorkflowMode.VERIFY,
+            ModeDecision.transition(
+                WorkflowMode.VERIFY,
+                reason_code="definition_of_done_requires_verification",
+                reason_summary="definition-of-done gate requires verification",
+                decision_kind=WorkflowDecisionKind.HANDOFF,
+            ),
             dod=dod,
             emit=emit,
             summary=summary,
-            reason="definition-of-done gate requires verification",
         )
         verification_passed = await self.verify_definition_of_done(
             dod=dod,
@@ -184,11 +193,15 @@ class TurnFinalizer:
         self.dod_store.save(dod)
         await self.emit_dod_status(emit, dod)
         await self.set_workflow_mode(
-            WorkflowMode.EXECUTE,
+            ModeDecision.transition(
+                WorkflowMode.EXECUTE,
+                reason_code="verification_failed_reentry",
+                reason_summary="verification failed; returning to execute for fixes",
+                decision_kind=WorkflowDecisionKind.REENTRY,
+            ),
             dod=dod,
             emit=emit,
             summary=summary,
-            reason="verification failed; returning to execute for fixes",
         )
         failure_prompt = (
             "[DEFINITION OF DONE CHECK FAILED]\n"
@@ -284,6 +297,9 @@ class TurnFinalizer:
             iterations=summary.iterations,
         )
         summary.session_id = self.agent.session.session_id
+        summary.last_turn_transition_summary = (
+            self.agent.session.last_turn_transition_summary
+        )
         if summary.definition_of_done and summary.definition_of_done.status == "done":
             MemoryStore(self.agent.project_root).capture_definition_of_done(
                 build_verification_summary(summary.definition_of_done.evidence)

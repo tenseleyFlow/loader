@@ -151,7 +151,16 @@ class StatusSnapshot:
     capability_profile: CapabilityProfile
     active_session_id: str | None
     workflow_mode: str
+    workflow_reason_code: str | None
+    workflow_reason_summary: str | None
+    workflow_decision_kind: str | None
+    workflow_ambiguity_score: float | None
+    workflow_complexity_score: float | None
+    workflow_scheduled_next_mode: str | None
     active_turn_phase: str | None
+    last_turn_transition_summary: str | None
+    last_turn_transition_kind: str | None
+    last_turn_transition_reason_code: str | None
     permission_mode: str
     permission_prompting_enabled: bool
     permission_rule_counts: dict[str, int]
@@ -180,12 +189,16 @@ class SessionSummary:
     updated_at: str
     message_count: int
     workflow_mode: str
+    workflow_reason_code: str | None
+    workflow_reason_summary: str | None
+    workflow_decision_kind: str | None
     permission_mode: str
     permission_prompting_enabled: bool
     permission_rule_counts: dict[str, int]
     permission_rules_source: str | None
     prompt_format: str | None
     active_turn_phase: str | None
+    last_turn_transition_summary: str | None
     current_task: str | None
     active_dod_path: str | None
     dod_status: str | None
@@ -319,7 +332,16 @@ def collect_status_snapshot(
             capability_profile=capability_profile,
             active_session_id=None,
             workflow_mode="execute",
+            workflow_reason_code=None,
+            workflow_reason_summary=None,
+            workflow_decision_kind=None,
+            workflow_ambiguity_score=None,
+            workflow_complexity_score=None,
+            workflow_scheduled_next_mode=None,
             active_turn_phase=None,
+            last_turn_transition_summary=None,
+            last_turn_transition_kind=None,
+            last_turn_transition_reason_code=None,
             permission_mode=default_permission_mode,
             permission_prompting_enabled=(
                 _coerce_permission_mode(permission_mode) == PermissionMode.PROMPT
@@ -365,7 +387,16 @@ def collect_status_snapshot(
         capability_profile=capability_profile,
         active_session_id=snapshot.session_id,
         workflow_mode=snapshot.workflow_mode,
+        workflow_reason_code=snapshot.workflow_reason_code,
+        workflow_reason_summary=snapshot.workflow_reason_summary,
+        workflow_decision_kind=snapshot.workflow_decision_kind,
+        workflow_ambiguity_score=snapshot.workflow_ambiguity_score,
+        workflow_complexity_score=snapshot.workflow_complexity_score,
+        workflow_scheduled_next_mode=snapshot.workflow_scheduled_next_mode,
         active_turn_phase=snapshot.active_turn_phase,
+        last_turn_transition_summary=snapshot.last_turn_transition_summary,
+        last_turn_transition_kind=snapshot.last_turn_transition_kind,
+        last_turn_transition_reason_code=snapshot.last_turn_transition_reason_code,
         permission_mode=snapshot.permission_mode or default_permission_mode,
         permission_prompting_enabled=permission_prompting_enabled,
         permission_rule_counts=permission_rule_counts,
@@ -410,6 +441,9 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                 updated_at=snapshot.updated_at,
                 message_count=len(snapshot.messages),
                 workflow_mode=snapshot.workflow_mode,
+                workflow_reason_code=snapshot.workflow_reason_code,
+                workflow_reason_summary=snapshot.workflow_reason_summary,
+                workflow_decision_kind=snapshot.workflow_decision_kind,
                 permission_mode=snapshot.permission_mode,
                 permission_prompting_enabled=(
                     snapshot.permission_prompting_enabled
@@ -419,6 +453,7 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                 permission_rules_source=snapshot.permission_rules_source,
                 prompt_format=snapshot.prompt_format,
                 active_turn_phase=snapshot.active_turn_phase,
+                last_turn_transition_summary=snapshot.last_turn_transition_summary,
                 current_task=snapshot.current_task,
                 active_dod_path=snapshot.active_dod_path,
                 dod_status=dod.status if dod else None,
