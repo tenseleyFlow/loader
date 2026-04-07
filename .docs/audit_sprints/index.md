@@ -6,7 +6,7 @@ The repo has moved since the audit snapshot. On this planning branch:
 
 - `uv run pytest -q` is green with `190 passed`
 - Sprint 08's prompt builder, turn-phase tracking, and permission inspection surfaces are already present on `HEAD`
-- Sprint 09 interactive validation has started; native-capable models currently pass `loader doctor` but fail on live Ollama `/api/chat` with HTTP 500 before the first assistant turn completes
+- Sprint 09 interactive validation has started; both native-capable and `json_tag` Ollama lanes currently pass `loader doctor` but fail on live `/api/chat` with HTTP 500 before the first assistant turn completes
 - the central debt still remains:
   - `runtime/*` still reaches into `Agent` directly instead of working through a typed runtime context
   - the runtime still repairs model misbehavior in-stream with retries, prefills, nudges, and fake-assistant continuations
