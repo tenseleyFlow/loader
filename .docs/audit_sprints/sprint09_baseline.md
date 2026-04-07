@@ -61,11 +61,9 @@ This is the subtraction scoreboard for Sprint 11 and Sprint 13.
   - post-action follow-up suffix
 - tightened behavior relative to this inventory:
   - empty-response handling is now one honest retry plus explicit failure instead of five fake assistant continuation prompts
+  - self-critique reroute, text-loop bailout, non-mutating completion nudge, and action-loop bailout have all been deleted from the runtime turn path
 - still open relative to this inventory:
-  - self-critique reroute
-  - text-loop bailout
-  - non-mutating completion nudge
-  - action-loop bailout
+  - no remaining inline completion/critique bailout from this inventory survives in the runtime turn path
 
 ## Recovery Inventory
 
@@ -76,11 +74,11 @@ This is the subtraction scoreboard for Sprint 11 and Sprint 13.
 | Raw-text tool fallback | `src/loader/runtime/repair.py:101-125` plus `src/loader/agent/parsing.py` and legacy `src/loader/agent/loop.py:862-1111` | Native tool call list is empty but response contains tool syntax | Parser stack, capability-profile behavior, legacy extractor | `tests/test_parsing.py`, `tests/test_runtime_harness.py` raw JSON scenarios | Keep short-term, gate by capability profile, unify in Sprint 11 |
 | Fake-tool narration repair | `src/loader/runtime/repair.py:156-182` plus `src/loader/agent/loop.py:770-860` | `_contains_unexecuted_code(...)` matches narration or code-block heuristics | Legacy regex wall plus injected scolding prompt | `tests/test_runtime_repair_flows.py::test_fake_tool_narration_repair_injects_scolding_prompt` | Delete |
 | Deflection repair | `src/loader/runtime/repair.py:184-201` | Non-ReAct response deflects with "you can/should/could/try running" and no actions taken | Phrase heuristic plus injected user repair turn | `tests/test_runtime_repair_flows.py::test_deflection_repair_injects_use_your_tools_prompt` | Delete unless interactive evidence shows it is load-bearing |
-| Self-critique reroute | `src/loader/runtime/completion_policy.py:49-90` | Long response and `should_self_critique(...)` says revise | `agent._self_critique`, reasoning prompt, session reinjection | `tests/test_runtime_repair_flows.py::test_self_critique_reroutes_long_code_response_for_revision` | Gate tightly or delete |
-| Text-loop bailout | `src/loader/runtime/completion_policy.py:92-125` | `self.agent.safeguards.detect_text_loop(...)` reports repetition | `agent/safeguards.py` action tracker | `tests/test_runtime_repair_flows.py::test_text_loop_bailout_stops_after_repeated_continuation_response` | Keep only if moved toward a session-level safeguard |
-| Non-mutating completion nudge | `src/loader/runtime/completion_policy.py:127-170` | `completion_check` enabled, no mutating actions, `detect_premature_completion(...)` hits | `agent/reasoning.py` continuation heuristics plus session reinjection | `tests/test_runtime_harness.py::test_completion_check_continuation` | Likely narrow sharply or delete |
+| Self-critique reroute | Deleted in Sprint 11 (was `src/loader/runtime/completion_policy.py`) | Long response and `should_self_critique(...)` said revise | `agent._self_critique`, reasoning prompt, session reinjection | `tests/test_runtime_repair_flows.py::test_long_code_response_no_longer_reroutes_for_self_critique` | Deleted |
+| Text-loop bailout | Deleted in Sprint 11 (was `src/loader/runtime/completion_policy.py`) | `self.agent.safeguards.detect_text_loop(...)` reported repetition | `agent/safeguards.py` action tracker | `tests/test_runtime_repair_flows.py::test_non_mutating_completion_returns_directly_without_text_bailout` | Deleted |
+| Non-mutating completion nudge | Deleted in Sprint 11 (was `src/loader/runtime/completion_policy.py`) | `completion_check` enabled, no mutating actions, `detect_premature_completion(...)` hit | `agent/reasoning.py` continuation heuristics plus session reinjection | `tests/test_runtime_harness.py::test_non_mutating_completion_no_longer_forces_continuation` | Deleted |
 | Post-action follow-up suffix | `src/loader/runtime/completion_policy.py:173-186` | Actions were taken and final text does not already end in `?` | Pure string heuristic | `tests/test_runtime_repair_flows.py::test_post_action_follow_up_suffix_is_appended_to_final_response` | Delete |
-| Action-loop bailout | `src/loader/runtime/tool_batches.py:228-250` | `self.agent.safeguards.detect_loop()` reports repeated tool behavior | `agent/safeguards.py` action tracker | `tests/test_runtime_repair_flows.py::test_action_loop_bailout_stops_repeating_tool_pattern` | Keep candidate, but move behind a clearer runtime/service seam |
+| Action-loop bailout | Deleted in Sprint 11 (was `src/loader/runtime/tool_batches.py`) | `self.agent.safeguards.detect_loop()` reported repeated tool behavior | `agent/safeguards.py` action tracker | `tests/test_runtime_repair_flows.py::test_repeated_tool_pattern_no_longer_triggers_action_loop_bailout` | Deleted |
 
 ## Interactive Validation Matrix
 

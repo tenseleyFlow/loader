@@ -4,13 +4,13 @@ These sprints translate the 2026-04-07 audit in `.docs/audit.txt` into a post-Sp
 
 The repo has moved since the audit snapshot. On this planning branch:
 
-- `uv run pytest -q` is green with `212 passed`
+- `uv run pytest -q` is green with `210 passed`
 - Sprint 08's prompt builder, turn-phase tracking, and permission inspection surfaces are already present on `HEAD`
 - Sprint 09 interactive validation has started; `loader doctor` now distinguishes metadata reachability from live chat readiness, and both native-capable and `json_tag` Ollama lanes currently fail the live chat probe on `/api/chat` with HTTP 500
 - Sprint 10's runtime-ownership inversion is now materially in place: `src/loader/runtime/` no longer reaches into `Agent` directly, and the remaining legacy dependencies are explicit `RuntimeLegacyServices` seams
 - Sprint 11 has already deleted several puppet behaviors and collapsed the raw-text fallback stack onto the shared parser used by the runtime and Ollama text fallback paths
 - the central debt still remains:
-  - the runtime still contains completion and critique heuristics that try to rescue weak turns in-stream
+  - the runtime still carries some recovery and safety heuristics around the main turn contract, even though the inline completion/critique rescue layers have now been deleted
   - clarify/plan workflows still persist artifacts without enforcing the deeper protocol the refs rely on
   - `agent/loop.py`, `agent/reasoning.py`, `agent/safeguards.py`, and `agent/recovery.py` are still the load-bearing legacy tree
 
@@ -42,8 +42,12 @@ The repo has moved since the audit snapshot. On this planning branch:
   - first-turn `[` prefill trick
   - fake-tool narration scolding
   - deflection repair prompts
+  - self-critique reroute
+  - non-mutating completion nudge
+  - text-loop bailout
+  - action-loop bailout on successful repeated tool patterns
 - empty-output handling is now one honest retry followed by explicit failure instead of five fake assistant continuation prompts
-- remaining Sprint 11 debt is mostly in completion heuristics and loop safeguards, not parser fragmentation
+- remaining Sprint 11 debt is mostly the legacy-surface subtraction target in `agent/loop.py`, not parser fragmentation or inline bailout decisions
 
 ## Phase 1: Validate Before Deleting
 
