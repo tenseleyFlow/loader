@@ -115,3 +115,21 @@ Show the mode with a color hint: green for `read-only`, yellow for `workspace-wr
 - the safety behavior is covered by automated tests
 - the CLI/TUI surfaces the active mode
 - Sprint 04, 05, and 06 have a clean lifecycle to plug into instead of patching `loop.py`
+
+## Audit Notes
+
+Audit checkpoint on 2026-04-06:
+
+- added `PermissionMode`, `PermissionPolicy`, and lazy runtime exports under `src/loader/runtime/permissions.py` and `src/loader/runtime/__init__.py`
+- refactored tool execution so `ToolExecutor` now runs hooks before and after policy evaluation in `src/loader/runtime/executor.py`
+- added lifecycle hook infrastructure in `src/loader/runtime/hooks.py`, including `DuplicateActionHook`, `ActionValidationHook`, `RollbackTrackingHook`, and a success-side action-history hook for loop/dedup tracking
+- hardened file and search tools with canonicalized workspace-root enforcement, symlink escape blocking, binary detection, file-size limits, and structured patch metadata
+- hardened shell execution with permission classification, structured truncation metadata, and mode-aware authorization
+- surfaced the active permission mode in the CLI startup banner and the TUI status line, and wired `Agent.active_permission_mode` as the current data source for later status/session work
+- full verification is green at `uv run pytest -q` with 106 passing tests
+
+Residual debt after Sprint 03:
+
+- Loader now has mode-based permission policy, but the richer rule system (`allow` / `deny` / `ask`) is still deferred
+- destructive operations still flow through the legacy confirmation path after policy allows them, so Loader has not fully matched claw-code's prompt/allow permission model
+- shell mutability classification is still heuristic and intentionally conservative rather than deeply semantic
