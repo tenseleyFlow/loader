@@ -100,6 +100,31 @@ class OllamaBackend(LLMBackend):
         except Exception:
             return False
 
+    async def chat_health_check(self) -> tuple[bool, str | None]:
+        """Probe whether the live chat endpoint can complete a minimal request."""
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Reply with OK."}],
+            "stream": False,
+            "options": self._build_options(temperature=0.0, max_tokens=8),
+        }
+
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+            )
+            if response.status_code == 400:
+                error_data = response.json() if response.content else {}
+                error_msg = error_data.get("error", "Bad request")
+                return False, f"Ollama /api/chat rejected the probe: {error_msg}"
+            response.raise_for_status()
+        except Exception as exc:
+            return False, str(exc)
+
+        return True, None
+
     async def list_models(self) -> list[dict[str, Any]]:
         """List all available models from Ollama.
 

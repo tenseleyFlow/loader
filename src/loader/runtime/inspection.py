@@ -252,6 +252,14 @@ async def collect_doctor_report(
             remediation=backend_remediation,
         )
     )
+    checks.append(
+        await _backend_chat_check(
+            backend=backend,
+            model=resolved_model,
+            backend_status=backend_status,
+            backend_factory=backend_factory,
+        )
+    )
 
     if model_details is not None:
         capability_profile = resolve_capability_profile(
@@ -617,6 +625,74 @@ async def _backend_health_check(
             f"Backend check failed: {exc}",
             "Make sure Ollama is running and reachable at the configured address.",
             None,
+        )
+    finally:
+        close = getattr(instance, "close", None)
+        if callable(close):
+            await close()
+
+
+async def _backend_chat_check(
+    *,
+    backend: str,
+    model: str,
+    backend_status: CheckStatus,
+    backend_factory: Any | None,
+) -> DoctorCheck:
+    """Check whether the backend can serve a minimal live chat request."""
+
+    if backend_status != CheckStatus.PASS:
+        return DoctorCheck(
+            name="chat",
+            status=CheckStatus.WARN,
+            message="Skipped live chat probe because the backend availability check did not pass.",
+            remediation="Fix backend reachability and model availability first.",
+        )
+
+    if backend != "ollama":
+        return DoctorCheck(
+            name="chat",
+            status=CheckStatus.WARN,
+            message=f"Backend '{backend}' does not expose a doctor chat probe yet.",
+            remediation="Run a real prompt through the target backend, or extend doctor for it.",
+        )
+
+    if backend_factory is None:
+        from ..llm.ollama import OllamaBackend
+
+        backend_factory = OllamaBackend
+
+    instance = backend_factory(model=model)
+    try:
+        chat_health_check = getattr(instance, "chat_health_check", None)
+        if not callable(chat_health_check):
+            return DoctorCheck(
+                name="chat",
+                status=CheckStatus.WARN,
+                message="Backend metadata checks passed, but no live chat probe is implemented.",
+                remediation="Run a real Loader prompt to confirm the chat path, or add a backend chat probe.",
+            )
+
+        chat_ok, error = await chat_health_check()
+        if chat_ok:
+            return DoctorCheck(
+                name="chat",
+                status=CheckStatus.PASS,
+                message="Live chat probe succeeded for the configured model.",
+                remediation="No action needed.",
+            )
+        return DoctorCheck(
+            name="chat",
+            status=CheckStatus.FAIL,
+            message=f"Live chat probe failed: {error or 'unknown error'}",
+            remediation="Fix the backend's /api/chat path before relying on interactive validation results.",
+        )
+    except Exception as exc:
+        return DoctorCheck(
+            name="chat",
+            status=CheckStatus.FAIL,
+            message=f"Live chat probe failed: {exc}",
+            remediation="Fix the backend's /api/chat path before relying on interactive validation results.",
         )
     finally:
         close = getattr(instance, "close", None)

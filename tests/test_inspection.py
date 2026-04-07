@@ -33,17 +33,24 @@ class FakeOllamaBackend:
         health: bool,
         models: list[dict[str, object]],
         model_details: dict[str, object] | None = None,
+        chat_health: bool = True,
+        chat_error: str | None = None,
     ) -> None:
         self.model = model
         self._health = health
         self._models = models
         self._model_details = model_details
+        self._chat_health = chat_health
+        self._chat_error = chat_error
 
     async def list_models(self) -> list[dict[str, object]]:
         return list(self._models)
 
     async def health_check(self) -> bool:
         return self._health
+
+    async def chat_health_check(self) -> tuple[bool, str | None]:
+        return self._chat_health, self._chat_error
 
     async def describe_model(self) -> dict[str, object] | None:
         return self._model_details
@@ -129,6 +136,7 @@ async def test_collect_doctor_report_passes_for_healthy_workspace(temp_dir: Path
     assert report.overall_status == CheckStatus.PASS
     assert {check.name for check in report.checks} == {
         "backend",
+        "chat",
         "capabilities",
         "workspace",
         "write_access",
@@ -161,13 +169,42 @@ async def test_collect_doctor_report_surfaces_backend_and_state_failures(temp_di
     )
 
     backend_check = next(check for check in report.checks if check.name == "backend")
+    chat_check = next(check for check in report.checks if check.name == "chat")
     state_check = next(check for check in report.checks if check.name == "state")
 
     assert report.overall_status == CheckStatus.FAIL
     assert backend_check.status == CheckStatus.FAIL
+    assert chat_check.status == CheckStatus.WARN
     assert "not pulled" in backend_check.message
     assert state_check.status == CheckStatus.FAIL
     assert "corrupted" in state_check.message
+
+
+@pytest.mark.asyncio
+async def test_collect_doctor_report_fails_when_live_chat_probe_fails(temp_dir: Path) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+
+    report = await collect_doctor_report(
+        temp_dir,
+        model="qwen2.5-coder:14b",
+        backend_factory=lambda model: FakeOllamaBackend(
+            model=model,
+            health=True,
+            models=[{"name": "qwen2.5-coder:14b"}],
+            model_details={"details": {"family": "qwen2.5"}},
+            chat_health=False,
+            chat_error="Server error '500 Internal Server Error' for url 'http://localhost:11434/api/chat'",
+        ),
+    )
+
+    backend_check = next(check for check in report.checks if check.name == "backend")
+    chat_check = next(check for check in report.checks if check.name == "chat")
+
+    assert report.overall_status == CheckStatus.FAIL
+    assert backend_check.status == CheckStatus.PASS
+    assert chat_check.status == CheckStatus.FAIL
+    assert "/api/chat" in chat_check.message
 
 
 @pytest.mark.asyncio
