@@ -19,10 +19,12 @@ from ..runtime.inspection import (
     PermissionSnapshot,
     PromptPreview,
     StatusSnapshot,
+    WorkflowTimelineSnapshot,
     collect_doctor_report,
     collect_permission_snapshot,
     collect_prompt_preview,
     collect_status_snapshot,
+    collect_workflow_timeline,
     dry_run_permission_check,
     list_session_summaries,
     load_session_detail,
@@ -36,7 +38,15 @@ from .rendering import (
 )
 
 console = Console()
-SPECIAL_COMMANDS = {"doctor", "status", "session", "explore", "permissions", "prompt"}
+SPECIAL_COMMANDS = {
+    "doctor",
+    "status",
+    "session",
+    "explore",
+    "permissions",
+    "prompt",
+    "workflow",
+}
 
 try:
     import httpx
@@ -834,6 +844,11 @@ def prompt_cli() -> None:
     """Inspect Loader prompt construction without a live turn."""
 
 
+@click.group(name="workflow")
+def workflow_cli() -> None:
+    """Inspect persisted Loader workflow history."""
+
+
 @session_cli.command("list")
 def session_list_cli() -> None:
     """List persisted sessions."""
@@ -938,6 +953,14 @@ def prompt_show_cli(
     )
 
 
+@workflow_cli.command("show")
+@click.argument("session_id", required=False)
+def workflow_show_cli(session_id: str | None) -> None:
+    """Show the persisted workflow timeline for the latest or named session."""
+
+    _workflow_show_main(session_id=session_id)
+
+
 def _run_special_command(argv: list[str]) -> None:
     command = argv[0]
     if command == "doctor":
@@ -961,6 +984,12 @@ def _run_special_command(argv: list[str]) -> None:
             return
         prompt_cli.main(args=argv[1:], prog_name="loader prompt")
         return
+    if command == "workflow":
+        if len(argv) == 1:
+            click.echo(_workflow_help_text())
+            return
+        workflow_cli.main(args=argv[1:], prog_name="loader workflow")
+        return
     if command == "session":
         if len(argv) == 1:
             click.echo(_session_help_text())
@@ -982,6 +1011,7 @@ def _loader_help_text() -> str:
             "  loader prompt show         Preview the current prompt contract",
             "  loader permissions show    Display normalized permission rules",
             "  loader permissions check   Dry-run one permission decision",
+            "  loader workflow show       Show the persisted workflow timeline",
             "  loader session list        List persisted sessions",
             "  loader session show <id>   Show one persisted session",
             "  loader session resume <id> Resume a persisted session through the main runtime",
@@ -1009,6 +1039,17 @@ def _prompt_help_text() -> str:
             "",
             "Commands:",
             "  show [task]  Render the current prompt contract without a model call",
+        ]
+    )
+
+
+def _workflow_help_text() -> str:
+    return "\n".join(
+        [
+            "Usage: loader workflow [COMMAND]",
+            "",
+            "Commands:",
+            "  show [id]  Show the persisted workflow timeline for the latest or named session",
         ]
     )
 
@@ -1422,6 +1463,50 @@ def _session_show_main(session_id: str) -> None:
         )
         console.print(dod_table)
 
+    if snapshot.workflow_timeline:
+        console.print()
+        _print_workflow_timeline_entries(
+            snapshot.workflow_timeline,
+            title="[bold blue]Workflow Timeline[/bold blue]",
+            limit=5,
+        )
+
+
+def _workflow_show_main(*, session_id: str | None) -> None:
+    try:
+        snapshot: WorkflowTimelineSnapshot = collect_workflow_timeline(
+            session_id=session_id
+        )
+    except FileNotFoundError:
+        console.print(f"[red]Session not found:[/red] {session_id}")
+        raise SystemExit(1) from None
+
+    if snapshot.session_id is None:
+        console.print("[yellow]No persisted workflow timeline found.[/yellow]")
+        return
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Workspace", str(snapshot.project_root))
+    table.add_row("Session", snapshot.session_id or "none")
+    table.add_row("Current", "yes" if snapshot.is_current else "no")
+    table.add_row("Workflow", snapshot.workflow_mode)
+    table.add_row("Task", snapshot.current_task or "none")
+    table.add_row("Entries", str(len(snapshot.entries)))
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Loader Workflow[/bold blue]",
+            border_style="blue",
+        )
+    )
+    console.print()
+    _print_workflow_timeline_entries(
+        snapshot.entries,
+        title="[bold blue]Workflow Timeline[/bold blue]",
+    )
+
 
 def _permissions_show_main(*, permission_mode: str) -> None:
     snapshot = collect_permission_snapshot(permission_mode=permission_mode)
@@ -1631,6 +1716,57 @@ def _print_prompt_preview(preview: PromptPreview) -> None:
             border_style="blue",
         )
     )
+
+
+def _print_workflow_timeline_entries(
+    entries: list,
+    *,
+    title: str,
+    limit: int | None = None,
+) -> None:
+    if not entries:
+        console.print("[dim]No workflow timeline entries recorded.[/dim]")
+        return
+
+    visible_entries = list(entries[-limit:] if limit is not None else entries)
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Time", style="white")
+    table.add_column("Kind", style="white")
+    table.add_column("Mode", style="white")
+    table.add_column("Summary", style="white")
+    table.add_column("Context", style="dim")
+
+    for entry in reversed(visible_entries):
+        table.add_row(
+            entry.timestamp or "-",
+            entry.kind,
+            entry.mode,
+            entry.summary,
+            _format_workflow_timeline_context(entry),
+        )
+
+    console.print(Panel(table, title=title, border_style="blue"))
+
+
+def _format_workflow_timeline_context(entry) -> str:
+    parts: list[str] = []
+    if entry.reason_code:
+        parts.append(f"code={entry.reason_code}")
+    if entry.decision_kind:
+        parts.append(entry.decision_kind)
+    if entry.scheduled_next_mode:
+        parts.append(f"next={entry.scheduled_next_mode}")
+    if entry.runner_up_mode:
+        parts.append(f"runner-up={entry.runner_up_mode}")
+    if entry.prompt_format:
+        parts.append(f"prompt={entry.prompt_format}")
+    if entry.prompt_sections:
+        parts.append(f"sections={len(entry.prompt_sections)}")
+    if entry.unresolved_questions:
+        parts.append(f"open={len(entry.unresolved_questions)}")
+    if entry.artifact_paths:
+        parts.append(f"artifacts={len(entry.artifact_paths)}")
+    return ", ".join(parts) or "-"
 
 
 def _format_workflow_reason(*, summary: str | None, code: str | None) -> str:

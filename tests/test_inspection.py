@@ -17,11 +17,13 @@ from loader.runtime.inspection import (
     collect_permission_snapshot,
     collect_prompt_preview,
     collect_status_snapshot,
+    collect_workflow_timeline,
     dry_run_permission_check,
     list_session_summaries,
     load_session_detail,
 )
 from loader.runtime.session import SessionSnapshot, SessionStore
+from loader.runtime.workflow_policy import WorkflowTimelineEntry
 
 
 class FakeOllamaBackend:
@@ -87,6 +89,33 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
     dod.last_verification_result = "failed"
     dod.evidence = []
     dod_path = DefinitionOfDoneStore(temp_dir).save(dod)
+    workflow_timeline = [
+        WorkflowTimelineEntry(
+            timestamp="2026-04-06T12:04:00Z",
+            kind="handoff",
+            mode="verify",
+            reason_code="execute_completed",
+            summary="verify: execution completed; verifying the parser fix",
+            decision_kind="handoff",
+            prompt_format="native",
+            prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            artifact_paths=[str(temp_dir / ".loader" / "plans" / "fix-tests.md")],
+        ),
+        WorkflowTimelineEntry(
+            timestamp="2026-04-06T12:05:00Z",
+            kind="reentry",
+            mode="execute",
+            reason_code="verification_failed_reentry",
+            summary="execute: verification failed; returning to execute for fixes",
+            decision_kind="reentry",
+            scheduled_next_mode="verify",
+            runner_up_mode="verify",
+            runner_up_score=0.52,
+            prompt_format="native",
+            prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            artifact_paths=[str(temp_dir / ".loader" / "plans" / "fix-tests.md")],
+        ),
+    ]
 
     snapshot = SessionSnapshot(
         session_id="20260406T120000Z-abcdef01",
@@ -116,6 +145,7 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         last_turn_transition_summary="completion -> finalize [terminal] Finalizing completed turn",
         last_turn_transition_kind="terminal",
         last_turn_transition_reason_code="turn_complete",
+        workflow_timeline=workflow_timeline,
     )
     SessionStore(temp_dir).save(snapshot)
     return snapshot.session_id, str(dod_path)
@@ -276,6 +306,23 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     )
     assert detail.snapshot.workflow_reason_code == "verification_failed_reentry"
     assert detail.snapshot.last_turn_transition_reason_code == "turn_complete"
+    assert len(detail.snapshot.workflow_timeline) == 2
+    assert detail.snapshot.workflow_timeline[-1].scheduled_next_mode == "verify"
+
+
+def test_collect_workflow_timeline_reflects_persisted_history(temp_dir: Path) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id, _ = _persist_session_with_dod(temp_dir)
+
+    snapshot = collect_workflow_timeline(project_root=temp_dir)
+
+    assert snapshot.session_id == session_id
+    assert snapshot.is_current is True
+    assert snapshot.workflow_mode == "execute"
+    assert snapshot.current_task == "Fix the failing tests"
+    assert [entry.kind for entry in snapshot.entries] == ["handoff", "reentry"]
+    assert snapshot.entries[-1].reason_code == "verification_failed_reentry"
 
 
 def test_status_and_session_commands_render_persisted_state(
@@ -292,6 +339,7 @@ def test_status_and_session_commands_render_persisted_state(
     status_result = runner.invoke(cli_main_module.status_cli, ["--model", "llama3.1:8b"])
     list_result = runner.invoke(cli_main_module.session_cli, ["list"])
     show_result = runner.invoke(cli_main_module.session_cli, ["show", session_id])
+    workflow_result = runner.invoke(cli_main_module.workflow_cli, ["show"])
 
     assert status_result.exit_code == 0
     assert session_id in status_result.output
@@ -323,6 +371,16 @@ def test_status_and_session_commands_render_persisted_state(
     assert "verification failed; returning to execute for fixes" in show_result.output
     assert "completion -> finalize" in show_result.output
     assert "Finalizing completed turn" in show_result.output
+    assert "Workflow Timeline" in show_result.output
+    assert "handoff" in show_result.output
+    assert "next=verify" in show_result.output
+
+    assert workflow_result.exit_code == 0
+    assert "Loader Workflow" in workflow_result.output
+    assert "Workflow Timeline" in workflow_result.output
+    assert session_id in workflow_result.output
+    assert "handoff" in workflow_result.output
+    assert "next=verify" in workflow_result.output
 
 
 def test_collect_prompt_preview_uses_persisted_runtime_state(temp_dir: Path) -> None:

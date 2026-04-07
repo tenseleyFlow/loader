@@ -26,6 +26,7 @@ from .permissions import (
 )
 from .prompting import build_system_prompt_result
 from .session import SessionSnapshot, SessionStore
+from .workflow_policy import WorkflowTimelineEntry
 
 
 class CheckStatus(StrEnum):
@@ -233,6 +234,18 @@ class PromptPreview:
     section_names: list[str] = field(default_factory=list)
     prompt_sections: list[str] = field(default_factory=list)
     content: str = ""
+
+
+@dataclass(slots=True)
+class WorkflowTimelineSnapshot:
+    """Operator-facing view of persisted workflow history."""
+
+    project_root: Path
+    session_id: str | None
+    is_current: bool
+    workflow_mode: str
+    current_task: str | None
+    entries: list[WorkflowTimelineEntry] = field(default_factory=list)
 
 
 def capability_summary(profile: CapabilityProfile) -> str:
@@ -608,6 +621,37 @@ def collect_permission_snapshot(
             resolved_permission_mode,
             rule_status,
         ),
+    )
+
+
+def collect_workflow_timeline(
+    session_id: str | None = None,
+    *,
+    project_root: Path | str | None = None,
+) -> WorkflowTimelineSnapshot:
+    """Load persisted workflow history for the latest or named session."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    store = SessionStore(resolved_root)
+    snapshot = store.load(session_id) if session_id else store.load_latest()
+    current_session_id = _current_session_id(store)
+    if snapshot is None:
+        return WorkflowTimelineSnapshot(
+            project_root=resolved_root,
+            session_id=None,
+            is_current=False,
+            workflow_mode="execute",
+            current_task=None,
+            entries=[],
+        )
+
+    return WorkflowTimelineSnapshot(
+        project_root=resolved_root,
+        session_id=snapshot.session_id,
+        is_current=snapshot.session_id == current_session_id,
+        workflow_mode=snapshot.workflow_mode,
+        current_task=snapshot.current_task,
+        entries=list(snapshot.workflow_timeline),
     )
 
 
