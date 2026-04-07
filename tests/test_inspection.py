@@ -101,6 +101,8 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         permission_prompting_enabled=True,
         permission_rule_counts={"allow": 1, "deny": 2, "ask": 1},
         permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
     )
     SessionStore(temp_dir).save(snapshot)
     return snapshot.session_id, str(dod_path)
@@ -213,6 +215,12 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
     assert snapshot.permission_prompting_enabled is True
     assert snapshot.permission_rules_valid is True
+    assert snapshot.prompt_format == "native"
+    assert snapshot.prompt_sections == [
+        "Runtime Config",
+        "Workflow Context",
+        "Mode Guidance",
+    ]
 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
@@ -220,6 +228,7 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert sessions[0].dod_status == "fixing"
     assert sessions[0].permission_prompting_enabled is True
     assert sessions[0].permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
+    assert sessions[0].prompt_format == "native"
 
     assert detail.snapshot.session_id == session_id
     assert detail.is_current is True
@@ -249,17 +258,21 @@ def test_status_and_session_commands_render_persisted_state(
     assert session_id in status_result.output
     assert "fixing" in status_result.output
     assert "1 allow / 2 deny / 1 ask" in status_result.output
+    assert "native" in status_result.output
+    assert "Runtime Config, Workflow Context, Mode Guidance" in status_result.output
 
     assert list_result.exit_code == 0
     assert session_id in list_result.output
     assert "1 allow / 2 deny / 1 ask" in list_result.output
     assert "prompting enabled" in list_result.output
+    assert "native" in list_result.output
 
     assert show_result.exit_code == 0
     assert session_id in show_result.output
     assert "Patch the broken parser" in show_result.output
     assert "1 allow / 2 deny / 1 ask" in show_result.output
     assert "enabled" in show_result.output
+    assert "Runtime Config, Workflow Context, Mode Guidance" in show_result.output
 
 
 def test_status_snapshot_reports_invalid_permission_rules(temp_dir: Path) -> None:

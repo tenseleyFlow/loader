@@ -100,10 +100,13 @@ class StatusSnapshot:
     capability_profile: CapabilityProfile
     active_session_id: str | None
     workflow_mode: str
+    active_turn_phase: str | None
     permission_mode: str
     permission_prompting_enabled: bool
     permission_rule_counts: dict[str, int]
     permission_rules_valid: bool
+    prompt_format: str | None
+    prompt_sections: list[str]
     current_task: str | None
     message_count: int
     active_dod_path: str | None
@@ -128,6 +131,8 @@ class SessionSummary:
     permission_mode: str
     permission_prompting_enabled: bool
     permission_rule_counts: dict[str, int]
+    prompt_format: str | None
+    active_turn_phase: str | None
     current_task: str | None
     active_dod_path: str | None
     dod_status: str | None
@@ -261,6 +266,7 @@ def collect_status_snapshot(
             capability_profile=capability_profile,
             active_session_id=None,
             workflow_mode="execute",
+            active_turn_phase=None,
             permission_mode=default_permission_mode,
             permission_prompting_enabled=(
                 _coerce_permission_mode(permission_mode) == PermissionMode.PROMPT
@@ -268,6 +274,10 @@ def collect_status_snapshot(
             ),
             permission_rule_counts=rule_status.rules.counts,
             permission_rules_valid=rule_status.valid,
+            prompt_format=(
+                "native" if capability_profile.supports_native_tools else "react"
+            ),
+            prompt_sections=[],
             current_task=None,
             message_count=0,
             active_dod_path=None,
@@ -301,10 +311,13 @@ def collect_status_snapshot(
         capability_profile=capability_profile,
         active_session_id=snapshot.session_id,
         workflow_mode=snapshot.workflow_mode,
+        active_turn_phase=snapshot.active_turn_phase,
         permission_mode=snapshot.permission_mode or default_permission_mode,
         permission_prompting_enabled=permission_prompting_enabled,
         permission_rule_counts=permission_rule_counts,
         permission_rules_valid=rule_status.valid,
+        prompt_format=snapshot.prompt_format,
+        prompt_sections=list(snapshot.prompt_sections),
         current_task=snapshot.current_task,
         message_count=len(snapshot.messages),
         active_dod_path=snapshot.active_dod_path,
@@ -346,6 +359,8 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                     or snapshot.permission_mode == "prompt"
                 ),
                 permission_rule_counts=dict(snapshot.permission_rule_counts),
+                prompt_format=snapshot.prompt_format,
+                active_turn_phase=snapshot.active_turn_phase,
                 current_task=snapshot.current_task,
                 active_dod_path=snapshot.active_dod_path,
                 dod_status=dod.status if dod else None,
