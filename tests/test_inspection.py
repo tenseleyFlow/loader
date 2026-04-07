@@ -15,6 +15,7 @@ from loader.runtime.inspection import (
     CheckStatus,
     collect_doctor_report,
     collect_permission_snapshot,
+    collect_prompt_preview,
     collect_status_snapshot,
     dry_run_permission_check,
     list_session_summaries,
@@ -299,6 +300,9 @@ def test_status_and_session_commands_render_persisted_state(
     assert "native" in status_result.output
     assert "Runtime Config, Workflow Context, Mode Guidance" in status_result.output
     assert "Rules Source" in status_result.output
+    assert "verification failed; returning to execute for fixes" in status_result.output
+    assert "completion -> finalize" in status_result.output
+    assert "Finalizing completed turn" in status_result.output
 
     assert list_result.exit_code == 0
     assert session_id in list_result.output
@@ -306,6 +310,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "prompting enabled" in list_result.output
     assert "native" in list_result.output
     assert "Rules Source" in list_result.output
+    assert "verification failed; returning to execute for fixes" in list_result.output
+    assert "completion -> finalize" in list_result.output
 
     assert show_result.exit_code == 0
     assert session_id in show_result.output
@@ -314,6 +320,68 @@ def test_status_and_session_commands_render_persisted_state(
     assert "enabled" in show_result.output
     assert "Runtime Config, Workflow Context, Mode Guidance" in show_result.output
     assert "Rules Source" in show_result.output
+    assert "verification failed; returning to execute for fixes" in show_result.output
+    assert "completion -> finalize" in show_result.output
+    assert "Finalizing completed turn" in show_result.output
+
+
+def test_collect_prompt_preview_uses_persisted_runtime_state(temp_dir: Path) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id, _ = _persist_session_with_dod(temp_dir)
+
+    preview = collect_prompt_preview(
+        temp_dir,
+        model="qwen2.5-coder:14b",
+    )
+
+    assert preview.active_session_id == session_id
+    assert preview.workflow_mode == "execute"
+    assert preview.workflow_reason_code == "verification_failed_reentry"
+    assert preview.workflow_decision_kind == "reentry"
+    assert preview.permission_mode == "prompt"
+    assert preview.prompt_format == (
+        "native" if preview.capability_profile.supports_native_tools else "react"
+    )
+    assert preview.prompt_sections == [
+        "Runtime Config",
+        "Workflow Context",
+        "Mode Guidance",
+        "Project Context",
+        "Project Tips",
+    ]
+    assert "## Execute Mode" in preview.content
+    assert "Current task: Fix the failing tests" in preview.content
+
+
+def test_prompt_show_command_renders_preview_without_model_call(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_dod(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+    preview = collect_prompt_preview(
+        temp_dir,
+        model="qwen2.5-coder:14b",
+        current_task="Preview the current Loader contract",
+    )
+
+    result = runner.invoke(
+        cli_main_module.prompt_cli,
+        ["show", "--model", "qwen2.5-coder:14b", "Preview the current Loader contract"],
+    )
+
+    assert result.exit_code == 0
+    assert "Prompt Preview" in result.output
+    assert "Prompt Body" in result.output
+    assert "Preview the current Loader contract" in result.output
+    assert preview.prompt_format in result.output
+    assert "Workflow Context" in result.output
+    assert "Execute Mode" in result.output
 
 
 def test_permission_snapshot_and_dry_run_reflect_rules(temp_dir: Path) -> None:

@@ -17,9 +17,11 @@ from ..runtime.inspection import (
     DoctorReport,
     PermissionCheckResult,
     PermissionSnapshot,
+    PromptPreview,
     StatusSnapshot,
     collect_doctor_report,
     collect_permission_snapshot,
+    collect_prompt_preview,
     collect_status_snapshot,
     dry_run_permission_check,
     list_session_summaries,
@@ -34,7 +36,7 @@ from .rendering import (
 )
 
 console = Console()
-SPECIAL_COMMANDS = {"doctor", "status", "session", "explore", "permissions"}
+SPECIAL_COMMANDS = {"doctor", "status", "session", "explore", "permissions", "prompt"}
 
 try:
     import httpx
@@ -827,6 +829,11 @@ def permissions_cli() -> None:
     """Inspect and dry-run Loader permission policy."""
 
 
+@click.group(name="prompt")
+def prompt_cli() -> None:
+    """Inspect Loader prompt construction without a live turn."""
+
+
 @session_cli.command("list")
 def session_list_cli() -> None:
     """List persisted sessions."""
@@ -894,6 +901,43 @@ def permissions_check_cli(
     )
 
 
+@prompt_cli.command("show")
+@click.option("--model", "-m", default=None, help="Model to preview (default: saved model)")
+@click.option(
+    "--workflow-mode",
+    type=click.Choice(["clarify", "plan", "execute", "verify"], case_sensitive=False),
+    default=None,
+    help="Override the workflow mode used for the preview",
+)
+@click.option(
+    "--permission-mode",
+    type=click.Choice(
+        ["read-only", "workspace-write", "danger-full-access", "prompt", "allow"],
+        case_sensitive=False,
+    ),
+    default=None,
+    help="Override the permission mode used for the preview",
+)
+@click.option("--react", is_flag=True, help="Force ReAct formatting for the preview")
+@click.argument("current_task", required=False)
+def prompt_show_cli(
+    model: str | None,
+    workflow_mode: str | None,
+    permission_mode: str | None,
+    react: bool,
+    current_task: str | None,
+) -> None:
+    """Render the current prompt contract without sending a model request."""
+
+    _prompt_show_main(
+        model=model,
+        workflow_mode=workflow_mode,
+        permission_mode=permission_mode,
+        react=react,
+        current_task=current_task,
+    )
+
+
 def _run_special_command(argv: list[str]) -> None:
     command = argv[0]
     if command == "doctor":
@@ -910,6 +954,12 @@ def _run_special_command(argv: list[str]) -> None:
             click.echo(_permissions_help_text())
             return
         permissions_cli.main(args=argv[1:], prog_name="loader permissions")
+        return
+    if command == "prompt":
+        if len(argv) == 1:
+            click.echo(_prompt_help_text())
+            return
+        prompt_cli.main(args=argv[1:], prog_name="loader prompt")
         return
     if command == "session":
         if len(argv) == 1:
@@ -929,6 +979,7 @@ def _loader_help_text() -> str:
             "  loader doctor              Inspect backend, workspace, and state health",
             "  loader status              Show persisted runtime status",
             "  loader explore <prompt>    Run a fast read-only lookup query",
+            "  loader prompt show         Preview the current prompt contract",
             "  loader permissions show    Display normalized permission rules",
             "  loader permissions check   Dry-run one permission decision",
             "  loader session list        List persisted sessions",
@@ -947,6 +998,17 @@ def _permissions_help_text() -> str:
             "Commands:",
             "  show                 Display normalized permission rules and source metadata",
             "  check <tool> [input] Dry-run one permission decision for a tool request",
+        ]
+    )
+
+
+def _prompt_help_text() -> str:
+    return "\n".join(
+        [
+            "Usage: loader prompt [COMMAND]",
+            "",
+            "Commands:",
+            "  show [task]  Render the current prompt contract without a model call",
         ]
     )
 
@@ -1155,7 +1217,21 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Capabilities", f"{snapshot.capability_profile.preferred_tool_call_format} / {snapshot.capability_profile.verification_strictness}")
     table.add_row("Session", snapshot.active_session_id or "none")
     table.add_row("Workflow", snapshot.workflow_mode)
+    if snapshot.workflow_decision_kind:
+        table.add_row("Decision Kind", snapshot.workflow_decision_kind)
+    if snapshot.workflow_reason_summary or snapshot.workflow_reason_code:
+        table.add_row(
+            "Workflow Reason",
+            _format_workflow_reason(
+                summary=snapshot.workflow_reason_summary,
+                code=snapshot.workflow_reason_code,
+            ),
+        )
+    if snapshot.workflow_scheduled_next_mode:
+        table.add_row("Scheduled Next", snapshot.workflow_scheduled_next_mode)
     table.add_row("Phase", snapshot.active_turn_phase or "idle")
+    if snapshot.last_turn_transition_summary:
+        table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
     table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
     table.add_row(
@@ -1236,7 +1312,19 @@ def _session_list_main() -> None:
         table.add_row("Updated", entry.updated_at)
         table.add_row("Messages", str(entry.message_count))
         table.add_row("Workflow", entry.workflow_mode)
+        if entry.workflow_decision_kind:
+            table.add_row("Decision Kind", entry.workflow_decision_kind)
+        if entry.workflow_reason_summary or entry.workflow_reason_code:
+            table.add_row(
+                "Workflow Reason",
+                _format_workflow_reason(
+                    summary=entry.workflow_reason_summary,
+                    code=entry.workflow_reason_code,
+                ),
+            )
         table.add_row("Phase", entry.active_turn_phase or "idle")
+        if entry.last_turn_transition_summary:
+            table.add_row("Last Transition", entry.last_turn_transition_summary)
         table.add_row("Permission Mode", entry.permission_mode)
         table.add_row("Prompt", entry.prompt_format or "unknown")
         table.add_row("Permission Rules", policy_summary)
@@ -1271,7 +1359,19 @@ def _session_show_main(session_id: str) -> None:
     table.add_row("Updated", snapshot.updated_at)
     table.add_row("Messages", str(len(snapshot.messages)))
     table.add_row("Workflow", snapshot.workflow_mode)
+    if snapshot.workflow_decision_kind:
+        table.add_row("Decision Kind", snapshot.workflow_decision_kind)
+    if snapshot.workflow_reason_summary or snapshot.workflow_reason_code:
+        table.add_row(
+            "Workflow Reason",
+            _format_workflow_reason(
+                summary=snapshot.workflow_reason_summary,
+                code=snapshot.workflow_reason_code,
+            ),
+        )
     table.add_row("Phase", snapshot.active_turn_phase or "idle")
+    if snapshot.last_turn_transition_summary:
+        table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
     table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
     table.add_row(
@@ -1326,6 +1426,24 @@ def _session_show_main(session_id: str) -> None:
 def _permissions_show_main(*, permission_mode: str) -> None:
     snapshot = collect_permission_snapshot(permission_mode=permission_mode)
     _print_permission_snapshot(snapshot)
+
+
+def _prompt_show_main(
+    *,
+    model: str | None,
+    workflow_mode: str | None,
+    permission_mode: str | None,
+    react: bool,
+    current_task: str | None,
+) -> None:
+    preview = collect_prompt_preview(
+        model=model,
+        workflow_mode=workflow_mode,
+        permission_mode=permission_mode,
+        current_task=current_task,
+        force_react=react,
+    )
+    _print_prompt_preview(preview)
 
 
 def _permissions_check_main(
@@ -1464,6 +1582,61 @@ def _print_permission_check_result(result: PermissionCheckResult) -> None:
             border_style="blue",
         )
     )
+
+
+def _print_prompt_preview(preview: PromptPreview) -> None:
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Workspace", str(preview.project_root))
+    table.add_row("Model", preview.model)
+    table.add_row(
+        "Capabilities",
+        (
+            f"{preview.capability_profile.preferred_tool_call_format} / "
+            f"{preview.capability_profile.verification_strictness}"
+        ),
+    )
+    table.add_row("Session", preview.active_session_id or "none")
+    table.add_row("Workflow", preview.workflow_mode)
+    if preview.workflow_decision_kind:
+        table.add_row("Decision Kind", preview.workflow_decision_kind)
+    if preview.workflow_reason_summary or preview.workflow_reason_code:
+        table.add_row(
+            "Workflow Reason",
+            _format_workflow_reason(
+                summary=preview.workflow_reason_summary,
+                code=preview.workflow_reason_code,
+            ),
+        )
+    table.add_row("Permission Mode", preview.permission_mode)
+    table.add_row("Prompt Format", preview.prompt_format)
+    table.add_row(
+        "Dynamic Sections",
+        ", ".join(preview.prompt_sections) if preview.prompt_sections else "none",
+    )
+    table.add_row("Task", preview.current_task or "none")
+
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Prompt Preview[/bold blue]",
+            border_style="blue",
+        )
+    )
+    console.print(
+        Panel(
+            Markdown(preview.content),
+            title="[bold blue]Prompt Body[/bold blue]",
+            border_style="blue",
+        )
+    )
+
+
+def _format_workflow_reason(*, summary: str | None, code: str | None) -> str:
+    if summary and code:
+        return f"{summary} ({code})"
+    return summary or code or "none"
 
 
 def _coerce_permission_check_arguments(

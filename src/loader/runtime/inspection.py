@@ -24,6 +24,7 @@ from .permissions import (
     permission_path_hint,
     summarize_permission_input,
 )
+from .prompting import build_system_prompt_result
 from .session import SessionSnapshot, SessionStore
 
 
@@ -212,6 +213,26 @@ class SessionDetail:
     snapshot: SessionSnapshot
     is_current: bool
     definition_of_done: DefinitionOfDone | None
+
+
+@dataclass(slots=True)
+class PromptPreview:
+    """Operator-facing preview of the current prompt contract."""
+
+    project_root: Path
+    model: str
+    capability_profile: CapabilityProfile
+    active_session_id: str | None
+    workflow_mode: str
+    workflow_reason_code: str | None
+    workflow_reason_summary: str | None
+    workflow_decision_kind: str | None
+    permission_mode: str
+    current_task: str | None
+    prompt_format: str
+    section_names: list[str] = field(default_factory=list)
+    prompt_sections: list[str] = field(default_factory=list)
+    content: str = ""
 
 
 def capability_summary(profile: CapabilityProfile) -> str:
@@ -479,6 +500,80 @@ def load_session_detail(
         snapshot=snapshot,
         is_current=snapshot.session_id == current_session_id,
         definition_of_done=_load_dod(snapshot.active_dod_path, project_root=resolved_root),
+    )
+
+
+def collect_prompt_preview(
+    project_root: Path | str | None = None,
+    *,
+    model: str | None = None,
+    workflow_mode: str | None = None,
+    permission_mode: PermissionMode | str | None = None,
+    current_task: str | None = None,
+    force_react: bool = False,
+    registry: ToolRegistry | None = None,
+) -> PromptPreview:
+    """Render the current prompt contract without invoking the backend."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    resolved_model = model or get_default_model()
+    capability_profile = resolve_capability_profile(resolved_model)
+    project_context = detect_project(resolved_root)
+    snapshot = SessionStore(resolved_root).load_latest()
+
+    effective_workflow_mode = workflow_mode or (
+        snapshot.workflow_mode if snapshot is not None else "execute"
+    )
+    effective_permission_mode = (
+        _coerce_permission_mode(permission_mode).as_str()
+        if permission_mode is not None
+        else (
+            snapshot.permission_mode
+            if snapshot is not None
+            else PermissionMode.WORKSPACE_WRITE.as_str()
+        )
+    )
+    effective_task = current_task or (snapshot.current_task if snapshot is not None else None)
+
+    registry = registry or create_default_registry(resolved_root)
+    registry.configure_workspace_root(resolved_root)
+    prompt_result = build_system_prompt_result(
+        tools=registry.get_schemas(),
+        use_react=force_react or not capability_profile.supports_native_tools,
+        project_context=project_context,
+        workflow_mode=effective_workflow_mode,
+        permission_mode=effective_permission_mode,
+        cwd=resolved_root,
+        current_task=effective_task,
+    )
+
+    return PromptPreview(
+        project_root=resolved_root,
+        model=resolved_model,
+        capability_profile=capability_profile,
+        active_session_id=snapshot.session_id if snapshot is not None else None,
+        workflow_mode=effective_workflow_mode,
+        workflow_reason_code=(
+            snapshot.workflow_reason_code
+            if snapshot is not None and effective_workflow_mode == snapshot.workflow_mode
+            else None
+        ),
+        workflow_reason_summary=(
+            snapshot.workflow_reason_summary
+            if snapshot is not None and effective_workflow_mode == snapshot.workflow_mode
+            else None
+        ),
+        workflow_decision_kind=(
+            snapshot.workflow_decision_kind
+            if snapshot is not None and effective_workflow_mode == snapshot.workflow_mode
+            else None
+        ),
+        permission_mode=effective_permission_mode,
+        current_task=effective_task,
+        prompt_format=prompt_result.prompt_format,
+        section_names=list(prompt_result.section_names),
+        prompt_sections=list(prompt_result.dynamic_section_names),
+        content=prompt_result.content,
     )
 
 
