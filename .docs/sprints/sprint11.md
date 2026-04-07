@@ -184,3 +184,32 @@ A good outcome is that `conversation.py` keeps shrinking because ownership is cl
 - a first-class permission rule editor
 - AST-aware, LSP-aware, or symbol-aware editing
 - multi-agent or team orchestration
+
+## Audit
+
+### Landed
+
+- Loader now extracts typed workflow signals in `src/loader/runtime/workflow_signals.py`, and route decisions persist `signal_summary` context so we can explain why clarify, plan, or direct execute won without rebuilding those heuristics inside the coordinator
+- clarify is now intent-aware instead of generic: `src/loader/runtime/clarify_strategy.py` defines explicit slots such as desired outcome, non-goals, acceptance criteria, constraints, decision boundaries, and likely touchpoints, and the runtime now persists why clarify continued or stopped around those slots
+- replan discipline is broader and more honest: `src/loader/runtime/artifact_invalidation.py` can now distinguish targeted plan refresh, clarify reentry, and full re-plan based on semantic drift instead of only touched-file mismatch, and `src/loader/runtime/conversation.py` routes those recovery moves explicitly
+- workflow inspection is more useful for actual operator questions: `loader workflow show` now supports mode/kind filtering and entry limits, and `src/loader/runtime/inspection.py` plus `src/loader/cli/main.py` surface concise workflow highlights for re-asks, reentries, refreshes, and verify skips
+- `conversation.py` is slimmer again because clarify/plan lane execution moved into `src/loader/runtime/workflow_lanes.py`, which now owns lane prompts, artifact writes, clarify follow-up handling, and plan todo seeding while the main runtime acts more like a coordinator
+
+### Verification
+
+- `uv run pytest -q` is green: `197 passed`
+- `tests/test_workflow_signals.py` covers typed signal extraction, recent timeline pressure, and persisted `signal_summary` state
+- `tests/test_clarify_strategy.py` covers slot prioritization and targeted clarify questions
+- `tests/test_artifact_invalidation.py` covers semantic invalidation and recovery-mode selection
+- `tests/test_workflow_runtime.py` covers intent-aware clarify continuation, targeted plan refresh, and full re-plan through clarify reentry
+- `tests/test_inspection.py` covers `loader workflow show` filtering/highlights plus session/status workflow inspection
+- targeted `ruff` checks are green for `src/loader/runtime/workflow_signals.py`, `src/loader/runtime/clarify_strategy.py`, `src/loader/runtime/artifact_invalidation.py`, `src/loader/runtime/workflow_policy.py`, `src/loader/runtime/workflow_lanes.py`, `src/loader/runtime/conversation.py`, `src/loader/runtime/inspection.py`, and the new/expanded workflow inspection tests
+- `uv run python -m compileall src/loader/cli/main.py` is green; full-file `ruff` on `src/loader/cli/main.py` still inherits the repo's older line-length backlog, so CLI verification here is anchored primarily by the inspection command tests
+
+### Residual debt
+
+- typed workflow signals are a better contract than inline heuristics, but they are still built from hand-tuned text/runtime cues rather than OMX-style ambiguity scoring, evidence passes, or richer task semantics
+- clarify is now slot-driven, but it still stops well short of OMX's deep-interview pressure-pass discipline, repository-backed fact gathering, and task-profile-dependent depth
+- artifact invalidation is broader now, but it is still lightweight and text-based; Loader does not yet reason over richer artifact metadata, deeper verification contradictions, or more explicit assumption tracking
+- `loader workflow show` now answers the common operator questions much better, but it still lacks artifact diffs, prompt-history comparison, and richer timeline drill-down ergonomics
+- `src/loader/runtime/conversation.py` is more coordinator-like than before Sprint 11, but it still owns the main turn loop, completion policy handoff, and some recovery sequencing that claw-code keeps in even more dedicated seams
