@@ -476,7 +476,10 @@ class WorkflowLaneRunner:
         focus_label = describe_clarify_slot(focus_slot)
         stage_label = describe_clarify_stage(stage)
         pressure_label = describe_clarify_pressure_kind(pressure_kind)
-        evidence_block = grounding.slot_prompt_block(focus_slot)
+        evidence_block = grounding.slot_prompt_block(
+            focus_slot,
+            pressure_kind,
+        )
         return (
             "Clarify the task before planning or implementation.\n\n"
             f"Task: {task}\n"
