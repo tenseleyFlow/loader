@@ -13,7 +13,7 @@ from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer
-from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
+from .phases import TurnPhase, TurnPhaseTracker
 from .repair import ResponseRepairer
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -38,7 +38,7 @@ class TurnCompletionDecision:
 
 
 class TurnCompletionController:
-    """Owns repair, completion nudges, and DoD gating for no-tool responses."""
+    """Owns no-tool completion policy and DoD gating."""
 
     def __init__(
         self,
@@ -73,47 +73,6 @@ class TurnCompletionController:
         rollback_plan: RollbackPlan | None,
     ) -> TurnCompletionDecision:
         """Handle a no-tool assistant response inside the main turn loop."""
-
-        repair_message = self.repairer.fake_tool_narration_message(
-            response_content=response_content,
-            iterations=iterations,
-            max_iterations=max_iterations,
-        )
-        if repair_message is not None:
-            await self.phase_tracker.enter(
-                TurnPhase.REPAIR,
-                emit,
-                detail="Repairing fake tool narration",
-                reason_code="repair_fake_tool_narration",
-                kind=TurnTransitionKind.REROUTE,
-            )
-            self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-            self.agent.session.append(Message(role=Role.USER, content=repair_message))
-            return TurnCompletionDecision(
-                action=TurnCompletionAction.CONTINUE,
-                continuation_count=continuation_count,
-            )
-
-        deflection_message = self.repairer.deflection_message(
-            content=content,
-            actions_taken=actions_taken,
-            iterations=iterations,
-            max_iterations=max_iterations,
-        )
-        if deflection_message is not None:
-            await self.phase_tracker.enter(
-                TurnPhase.REPAIR,
-                emit,
-                detail="Repairing execution deflection",
-                reason_code="repair_execution_deflection",
-                kind=TurnTransitionKind.REROUTE,
-            )
-            self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-            self.agent.session.append(Message(role=Role.USER, content=deflection_message))
-            return TurnCompletionDecision(
-                action=TurnCompletionAction.CONTINUE,
-                continuation_count=continuation_count,
-            )
 
         cfg = self.agent.config.reasoning
         if cfg.self_critique and len(content) > 100:
