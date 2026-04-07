@@ -4,15 +4,32 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from .base import Tool, ToolResult, ConfirmationRequired
+from ..runtime.permissions import PermissionMode
+from .base import ConfirmationRequired, Tool, ToolResult
+from .fs_safety import (
+    ensure_safe_to_read,
+    ensure_safe_to_write,
+    make_structured_patch,
+    resolve_workspace_path,
+)
 
 
 class ReadTool(Tool):
     """Read file contents."""
 
+    required_permission = PermissionMode.READ_ONLY
+
+    def __init__(self, workspace_root: Path | str | None = None) -> None:
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
+
     @property
     def name(self) -> str:
         return "read"
+
+    def set_workspace_root(self, workspace_root: Path | None) -> None:
+        self.workspace_root = workspace_root
 
     @property
     def description(self) -> str:
@@ -48,7 +65,17 @@ class ReadTool(Tool):
         limit: int = 500,
         **kwargs: Any,
     ) -> ToolResult:
-        path = Path(file_path).expanduser().resolve()
+        try:
+            path = resolve_workspace_path(
+                file_path,
+                workspace_root=self.workspace_root,
+            )
+        except FileNotFoundError:
+            return ToolResult(f"File not found: {file_path}", is_error=True)
+        except PermissionError as exc:
+            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except Exception as exc:
+            return ToolResult(f"Error resolving file path: {exc}", is_error=True)
 
         if not path.exists():
             return ToolResult(f"File not found: {file_path}", is_error=True)
@@ -57,6 +84,7 @@ class ReadTool(Tool):
             return ToolResult(f"Not a file: {file_path}", is_error=True)
 
         try:
+            ensure_safe_to_read(path)
             content = await asyncio.to_thread(path.read_text)
             lines = content.splitlines()
 
@@ -75,7 +103,15 @@ class ReadTool(Tool):
             if end_idx < len(lines):
                 output += f"\n\n... ({len(lines) - end_idx} more lines)"
 
-            return ToolResult(output)
+            return ToolResult(
+                output,
+                metadata={
+                    "file_path": str(path),
+                    "line_count": len(lines),
+                    "offset": offset,
+                    "limit": limit,
+                },
+            )
         except Exception as e:
             return ToolResult(f"Error reading file: {e}", is_error=True)
 
@@ -83,9 +119,19 @@ class ReadTool(Tool):
 class WriteTool(Tool):
     """Write content to a file."""
 
+    required_permission = PermissionMode.WORKSPACE_WRITE
+
+    def __init__(self, workspace_root: Path | str | None = None) -> None:
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
+
     @property
     def name(self) -> str:
         return "write"
+
+    def set_workspace_root(self, workspace_root: Path | None) -> None:
+        self.workspace_root = workspace_root
 
     @property
     def description(self) -> str:
@@ -129,15 +175,45 @@ class WriteTool(Tool):
         content: str,
         **kwargs: Any,
     ) -> ToolResult:
-        path = Path(file_path).expanduser().resolve()
+        try:
+            ensure_safe_to_write(content)
+            path = resolve_workspace_path(
+                file_path,
+                workspace_root=self.workspace_root,
+                allow_missing=True,
+            )
+        except PermissionError as exc:
+            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except Exception as exc:
+            return ToolResult(f"Error writing file: {exc}", is_error=True)
 
         try:
+            original_content = ""
+            if path.exists():
+                ensure_safe_to_read(path)
+                original_content = await asyncio.to_thread(path.read_text)
+
             # Create parent directories if needed
             path.parent.mkdir(parents=True, exist_ok=True)
 
             await asyncio.to_thread(path.write_text, content)
 
-            return ToolResult(f"Successfully wrote {len(content)} bytes to {file_path}")
+            structured_patch = [
+                hunk.to_dict()
+                for hunk in make_structured_patch(original_content, content)
+            ]
+            metadata = {
+                "kind": "update" if original_content else "create",
+                "file_path": str(path),
+                "content": content,
+                "original_file": original_content or None,
+                "structured_patch": structured_patch,
+                "bytes_written": len(content.encode("utf-8")),
+            }
+            return ToolResult(
+                f"Successfully wrote {len(content)} bytes to {path}",
+                metadata=metadata,
+            )
         except Exception as e:
             return ToolResult(f"Error writing file: {e}", is_error=True)
 
@@ -145,9 +221,19 @@ class WriteTool(Tool):
 class EditTool(Tool):
     """Edit a file by replacing text."""
 
+    required_permission = PermissionMode.WORKSPACE_WRITE
+
+    def __init__(self, workspace_root: Path | str | None = None) -> None:
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
+
     @property
     def name(self) -> str:
         return "edit"
+
+    def set_workspace_root(self, workspace_root: Path | None) -> None:
+        self.workspace_root = workspace_root
 
     @property
     def description(self) -> str:
@@ -195,17 +281,28 @@ class EditTool(Tool):
         new_string: str,
         **kwargs: Any,
     ) -> ToolResult:
-        path = Path(file_path).expanduser().resolve()
+        try:
+            path = resolve_workspace_path(
+                file_path,
+                workspace_root=self.workspace_root,
+            )
+        except FileNotFoundError:
+            return ToolResult(f"File not found: {file_path}", is_error=True)
+        except PermissionError as exc:
+            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except Exception as exc:
+            return ToolResult(f"Error resolving file path: {exc}", is_error=True)
 
         if not path.exists():
             return ToolResult(f"File not found: {file_path}", is_error=True)
 
         try:
+            ensure_safe_to_read(path)
             content = await asyncio.to_thread(path.read_text)
 
             if old_string not in content:
                 return ToolResult(
-                    f"old_string not found in file. Make sure it matches exactly.",
+                    "old_string not found in file. Make sure it matches exactly.",
                     is_error=True,
                 )
 
@@ -218,9 +315,23 @@ class EditTool(Tool):
                 )
 
             new_content = content.replace(old_string, new_string, 1)
+            ensure_safe_to_write(new_content)
             await asyncio.to_thread(path.write_text, new_content)
 
-            return ToolResult(f"Successfully edited {file_path}")
+            structured_patch = [
+                hunk.to_dict()
+                for hunk in make_structured_patch(content, new_content)
+            ]
+            return ToolResult(
+                f"Successfully edited {path}",
+                metadata={
+                    "file_path": str(path),
+                    "old_string": old_string,
+                    "new_string": new_string,
+                    "original_file": content,
+                    "structured_patch": structured_patch,
+                },
+            )
         except Exception as e:
             return ToolResult(f"Error editing file: {e}", is_error=True)
 
@@ -228,9 +339,19 @@ class EditTool(Tool):
 class GlobTool(Tool):
     """Find files matching a glob pattern."""
 
+    required_permission = PermissionMode.READ_ONLY
+
+    def __init__(self, workspace_root: Path | str | None = None) -> None:
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
+
     @property
     def name(self) -> str:
         return "glob"
+
+    def set_workspace_root(self, workspace_root: Path | None) -> None:
+        self.workspace_root = workspace_root
 
     @property
     def description(self) -> str:
@@ -260,7 +381,17 @@ class GlobTool(Tool):
         path: str = ".",
         **kwargs: Any,
     ) -> ToolResult:
-        base_path = Path(path).expanduser().resolve()
+        try:
+            base_path = resolve_workspace_path(
+                path,
+                workspace_root=self.workspace_root,
+            )
+        except FileNotFoundError:
+            return ToolResult(f"Directory not found: {path}", is_error=True)
+        except PermissionError as exc:
+            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except Exception as exc:
+            return ToolResult(f"Error resolving directory: {exc}", is_error=True)
 
         if not base_path.exists():
             return ToolResult(f"Directory not found: {path}", is_error=True)
@@ -271,16 +402,25 @@ class GlobTool(Tool):
             matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
             # Limit results
-            if len(matches) > 100:
+            total_matches = len(matches)
+            truncated = total_matches > 100
+            if truncated:
                 matches = matches[:100]
                 output = "\n".join(str(p) for p in matches)
-                output += f"\n\n... (showing first 100 of {len(matches)} matches)"
+                output += f"\n\n... (showing first 100 of {total_matches} matches)"
             else:
                 output = "\n".join(str(p) for p in matches)
 
             if not matches:
                 output = f"No files matching pattern: {pattern}"
 
-            return ToolResult(output)
+            return ToolResult(
+                output,
+                metadata={
+                    "base_path": str(base_path),
+                    "num_files": len(matches),
+                    "truncated": truncated if "truncated" in locals() else False,
+                },
+            )
         except Exception as e:
             return ToolResult(f"Error searching files: {e}", is_error=True)

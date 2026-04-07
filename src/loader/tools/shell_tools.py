@@ -5,11 +5,15 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from ..runtime.permissions import PermissionMode
 from .base import ConfirmationRequired, Tool, ToolResult
 
 
 class BashTool(Tool):
     """Execute bash commands."""
+
+    required_permission = PermissionMode.DANGER_FULL_ACCESS
+    OUTPUT_LIMIT = 50_000
 
     # Commands that are generally safe (read-only operations)
     SAFE_COMMANDS = {
@@ -66,6 +70,39 @@ class BashTool(Tool):
             if cmd == safe or cmd.startswith(safe + " "):
                 return True
         return False
+
+    def get_required_permission(self, **kwargs: Any) -> PermissionMode:
+        """Classify one shell invocation by its mutability."""
+        command = str(kwargs.get("command", ""))
+        return self.classify_command_permission(command)
+
+    def classify_command_permission(self, command: str) -> PermissionMode:
+        """Classify a shell command into a runtime permission mode."""
+        normalized = command.strip().lower()
+        if not normalized:
+            return PermissionMode.DANGER_FULL_ACCESS
+        if self._is_safe_command(normalized):
+            return PermissionMode.READ_ONLY
+
+        danger_signals = (
+            "sudo ",
+            "chmod ",
+            "chown ",
+            "rm -",
+            "mkfs",
+            "dd ",
+            "/etc/",
+            "/usr/",
+            "/bin/",
+            "/sbin/",
+            "/boot/",
+            "/proc/",
+            "/sys/",
+        )
+        if any(signal in normalized for signal in danger_signals):
+            return PermissionMode.DANGER_FULL_ACCESS
+
+        return PermissionMode.WORKSPACE_WRITE
 
     def check_confirmation(self, skip_confirmation: bool = False, **kwargs: Any) -> None:
         if skip_confirmation:
@@ -148,8 +185,11 @@ class BashTool(Tool):
             output = "\n".join(output_parts) if output_parts else "(no output)"
 
             # Truncate if too long
-            if len(output) > 50000:
-                output = output[:50000] + "\n\n... (output truncated)"
+            truncated = len(output) > self.OUTPUT_LIMIT
+            if truncated:
+                output = output[: self.OUTPUT_LIMIT] + "\n\n... (output truncated)"
+            else:
+                truncated = False
 
             metadata = {
                 "command": command,
@@ -157,6 +197,9 @@ class BashTool(Tool):
                 "exit_code": process.returncode,
                 "stdout": stdout.decode("utf-8", errors="replace") if stdout else "",
                 "stderr": stderr.decode("utf-8", errors="replace") if stderr else "",
+                "mutability": self.classify_command_permission(command).as_str(),
+                "truncated": truncated,
+                "output_limit": self.OUTPUT_LIMIT,
             }
 
             if process.returncode != 0:

@@ -23,6 +23,9 @@ class CodeBlockFilter:
 
     Handles both complete blocks (```...```) and partial blocks that span
     multiple stream chunks. Also filters [calls X tool with ...] patterns.
+
+    Candidate for removal once the typed runtime makes tool-call leakage
+    structurally impossible.
     """
 
     def __init__(self):

@@ -2,7 +2,10 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from ..runtime.permissions import PermissionMode
 
 
 class ConfirmationRequired(Exception):
@@ -26,6 +29,8 @@ class ToolResult:
 
 class Tool(ABC):
     """Abstract base class for tools."""
+
+    required_permission: PermissionMode = PermissionMode.DANGER_FULL_ACCESS
 
     @property
     @abstractmethod
@@ -52,6 +57,14 @@ class Tool(ABC):
         Override in subclasses for tools that modify state.
         """
         return False
+
+    def set_workspace_root(self, workspace_root: Path | None) -> None:
+        """Update the workspace root used by the tool, if applicable."""
+        return None
+
+    def get_required_permission(self, **kwargs: Any) -> PermissionMode:
+        """Return the required permission for this invocation."""
+        return self.required_permission
 
     def check_confirmation(self, skip_confirmation: bool = False, **kwargs: Any) -> None:
         """Check if this operation requires confirmation.
@@ -82,12 +95,21 @@ class Tool(ABC):
 class ToolRegistry:
     """Registry of available tools."""
 
-    def __init__(self, skip_confirmation: bool = False) -> None:
+    def __init__(
+        self,
+        skip_confirmation: bool = False,
+        workspace_root: Path | str | None = None,
+    ) -> None:
         self._tools: dict[str, Tool] = {}
         self.skip_confirmation = skip_confirmation
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
+        if self.workspace_root is not None:
+            tool.set_workspace_root(self.workspace_root)
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool | None:
@@ -101,6 +123,21 @@ class ToolRegistry:
     def get_schemas(self) -> list[dict[str, Any]]:
         """Get JSON schemas for all tools."""
         return [tool.to_schema() for tool in self._tools.values()]
+
+    def configure_workspace_root(self, workspace_root: Path | str | None) -> None:
+        """Update the workspace root for the registry and registered tools."""
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
+        for tool in self._tools.values():
+            tool.set_workspace_root(self.workspace_root)
+
+    def get_tool_requirements(self) -> dict[str, PermissionMode]:
+        """Return the default permission requirement for each tool."""
+        return {
+            tool.name: tool.required_permission
+            for tool in self._tools.values()
+        }
 
     async def execute(self, name: str, **kwargs: Any) -> ToolResult:
         """Execute a tool by name.
@@ -137,13 +174,15 @@ class ToolRegistry:
             )
 
 
-def create_default_registry() -> ToolRegistry:
+def create_default_registry(
+    workspace_root: Path | str | None = None,
+) -> ToolRegistry:
     """Create a registry with default tools."""
     from .file_tools import EditTool, GlobTool, ReadTool, WriteTool
     from .search_tools import GrepTool
     from .shell_tools import BashTool
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(workspace_root=workspace_root)
     registry.register(ReadTool())
     registry.register(WriteTool())
     registry.register(EditTool())

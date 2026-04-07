@@ -341,6 +341,8 @@ def _extract_files_from_bash(command: str) -> list[str]:
 
     if len(parts) >= 2 and parts[0] == "touch":
         return parts[1:]
+    if len(parts) >= 3 and parts[0] in {"chmod", "chown"}:
+        return [parts[-1]]
     if len(parts) >= 2 and parts[0] == "python":
         return [parts[1]]
     return []

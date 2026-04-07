@@ -10,12 +10,10 @@ from ..agent.parsing import parse_tool_calls
 from ..agent.reasoning import (
     RollbackPlan,
     TaskCompletionCheck,
-    create_rollback_plan_for_action,
     detect_premature_completion,
     estimate_complexity,
     get_continuation_prompt,
     get_token_budget,
-    is_destructive_tool,
     should_self_critique,
 )
 from ..agent.recovery import RecoveryContext, format_failure_message, format_recovery_prompt
@@ -30,6 +28,7 @@ from .dod import (
 )
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
+from .hooks import build_default_tool_hooks
 from .tracing import RuntimeTracer
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -61,7 +60,7 @@ class ConversationRuntime:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
         self.tracer = RuntimeTracer()
-        self.executor = ToolExecutor(agent.registry, agent.safeguards, self.tracer)
+        self.executor: ToolExecutor | None = None
         self.dod_store = DefinitionOfDoneStore(agent.project_root)
 
     async def run_turn(
@@ -90,6 +89,17 @@ class ConversationRuntime:
         effective_max_tokens = min(self.agent.config.max_tokens, max(max_tokens, 512))
 
         rollback_plan = RollbackPlan() if self.agent.config.reasoning.rollback else None
+        self.executor = ToolExecutor(
+            self.agent.registry,
+            self.tracer,
+            self.agent.permission_policy,
+            hooks=build_default_tool_hooks(
+                action_tracker=self.agent.safeguards.action_tracker,
+                validator=self.agent.safeguards.validator,
+                registry=self.agent.registry,
+                rollback_plan=rollback_plan,
+            ),
+        )
         summary = TurnSummary(final_response="")
         dod = self.dod_store.create_or_resume(
             original_task or task,
@@ -268,34 +278,26 @@ class ConversationRuntime:
 
                     actions_taken.append(f"{tool_call.name}: {str(tool_call.arguments)[:100]}")
 
-                    if rollback_plan and is_destructive_tool(tool_call.name, tool_call.arguments):
-
-                        async def read_file_for_backup(path: str) -> str:
-                            read_result = await self.agent.registry.execute("read", file_path=path)
-                            return read_result.output if not read_result.is_error else ""
-
-                        rollback_action = await create_rollback_plan_for_action(
-                            tool_call.name,
-                            tool_call.arguments,
-                            read_file_for_backup,
-                        )
-                        if rollback_action:
-                            rollback_plan.actions.append(rollback_action)
-                            if self.agent.config.reasoning.show_rollback_plan:
-                                await emit(
-                                    AgentEvent(
-                                        type="rollback",
-                                        content=f"Rollback tracked: {rollback_action.description}",
-                                        rollback_action=rollback_action,
-                                    )
-                                )
-
                     outcome = await self.executor.execute_tool_call(
                         tool_call,
                         on_confirmation=on_confirmation,
                         emit_confirmation=self._emit_confirmation(emit),
                         source=tool_source,
                     )
+                    if (
+                        outcome.rollback_action is not None
+                        and self.agent.config.reasoning.show_rollback_plan
+                    ):
+                        await emit(
+                            AgentEvent(
+                                type="rollback",
+                                content=(
+                                    "Rollback tracked: "
+                                    f"{outcome.rollback_action.description}"
+                                ),
+                                rollback_action=outcome.rollback_action,
+                            )
+                        )
 
                     if (
                         outcome.state == ToolExecutionState.EXECUTED
@@ -857,6 +859,7 @@ class ConversationRuntime:
                     phase="verification",
                 )
             )
+            assert self.executor is not None
             outcome = await self.executor.execute_tool_call(
                 verification_call,
                 on_confirmation=None,

@@ -11,6 +11,7 @@ from ..llm.base import LLMBackend, Message, Role, ToolCall
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.conversation import ConversationRuntime
 from ..runtime.events import AgentEvent, TurnSummary
+from ..runtime.permissions import PermissionMode, build_permission_policy
 from ..runtime.session import ConversationSession
 from ..tools.base import ToolRegistry, create_default_registry
 from .planner import (
@@ -87,6 +88,7 @@ class AgentConfig:
     auto_recover: bool = True  # Auto-recover from tool errors
     max_recovery_attempts: int = 2  # Reduced from 3
     verification_retry_budget: int = 3  # Retry budget for verify/fix loop
+    permission_mode: PermissionMode = PermissionMode.WORKSPACE_WRITE
     stream: bool = True  # Stream LLM responses for real-time output
 
     # Reasoning stages configuration
@@ -108,9 +110,15 @@ class Agent:
         project_root: Path | str | None = None,
     ):
         self.backend = backend
-        self.registry = registry or create_default_registry()
         self.config = config or AgentConfig()
         self.project_root = Path(project_root or ".").expanduser().resolve()
+        self.registry = registry or create_default_registry(self.project_root)
+        self.registry.configure_workspace_root(self.project_root)
+        self.permission_policy = build_permission_policy(
+            active_mode=self.config.permission_mode,
+            workspace_root=self.project_root,
+            tool_requirements=self.registry.get_tool_requirements(),
+        )
         self.messages: list[Message] = []
         self.session = ConversationSession(
             system_message_factory=self._get_system_message,
@@ -155,6 +163,11 @@ class Agent:
     def is_running(self) -> bool:
         """Check if the agent is currently running."""
         return self._is_running
+
+    @property
+    def active_permission_mode(self) -> str:
+        """Return the current runtime permission mode."""
+        return self.permission_policy.active_mode.as_str()
 
     def _drain_steering_queue(self) -> list[str]:
         """Get all pending steering messages without blocking."""

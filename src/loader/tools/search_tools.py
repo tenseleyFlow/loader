@@ -5,15 +5,27 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..runtime.permissions import PermissionMode
 from .base import Tool, ToolResult
+from .fs_safety import detect_binary_file, resolve_workspace_path
 
 
 class GrepTool(Tool):
     """Search for patterns in files."""
 
+    required_permission = PermissionMode.READ_ONLY
+
+    def __init__(self, workspace_root: Path | str | None = None) -> None:
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve() if workspace_root else None
+        )
+
     @property
     def name(self) -> str:
         return "grep"
+
+    def set_workspace_root(self, workspace_root: Path | None) -> None:
+        self.workspace_root = workspace_root
 
     @property
     def description(self) -> str:
@@ -60,7 +72,17 @@ class GrepTool(Tool):
         max_results: int = 50,
         **kwargs: Any,
     ) -> ToolResult:
-        base_path = Path(path).expanduser().resolve()
+        try:
+            base_path = resolve_workspace_path(
+                path,
+                workspace_root=self.workspace_root,
+            )
+        except FileNotFoundError:
+            return ToolResult(f"Path not found: {path}", is_error=True)
+        except PermissionError as exc:
+            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except Exception as exc:
+            return ToolResult(f"Error resolving search path: {exc}", is_error=True)
 
         if not base_path.exists():
             return ToolResult(f"Path not found: {path}", is_error=True)
@@ -85,6 +107,11 @@ class GrepTool(Tool):
                         continue
                     if any(part in ("node_modules", "__pycache__", ".git", "venv", ".venv")
                            for part in f.parts):
+                        continue
+                    try:
+                        if detect_binary_file(f):
+                            continue
+                    except OSError:
                         continue
                     files.append(f)
 
@@ -134,4 +161,12 @@ class GrepTool(Tool):
         if total_matches >= max_results:
             output += f"\n\n... (showing first {max_results} matches)"
 
-        return ToolResult(output)
+        return ToolResult(
+            output,
+            metadata={
+                "path": str(base_path),
+                "num_files": len(files),
+                "num_matches": total_matches,
+                "max_results": max_results,
+            },
+        )
