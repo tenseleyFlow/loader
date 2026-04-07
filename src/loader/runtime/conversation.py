@@ -20,6 +20,7 @@ from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .turn_completion import TurnCompletionController
 from .turn_iteration import TurnIterationAction, TurnIterationController
+from .turn_preamble import TurnPreludeController
 from .turn_preparation import TurnPreparationController
 from .workflow import (
     ModeDecision,
@@ -105,6 +106,11 @@ class ConversationRuntime:
             append_timeline=self._append_workflow_timeline_from_decision,
             append_execute_bridge=self._maybe_append_execute_bridge,
         )
+        self.turn_preamble = TurnPreludeController(
+            agent,
+            tracer=self.tracer,
+            workflow_recovery=self.workflow_recovery,
+        )
 
     async def run_turn(
         self,
@@ -143,51 +149,20 @@ class ConversationRuntime:
 
         while iterations < self.agent.config.max_iterations:
             iterations += 1
-            summary.iterations = iterations
-            self.tracer.record("turn.iteration_started", iteration=iterations)
-
-            if iterations == 1 and len(self.agent.messages) == 1:
-                task_lower = task.lower()
-                action_keywords = [
-                    "create",
-                    "write",
-                    "make",
-                    "run",
-                    "execute",
-                    "build",
-                    "install",
-                    "delete",
-                    "remove",
-                    "add",
-                    "edit",
-                    "modify",
-                    "update",
-                    "fix",
-                ]
-                if any(keyword in task_lower for keyword in action_keywords):
-                    self.agent.session.append(Message(role=Role.ASSISTANT, content="["))
-
-            steering_messages = self.agent._drain_steering_queue()
-            for steering_message in steering_messages:
-                await emit(AgentEvent(type="steering", content=steering_message))
-                self.agent.session.append(
-                    Message(
-                        role=Role.USER,
-                        content=f"[USER INTERRUPTION]: {steering_message}",
-                    )
-                )
-
-            if await self.workflow_recovery.maybe_refresh_plan_for_drift(
-                task=original_task or task,
+            assert self.executor is not None
+            prelude_decision = await self.turn_preamble.prepare_iteration(
+                task=task,
+                original_task=original_task,
+                iterations=iterations,
                 dod=dod,
                 emit=emit,
                 summary=summary,
                 on_user_question=on_user_question,
                 executor=self.executor,
-            ):
+            )
+            if prelude_decision.should_continue:
                 continue
 
-            assert self.executor is not None
             iteration_decision = await self.turn_iteration.run_iteration(
                 task=task,
                 effective_task=effective_task,
