@@ -91,6 +91,29 @@ def test_workflow_policy_requests_follow_up_when_clarify_answer_is_still_ambiguo
     assert review.focus_slot == "likely_touchpoints"
 
 
+def test_workflow_policy_requests_pressure_pass_on_later_clarify_round() -> None:
+    policy = WorkflowPolicy()
+
+    review = policy.review_clarify(
+        task="Improve Loader runtime behavior.",
+        answer="Focus on src/loader/runtime/conversation.py.",
+        snapshot=ClarifySnapshot(
+            task_statement="Improve Loader runtime behavior.",
+            explicit_sections=["desired_outcome", "likely_touchpoints"],
+            desired_outcome=["Make the runtime flow more disciplined."],
+            likely_touchpoints=["src/loader/runtime/conversation.py"],
+        ),
+        round_index=2,
+        max_rounds=4,
+    )
+
+    assert review.should_continue is True
+    assert review.reason_code == "clarify_pressure_pass_required"
+    assert review.stage == "readiness"
+    assert review.pressure_kind == "tradeoff"
+    assert review.pressure_pass_complete is False
+
+
 def test_workflow_timeline_entry_round_trips() -> None:
     entry = WorkflowTimelineEntry(
         timestamp="2026-04-07T12:00:00Z",

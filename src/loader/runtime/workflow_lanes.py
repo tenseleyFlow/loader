@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from ..llm.base import Message, Role, ToolCall
-from .clarify_strategy import ClarifySnapshot, build_clarify_question, describe_clarify_slot
+from .clarify_strategy import (
+    ClarifySnapshot,
+    build_clarify_question,
+    describe_clarify_pressure_kind,
+    describe_clarify_slot,
+    describe_clarify_stage,
+)
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
@@ -67,6 +73,10 @@ class WorkflowLaneRunner:
             reason_summary="clarify gathered enough boundaries to proceed",
             unresolved_slots=[],
             focus_slot=None,
+            stage="intent",
+            pressure_kind=None,
+            pressure_pass_complete=False,
+            missing_readiness_gates=[],
         )
 
         for round_index in range(1, max_rounds + 1):
@@ -79,6 +89,8 @@ class WorkflowLaneRunner:
                 rounds=rounds,
                 unresolved_questions=review.unresolved_questions,
                 unresolved_slots=review.unresolved_slots,
+                stage=review.stage,
+                pressure_kind=review.pressure_kind,
             )
             rounds.append((question, answer))
             review = self.workflow_policy.review_clarify(
@@ -87,6 +99,7 @@ class WorkflowLaneRunner:
                 snapshot=self._clarify_snapshot(task, latest_brief),
                 round_index=round_index,
                 max_rounds=max_rounds,
+                pressure_pass_complete=review.pressure_pass_complete,
             )
             if review.should_continue:
                 append_timeline(
@@ -301,6 +314,8 @@ class WorkflowLaneRunner:
         rounds: list[tuple[str, str]],
         unresolved_questions: list[str],
         unresolved_slots: list[str],
+        stage: str | None,
+        pressure_kind: str | None,
     ) -> tuple[ClarifyBrief, str, str]:
         ask_tool = self.agent.registry.get("AskUserQuestion")
         assert ask_tool is not None
@@ -311,6 +326,8 @@ class WorkflowLaneRunner:
                 rounds=rounds,
                 unresolved_questions=unresolved_questions,
                 unresolved_slots=unresolved_slots,
+                stage=stage,
+                pressure_kind=pressure_kind,
             ),
             tools=[ask_tool.to_schema()],
             max_tokens=500,
@@ -328,6 +345,7 @@ class WorkflowLaneRunner:
                 task,
                 response.content,
                 unresolved_slots,
+                pressure_kind,
             )
             title = None
             options = None
@@ -410,6 +428,8 @@ class WorkflowLaneRunner:
         rounds: list[tuple[str, str]],
         unresolved_questions: list[str],
         unresolved_slots: list[str],
+        stage: str | None,
+        pressure_kind: str | None,
     ) -> str:
         history_lines = []
         for index, (question, answer) in enumerate(rounds, start=1):
@@ -422,13 +442,19 @@ class WorkflowLaneRunner:
         unresolved = "\n".join(f"- {item}" for item in unresolved_questions) or "- none"
         focus_slot = unresolved_slots[0] if unresolved_slots else None
         focus_label = describe_clarify_slot(focus_slot)
+        stage_label = describe_clarify_stage(stage)
+        pressure_label = describe_clarify_pressure_kind(pressure_kind)
         return (
             "Clarify the task before planning or implementation.\n\n"
             f"Task: {task}\n"
             f"Round: {round_index}\n"
+            f"Stage: {stage_label}\n"
             f"Focus slot: {focus_label}\n"
+            f"Pressure pass: {pressure_label}\n"
             "Ask exactly one focused question via AskUserQuestion.\n"
-            "Use the unresolved questions and prior answers to tighten scope.\n\n"
+            "Use the unresolved questions and prior answers to tighten scope.\n"
+            "If a pressure pass is active, prefer examples, tradeoffs, or "
+            "challenged assumptions over generic restatement.\n\n"
             "Unresolved questions:\n"
             f"{unresolved}\n\n"
             "Prior clarify history:\n"
@@ -516,12 +542,13 @@ class WorkflowLaneRunner:
         task: str,
         response_content: str,
         unresolved_slots: list[str],
+        pressure_kind: str | None,
     ) -> str:
         match = re.search(r"([A-Z][^?]+\?)", response_content)
         if match:
             return match.group(1).strip()
         focus_slot = unresolved_slots[0] if unresolved_slots else None
-        return build_clarify_question(task, focus_slot)
+        return build_clarify_question(task, focus_slot, pressure_kind)
 
     @staticmethod
     def _clarify_snapshot(task: str, brief: ClarifyBrief) -> ClarifySnapshot:

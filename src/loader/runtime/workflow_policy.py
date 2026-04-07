@@ -9,7 +9,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .clarify_strategy import ClarifySnapshot, assess_clarify_snapshot, describe_clarify_slot
+from .clarify_strategy import (
+    ClarifySnapshot,
+    assess_clarify_snapshot,
+    describe_clarify_pressure_kind,
+    describe_clarify_slot,
+)
 from .workflow_signals import WorkflowSignalExtractor, WorkflowSignalPacket
 
 
@@ -172,6 +177,10 @@ class ClarifyReview:
     unresolved_questions: list[str] = field(default_factory=list)
     unresolved_slots: list[str] = field(default_factory=list)
     focus_slot: str | None = None
+    stage: str | None = None
+    pressure_kind: str | None = None
+    pressure_pass_complete: bool = False
+    missing_readiness_gates: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -498,6 +507,7 @@ class WorkflowPolicy:
         snapshot: ClarifySnapshot,
         round_index: int,
         max_rounds: int,
+        pressure_pass_complete: bool = False,
     ) -> ClarifyReview:
         """Determine whether clarify should continue for another round."""
 
@@ -505,12 +515,36 @@ class WorkflowPolicy:
             task=task,
             answer=answer,
             snapshot=snapshot,
+            round_index=round_index,
+            pressure_pass_complete=pressure_pass_complete,
         )
         unresolved = list(assessment.unresolved_questions)
         focus_slot = assessment.focus_slot.value if assessment.focus_slot else None
         focus_label = describe_clarify_slot(assessment.focus_slot)
+        pressure_kind = (
+            assessment.pressure_kind.value if assessment.pressure_kind is not None else None
+        )
+        pressure_label = describe_clarify_pressure_kind(assessment.pressure_kind)
+        readiness_gates = list(assessment.missing_readiness_gates)
 
         if unresolved and round_index < max_rounds:
+            if assessment.pressure_kind is not None:
+                return ClarifyReview(
+                    should_continue=True,
+                    reason_code="clarify_pressure_pass_required",
+                    reason_summary=(
+                        "clarify still needs a "
+                        f"{pressure_label} pass around {focus_label}"
+                    ),
+                    unresolved_questions=unresolved,
+                    unresolved_slots=[slot.value for slot in assessment.unresolved_slots],
+                    focus_slot=focus_slot,
+                    stage=assessment.stage.value,
+                    pressure_kind=pressure_kind,
+                    pressure_pass_complete=assessment.pressure_pass_complete,
+                    missing_readiness_gates=readiness_gates,
+                )
+
             return ClarifyReview(
                 should_continue=True,
                 reason_code="clarify_follow_up_needed",
@@ -521,9 +555,30 @@ class WorkflowPolicy:
                 unresolved_questions=unresolved,
                 unresolved_slots=[slot.value for slot in assessment.unresolved_slots],
                 focus_slot=focus_slot,
+                stage=assessment.stage.value,
+                pressure_kind=pressure_kind,
+                pressure_pass_complete=assessment.pressure_pass_complete,
+                missing_readiness_gates=readiness_gates,
             )
 
         if unresolved:
+            if not assessment.pressure_pass_complete and round_index >= 2:
+                return ClarifyReview(
+                    should_continue=False,
+                    reason_code="clarify_budget_exhausted_without_pressure_pass",
+                    reason_summary=(
+                        "clarify budget exhausted before Loader completed a "
+                        "bounded pressure pass"
+                    ),
+                    unresolved_questions=unresolved,
+                    unresolved_slots=[slot.value for slot in assessment.unresolved_slots],
+                    focus_slot=focus_slot,
+                    stage=assessment.stage.value,
+                    pressure_kind=pressure_kind,
+                    pressure_pass_complete=assessment.pressure_pass_complete,
+                    missing_readiness_gates=readiness_gates,
+                )
+
             return ClarifyReview(
                 should_continue=False,
                 reason_code="clarify_budget_exhausted",
@@ -531,15 +586,27 @@ class WorkflowPolicy:
                 unresolved_questions=unresolved,
                 unresolved_slots=[slot.value for slot in assessment.unresolved_slots],
                 focus_slot=focus_slot,
+                stage=assessment.stage.value,
+                pressure_kind=pressure_kind,
+                pressure_pass_complete=assessment.pressure_pass_complete,
+                missing_readiness_gates=readiness_gates,
             )
 
         return ClarifyReview(
             should_continue=False,
             reason_code="clarify_complete",
-            reason_summary="clarify gathered enough boundaries to proceed",
+            reason_summary=(
+                "clarify gathered enough boundaries and completed a bounded pressure pass"
+                if assessment.pressure_pass_complete
+                else "clarify gathered enough boundaries to proceed"
+            ),
             unresolved_questions=[],
             unresolved_slots=[],
             focus_slot=None,
+            stage=assessment.stage.value,
+            pressure_kind=pressure_kind,
+            pressure_pass_complete=assessment.pressure_pass_complete,
+            missing_readiness_gates=readiness_gates,
         )
 
     def assess_artifact_freshness(
