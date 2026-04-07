@@ -23,6 +23,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 - [Sprint 05](sprint05.md) — Session State, Memory, and Compaction
 - [Sprint 06](sprint06.md) — Doctor, Explore, Status, and Tool Surface Expansion
 
+## Phase 5: Execution Policy and Runtime Simplification
+
+- [Sprint 07](sprint07.md) — Rule-Based Permissions and Runtime Decomposition
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
