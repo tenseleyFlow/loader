@@ -69,6 +69,8 @@ These runs are still pending. They require at least one configured real native-t
 | Raw-text-prone lane | Prompt that tends to elicit narrated fake tool use | Measures whether fake-tool repair actually saves the run or just churns the conversation | Pending real backend |
 | Raw-text-prone lane | Prompt that tends to return empty or deflective text | Measures whether empty-output and deflection repairs help enough to justify keeping them | Pending real backend |
 
+Use [sprint09_interactive_validation.md](sprint09_interactive_validation.md) as the capture format for each completed run set.
+
 ## Immediate Sprint 09 Follow-on
 
 - Use the `188 passed` repo-wide baseline as the regression floor for the next Sprint 09 slices.
