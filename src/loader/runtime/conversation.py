@@ -17,7 +17,8 @@ from .repair import ResponseRepairer
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .turn_completion import TurnCompletionController
-from .turn_iteration import TurnIterationAction, TurnIterationController
+from .turn_iteration import TurnIterationController
+from .turn_loop import TurnLoopController
 from .turn_preamble import TurnPreludeController
 from .turn_preparation import TurnPreparationController
 from .workflow import (
@@ -109,6 +110,11 @@ class ConversationRuntime:
             tracer=self.tracer,
             workflow_recovery=self.workflow_recovery,
         )
+        self.turn_loop = TurnLoopController(
+            agent,
+            turn_preamble=self.turn_preamble,
+            turn_iteration=self.turn_iteration,
+        )
 
     async def run_turn(
         self,
@@ -120,15 +126,6 @@ class ConversationRuntime:
         original_task: str | None = None,
     ) -> TurnSummary:
         """Run one task turn and return a structured summary."""
-
-        iterations = 0
-        actions_taken: list[str] = []
-        continuation_count = 0
-        empty_retry_count = 0
-        max_empty_retries = 5
-        extracted_iterations = 0
-        max_extracted_iterations = 3
-        consecutive_errors = 0
 
         prepared_turn = await self.turn_preparation.prepare(
             task=task,
@@ -145,68 +142,26 @@ class ConversationRuntime:
         effective_max_tokens = prepared_turn.effective_max_tokens
         rollback_plan = prepared_turn.rollback_plan
 
-        while iterations < self.agent.config.max_iterations:
-            iterations += 1
-            assert self.executor is not None
-            prelude_decision = await self.turn_preamble.prepare_iteration(
-                task=task,
-                original_task=original_task,
-                iterations=iterations,
-                dod=dod,
-                emit=emit,
-                summary=summary,
-                on_user_question=on_user_question,
-                executor=self.executor,
-            )
-            if prelude_decision.should_continue:
-                continue
-
-            iteration_decision = await self.turn_iteration.run_iteration(
-                task=task,
-                effective_task=effective_task,
-                original_task=original_task,
-                effective_max_tokens=effective_max_tokens,
-                iterations=iterations,
-                max_iterations=self.agent.config.max_iterations,
-                actions_taken=actions_taken,
-                continuation_count=continuation_count,
-                empty_retry_count=empty_retry_count,
-                max_empty_retries=max_empty_retries,
-                extracted_iterations=extracted_iterations,
-                max_extracted_iterations=max_extracted_iterations,
-                consecutive_errors=consecutive_errors,
-                dod=dod,
-                emit=emit,
-                summary=summary,
-                executor=self.executor,
-                rollback_plan=rollback_plan,
-                on_confirmation=on_confirmation,
-                on_user_question=on_user_question,
-                emit_confirmation=self._emit_confirmation(emit),
-            )
-            continuation_count = iteration_decision.continuation_count
-            empty_retry_count = iteration_decision.empty_retry_count
-            extracted_iterations = iteration_decision.extracted_iterations
-            consecutive_errors = iteration_decision.consecutive_errors
-            actions_taken.extend(iteration_decision.new_actions_taken)
-            if iteration_decision.action == TurnIterationAction.CONTINUE:
-                continue
-            if iteration_decision.action == TurnIterationAction.FINALIZE:
-                return await self._finalize_turn(
-                    summary,
-                    emit,
-                    reason_code=iteration_decision.finalize_reason_code
-                    or "turn_complete",
-                    reason_summary=iteration_decision.finalize_reason_summary
-                    or "Finalizing completed turn",
-                )
-            break
-
+        assert self.executor is not None
+        loop_exit = await self.turn_loop.run_loop(
+            task=task,
+            effective_task=effective_task,
+            original_task=original_task,
+            effective_max_tokens=effective_max_tokens,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+            executor=self.executor,
+            rollback_plan=rollback_plan,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            emit_confirmation=self._emit_confirmation(emit),
+        )
         return await self._finalize_turn(
             summary,
             emit,
-            reason_code="turn_complete",
-            reason_summary="Finalizing completed turn",
+            reason_code=loop_exit.reason_code,
+            reason_summary=loop_exit.reason_summary,
         )
 
     async def _finalize_turn(
