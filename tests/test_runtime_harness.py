@@ -40,6 +40,7 @@ SCENARIO_NAMES = [
     "raw_json_todowrite_tool_call_fallback",
     "raw_json_patch_tool_call_fallback",
     "raw_json_ask_user_question_tool_call_fallback",
+    "raw_bracket_ask_user_question_tool_call_fallback",
     "native_and_raw_tool_paths_share_executor_trace",
     "backend_capability_probe_refreshes_native_tool_mode",
     "run_streaming_delegates_to_primary_runtime",
@@ -913,6 +914,45 @@ async def test_raw_json_ask_user_question_tool_call_fallback(temp_dir: Path) -> 
     assert tool_event_names(run) == ["AskUserQuestion"]
     assert any("Execute now" in message for message in tool_result_messages(run))
     assert "We'll execute now." in run.response
+
+
+@pytest.mark.asyncio
+async def test_raw_bracket_ask_user_question_tool_call_fallback(temp_dir: Path) -> None:
+    backend = ScriptedBackend(
+        streams=[
+            [
+                StreamChunk(
+                    content='[calls askuserquestion tool with: question="Which path should we take?"]',
+                    full_content='[calls askuserquestion tool with: question="Which path should we take?"]',
+                    is_done=True,
+                )
+            ],
+            [
+                StreamChunk(
+                    content="We'll plan first.",
+                    full_content="We'll plan first.",
+                    is_done=True,
+                )
+            ],
+        ]
+    )
+
+    async def answer(question: str, options: list[str] | None) -> str:
+        assert "Which path should we take?" in question
+        assert options is None
+        return "Plan first"
+
+    run = await run_scenario(
+        "Read the fixture file.",
+        backend,
+        config=AgentConfig(auto_context=False, max_iterations=8),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    assert tool_event_names(run) == ["AskUserQuestion"]
+    assert any('"answer": "Plan first"' in message for message in tool_result_messages(run))
+    assert "We'll plan first." in run.response
 
 
 @pytest.mark.asyncio

@@ -110,6 +110,11 @@
     "description": "Raw JSON fallback can recover AskUserQuestion calls with structured option objects."
   },
   {
+    "name": "raw_bracket_ask_user_question_tool_call_fallback",
+    "category": "fallback",
+    "description": "Bracket-format fallback canonicalizes mixed-case workflow tool names against the registry."
+  },
+  {
     "name": "native_and_raw_tool_paths_share_executor_trace",
     "category": "executor",
     "description": "Native and extracted tool calls emit the same executor trace events, annotated by source."
