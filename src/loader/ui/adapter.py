@@ -11,13 +11,12 @@ if TYPE_CHECKING:
     from ..agent.reasoning import (
         ActionVerification,
         ConfidenceAssessment,
-        RollbackAction,
-        RollbackPlan,
         SelfCritique,
         Subtask,
         TaskCompletionCheck,
         TaskDecomposition,
     )
+    from ..runtime.rollback import RollbackAction, RollbackPlan
 
 
 # Custom Textual messages for TUI updates

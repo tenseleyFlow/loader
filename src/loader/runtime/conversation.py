@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from ..agent.reasoning import (
-    RollbackPlan,
     estimate_complexity,
     get_token_budget,
 )
@@ -23,6 +22,7 @@ from .finalization import TurnFinalizer, merge_usage
 from .hooks import build_default_tool_hooks
 from .phases import TurnPhase, TurnPhaseTracker
 from .repair import ResponseRepairer
+from .rollback import RollbackPlan
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .workflow import (
