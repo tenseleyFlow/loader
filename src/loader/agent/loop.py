@@ -871,7 +871,10 @@ class Agent:
         import re
 
         tool_calls = []
-        tool_names = ["write", "read", "edit", "bash", "glob", "grep"]
+        tool_names = {
+            tool.name.lower()
+            for tool in self.registry.list_tools()
+        }
 
         # Debug log
         def debug(msg):

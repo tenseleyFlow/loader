@@ -58,6 +58,63 @@ def _parse_bracket_args(args_str: str) -> dict:
     return args
 
 
+def _extract_json_tool_calls(text: str) -> tuple[list[ToolCall], list[tuple[int, int]]]:
+    """Extract bare JSON tool calls, including nested argument structures."""
+
+    decoder = json.JSONDecoder()
+    tool_calls: list[ToolCall] = []
+    spans: list[tuple[int, int]] = []
+    index = 0
+
+    while index < len(text):
+        start = text.find("{", index)
+        if start == -1:
+            break
+
+        try:
+            data, consumed = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+
+        end = start + consumed
+        if isinstance(data, dict):
+            name = data.get("name", "")
+            arguments = _extract_arguments(data)
+            if (
+                isinstance(name, str)
+                and name
+                and any(key in data for key in ("arguments", "parameters", "args", "params"))
+            ):
+                tool_calls.append(ToolCall(
+                    id=f"call_{len(tool_calls)}",
+                    name=name,
+                    arguments=arguments,
+                ))
+                spans.append((start, end))
+                index = end
+                continue
+
+        index = start + 1
+
+    return tool_calls, spans
+
+
+def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Remove non-overlapping spans from text."""
+
+    if not spans:
+        return text
+
+    parts: list[str] = []
+    previous_end = 0
+    for start, end in spans:
+        parts.append(text[previous_end:start])
+        previous_end = end
+    parts.append(text[previous_end:])
+    return "".join(parts)
+
+
 def parse_tool_calls(text: str) -> ParsedResponse:
     """Parse tool calls from LLM text output.
 
@@ -75,6 +132,7 @@ def parse_tool_calls(text: str) -> ParsedResponse:
     tool_calls: list[ToolCall] = []
     content = text
     is_final = False
+    final_content = ""
 
     # Check for Final Answer (ReAct pattern)
     final_match = re.search(
@@ -84,8 +142,7 @@ def parse_tool_calls(text: str) -> ParsedResponse:
     )
     if final_match:
         is_final = True
-        # Extract just the final answer as content
-        content = final_match.group(1).strip()
+        final_content = final_match.group(1).strip()
 
     # Pattern 1: <tool_call>...</tool_call> blocks (also handle malformed </tool_call> at start)
     tool_call_pattern = r"(?:</tool_call>\s*)?<tool_call>\s*(\{.*?\})\s*</tool_call>"
@@ -112,21 +169,9 @@ def parse_tool_calls(text: str) -> ParsedResponse:
 
     # Pattern 2: Bare JSON if no tool_call tags found
     if not tool_calls:
-        # More flexible pattern that handles both "arguments" and "parameters"
-        bare_json_pattern = r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"(?:arguments|parameters)"\s*:\s*(\{[^{}]*\})[^{}]*\}'
-        for i, (name, args_str) in enumerate(re.findall(bare_json_pattern, text)):
-            try:
-                args = json.loads(args_str)
-                tool_calls.append(ToolCall(
-                    id=f"call_{i}",
-                    name=name,
-                    arguments=args,
-                ))
-            except json.JSONDecodeError:
-                continue
-        # Remove bare JSON tool calls from content
-        if tool_calls:
-            content = re.sub(bare_json_pattern, "", content)
+        tool_calls, spans = _extract_json_tool_calls(text)
+        if tool_calls and not is_final:
+            content = _remove_spans(content, spans)
 
     # Pattern 3: Bracketed format [calls/USE tool with/: key=value, ...]
     # Examples:
@@ -145,6 +190,9 @@ def parse_tool_calls(text: str) -> ParsedResponse:
         # Remove bracketed tool calls from content
         if tool_calls:
             content = re.sub(bracket_pattern, "", content, flags=re.IGNORECASE)
+
+    if is_final:
+        content = final_content
 
     # Clean up content
     content = content.strip()

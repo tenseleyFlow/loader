@@ -113,11 +113,18 @@ class ResponseRepairer:
         clear_stream = False
         next_extracted_iterations = extracted_iterations
         if not normalized_tool_calls:
-            raw_tool_calls = self.agent._extract_raw_json_tool_calls(response_content)
-            if raw_tool_calls:
-                normalized_tool_calls = raw_tool_calls
+            parsed_raw = parse_tool_calls(response_content)
+            if parsed_raw.tool_calls:
+                normalized_tool_calls = parsed_raw.tool_calls
+                normalized_content = parsed_raw.content or normalized_content
                 tool_source = "raw_text"
                 clear_stream = True
+            else:
+                raw_tool_calls = self.agent._extract_raw_json_tool_calls(response_content)
+                if raw_tool_calls:
+                    normalized_tool_calls = raw_tool_calls
+                    tool_source = "raw_text"
+                    clear_stream = True
 
         if normalized_tool_calls and tool_source == "raw_text":
             next_extracted_iterations += 1

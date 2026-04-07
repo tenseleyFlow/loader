@@ -37,6 +37,9 @@ SCENARIO_NAMES = [
     "deny_rule_blocks_allowed_mode",
     "ask_rule_prompts_even_when_mode_would_allow",
     "raw_json_tool_call_fallback",
+    "raw_json_todowrite_tool_call_fallback",
+    "raw_json_patch_tool_call_fallback",
+    "raw_json_ask_user_question_tool_call_fallback",
     "native_and_raw_tool_paths_share_executor_trace",
     "backend_capability_probe_refreshes_native_tool_mode",
     "run_streaming_delegates_to_primary_runtime",
@@ -784,6 +787,132 @@ async def test_raw_json_tool_call_fallback(temp_dir: Path) -> None:
     assert tool_event_names(run) == ["read"]
     assert any("alpha parity line" in message for message in tool_result_messages(run))
     assert "Recovered the raw JSON tool call" in run.response
+
+
+@pytest.mark.asyncio
+async def test_raw_json_todowrite_tool_call_fallback(temp_dir: Path) -> None:
+    raw_json = json.dumps(
+        {
+            "name": "TodoWrite",
+            "arguments": {
+                "todos": [
+                    {
+                        "content": "Run tests",
+                        "active_form": "Running tests",
+                        "status": "completed",
+                    }
+                ]
+            },
+        }
+    )
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=raw_json),
+            final_response("Tracked the current todo list."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Track the current work items.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    todo_store = temp_dir / ".loader" / "todos" / "active.json"
+    assert tool_event_names(run) == ["TodoWrite"]
+    assert json.loads(todo_store.read_text()) == []
+    assert "Tracked the current todo list." in run.response
+
+
+@pytest.mark.asyncio
+async def test_raw_json_patch_tool_call_fallback(temp_dir: Path) -> None:
+    target = temp_dir / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n")
+    raw_json = json.dumps(
+        {
+            "name": "patch",
+            "arguments": {
+                "file_path": str(target),
+                "hunks": [
+                    {
+                        "old_start": 2,
+                        "old_lines": 1,
+                        "new_start": 2,
+                        "new_lines": 1,
+                        "lines": ["-beta", "+beta updated"],
+                    }
+                ],
+            },
+        }
+    )
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=raw_json),
+            final_response("Patched sample.txt."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Update sample.txt.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["patch"]
+    assert target.read_text() == "alpha\nbeta updated\ngamma\n"
+    assert "Patched sample.txt." in run.response
+
+
+@pytest.mark.asyncio
+async def test_raw_json_ask_user_question_tool_call_fallback(temp_dir: Path) -> None:
+    raw_json = json.dumps(
+        {
+            "name": "AskUserQuestion",
+            "arguments": {
+                "title": "Path Choice",
+                "context": "Choose the safer Loader cleanup path.",
+                "question": "Which path should we take?",
+                "options": [
+                    {
+                        "label": "Plan first",
+                        "description": "Keep the next move documented.",
+                    },
+                    {
+                        "label": "Execute now",
+                        "description": "Start changing code immediately.",
+                    },
+                ],
+            },
+        }
+    )
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=raw_json),
+            final_response("We'll execute now."),
+        ]
+    )
+
+    async def answer(question: str, options: list[str] | None) -> str:
+        assert "Which path should we take?" in question
+        assert options == [
+            "Plan first - Keep the next move documented.",
+            "Execute now - Start changing code immediately.",
+        ]
+        return "2"
+
+    run = await run_scenario(
+        "Decide the next path before changing code.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    assert tool_event_names(run) == ["AskUserQuestion"]
+    assert any("Execute now" in message for message in tool_result_messages(run))
+    assert "We'll execute now." in run.response
 
 
 @pytest.mark.asyncio

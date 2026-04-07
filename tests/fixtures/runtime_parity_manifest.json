@@ -95,6 +95,21 @@
     "description": "Raw JSON tool syntax is recovered when native tool calls are absent."
   },
   {
+    "name": "raw_json_todowrite_tool_call_fallback",
+    "category": "fallback",
+    "description": "Raw JSON fallback can recover TodoWrite calls with nested todo items."
+  },
+  {
+    "name": "raw_json_patch_tool_call_fallback",
+    "category": "fallback",
+    "description": "Raw JSON fallback can recover patch calls with nested structured hunks."
+  },
+  {
+    "name": "raw_json_ask_user_question_tool_call_fallback",
+    "category": "fallback",
+    "description": "Raw JSON fallback can recover AskUserQuestion calls with structured option objects."
+  },
+  {
     "name": "native_and_raw_tool_paths_share_executor_trace",
     "category": "executor",
     "description": "Native and extracted tool calls emit the same executor trace events, annotated by source."
