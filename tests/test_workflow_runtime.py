@@ -187,6 +187,11 @@ async def test_complex_prompt_routes_to_plan_and_uses_verification_artifact(
     assert dod.verification_plan is not None
     assert Path(dod.implementation_plan).exists()
     assert Path(dod.verification_plan).exists()
+    implementation_markdown = Path(dod.implementation_plan).read_text()
+    verification_markdown = Path(dod.verification_plan).read_text()
+    assert "single-pass planning artifact generation" in implementation_markdown
+    assert "planner/critic consensus loop" in implementation_markdown
+    assert "single-pass planning artifact generation" in verification_markdown
     assert dod.verification_commands == [f"test -f {target}"]
     assert "## Plan Mode" in backend.invocations[0].messages[0].content
     verify_calls = [

@@ -96,6 +96,9 @@ def test_planning_artifacts_round_trip_and_extract_commands() -> None:
         task_statement="Clarify and implement the auth change.",
     )
 
+    assert "single-pass planning artifact generation" in artifacts.implementation_markdown
+    assert "planner/critic consensus loop" in artifacts.implementation_markdown
+    assert "single-pass planning artifact generation" in artifacts.verification_markdown
     assert artifacts.implementation_steps[:2] == [
         "Inspect auth files.",
         "Implement the change.",

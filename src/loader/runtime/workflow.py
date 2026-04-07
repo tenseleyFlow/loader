@@ -199,6 +199,8 @@ class ClarifyBrief:
 class PlanningArtifacts:
     """Persistent planning artifacts created before execution."""
 
+    protocol_label: ClassVar[str] = "single-pass planning artifact generation"
+
     implementation_markdown: str
     verification_markdown: str
     verification_commands: list[str]
@@ -234,13 +236,19 @@ class PlanningArtifacts:
             acceptance_criteria = [task_statement]
 
         return cls(
-            implementation_markdown=_ensure_heading(
-                implementation_markdown,
-                "# Implementation Plan",
+            implementation_markdown=_prepend_workflow_contract(
+                _ensure_heading(
+                    implementation_markdown,
+                    "# Implementation Plan",
+                ),
+                cls.workflow_contract(),
             ),
-            verification_markdown=_ensure_heading(
-                verification_markdown,
-                "# Verification Plan",
+            verification_markdown=_prepend_workflow_contract(
+                _ensure_heading(
+                    verification_markdown,
+                    "# Verification Plan",
+                ),
+                cls.workflow_contract(),
             ),
             verification_commands=verification_commands,
             acceptance_criteria=acceptance_criteria,
@@ -286,8 +294,14 @@ class PlanningArtifacts:
             ]
         )
         return cls(
-            implementation_markdown=implementation_markdown,
-            verification_markdown=verification_markdown,
+            implementation_markdown=_prepend_workflow_contract(
+                implementation_markdown,
+                cls.workflow_contract(),
+            ),
+            verification_markdown=_prepend_workflow_contract(
+                verification_markdown,
+                cls.workflow_contract(),
+            ),
             verification_commands=["echo \"add verification command\""],
             acceptance_criteria=[task_statement],
             implementation_steps=[
@@ -296,6 +310,14 @@ class PlanningArtifacts:
                 "Re-run the most relevant verification commands.",
             ],
         )
+
+    @classmethod
+    def workflow_contract(cls) -> list[str]:
+        return [
+            f"Protocol: {cls.protocol_label}.",
+            "Loader writes the implementation and verification artifacts in one pass.",
+            "It does not run a planner/critic consensus loop.",
+        ]
 
 
 class WorkflowArtifactStore:
@@ -562,6 +584,29 @@ def _ensure_heading(markdown: str, heading: str) -> str:
     if stripped.startswith("#"):
         return stripped + "\n"
     return f"{heading}\n\n{stripped}\n"
+
+
+def _prepend_workflow_contract(markdown: str, contract_lines: list[str]) -> str:
+    stripped = markdown.rstrip()
+    lines = stripped.splitlines()
+    if not lines:
+        return stripped
+    if any(line.strip().lower() == "## workflow contract" for line in lines):
+        return stripped + "\n"
+    if not lines[0].startswith("#"):
+        return stripped + "\n"
+    body = "\n".join(lines[1:]).lstrip("\n")
+    contract_section = "\n".join(
+        [
+            lines[0],
+            "",
+            "## Workflow Contract",
+            *[f"- {line}" for line in contract_lines],
+        ]
+    )
+    if body:
+        return f"{contract_section}\n\n{body}\n"
+    return f"{contract_section}\n"
 
 
 def _timestamp() -> str:

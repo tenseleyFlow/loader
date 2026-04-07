@@ -664,7 +664,7 @@ class ConversationRuntime:
             kind="implementation_plan",
             path=implementation_path,
             preview=(
-                f"Implementation plan: {implementation_path}\n"
+                f"Implementation plan ({PlanningArtifacts.protocol_label}): {implementation_path}\n"
                 f"Steps: {len(artifacts.implementation_steps)}"
             ),
         )
@@ -673,7 +673,7 @@ class ConversationRuntime:
             kind="verification_plan",
             path=verification_path,
             preview=(
-                f"Verification plan: {verification_path}\n"
+                f"Verification plan ({PlanningArtifacts.protocol_label}): {verification_path}\n"
                 f"Commands: {len(artifacts.verification_commands)}"
             ),
         )
