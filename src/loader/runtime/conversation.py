@@ -18,6 +18,7 @@ from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
 from .repair import ResponseRepairer
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
+from .turn_completion import TurnCompletionAction, TurnCompletionController
 from .turn_preparation import TurnPreparationController
 from .workflow import (
     ModeDecision,
@@ -75,6 +76,13 @@ class ConversationRuntime:
             self.tracer,
             self.dod_store,
             self._set_workflow_mode,
+        )
+        self.turn_completion = TurnCompletionController(
+            agent,
+            repairer=self.repairer,
+            completion_policy=self.completion_policy,
+            finalizer=self.finalizer,
+            phase_tracker=self.phase_tracker,
         )
         self.turn_preparation = TurnPreparationController(
             agent,
@@ -308,130 +316,34 @@ class ConversationRuntime:
 
                 continue
 
-            repair_message = self.repairer.fake_tool_narration_message(
+            assert self.executor is not None
+            completion_decision = await self.turn_completion.handle_text_response(
+                content=content,
                 response_content=response_content,
+                task=task,
+                effective_task=effective_task,
                 iterations=iterations,
                 max_iterations=self.agent.config.max_iterations,
-            )
-            if repair_message is not None:
-                await self.phase_tracker.enter(
-                    TurnPhase.REPAIR,
-                    emit,
-                    detail="Repairing fake tool narration",
-                    reason_code="repair_fake_tool_narration",
-                    kind=TurnTransitionKind.REROUTE,
-                )
-                self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-                self.agent.session.append(Message(role=Role.USER, content=repair_message))
-                continue
-
-            deflection_message = self.repairer.deflection_message(
-                content=content,
                 actions_taken=actions_taken,
-                iterations=iterations,
-                max_iterations=self.agent.config.max_iterations,
-            )
-            if deflection_message is not None:
-                await self.phase_tracker.enter(
-                    TurnPhase.REPAIR,
-                    emit,
-                    detail="Repairing execution deflection",
-                    reason_code="repair_execution_deflection",
-                    kind=TurnTransitionKind.REROUTE,
-                )
-                self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-                self.agent.session.append(
-                    Message(role=Role.USER, content=deflection_message)
-                )
-                continue
-
-            cfg = self.agent.config.reasoning
-            if cfg.self_critique and len(content) > 100:
-                await self.phase_tracker.enter(
-                    TurnPhase.CRITIQUE,
-                    emit,
-                    detail="Evaluating self-critique",
-                    reason_code="evaluate_self_critique",
-                )
-                critique_decision = await self.completion_policy.maybe_self_critique(
-                    content=content,
-                    response_content=response_content,
-                    task=task,
-                    emit=emit,
-                )
-                if critique_decision.should_continue:
-                    continue
-
-            await self.phase_tracker.enter(
-                TurnPhase.COMPLETION,
-                emit,
-                detail="Checking completion policy",
-                reason_code="completion_gate",
-            )
-            text_loop_decision = await self.completion_policy.maybe_stop_for_text_loop(
-                content=content,
-                emit=emit,
-                summary=summary,
-            )
-            if text_loop_decision.should_stop:
-                return await self._finalize_turn(
-                    summary,
-                    emit,
-                    reason_code="text_loop_bailout",
-                    reason_summary="Finalizing after text-loop bailout",
-                )
-
-            self.agent.safeguards.record_response(content)
-            if (
-                cfg.completion_check
-                and not dod.mutating_actions
-                and continuation_count < cfg.max_continuation_prompts
-            ):
-                continuation_decision = (
-                    await self.completion_policy.maybe_continue_for_completion(
-                        content=content,
-                        response_content=response_content,
-                        task=effective_task,
-                        actions_taken=actions_taken,
-                        continuation_count=continuation_count,
-                        emit=emit,
-                    )
-                )
-                if continuation_decision.should_continue:
-                    continuation_count += 1
-                    continue
-
-            final_response = self.completion_policy.finalize_response_text(
-                content=content,
-                actions_taken=actions_taken,
-            )
-
-            final_message = Message(role=Role.ASSISTANT, content=response_content)
-            self.agent.session.append(final_message)
-            summary.assistant_messages.append(final_message)
-
-            gate_result = await self.finalizer.run_definition_of_done_gate(
+                continuation_count=continuation_count,
                 dod=dod,
-                candidate_response=final_response,
                 emit=emit,
                 summary=summary,
                 executor=self.executor,
+                rollback_plan=rollback_plan,
             )
-            if gate_result.should_continue:
+            continuation_count = completion_decision.continuation_count
+            if completion_decision.action == TurnCompletionAction.CONTINUE:
                 continue
-            final_response = gate_result.final_response
-
-            if rollback_plan and rollback_plan.actions:
-                await emit(
-                    AgentEvent(
-                        type="rollback_summary",
-                        content=f"Rollback plan: {len(rollback_plan.actions)} action(s) tracked",
-                        rollback_plan=rollback_plan,
-                    )
+            if completion_decision.action == TurnCompletionAction.FINALIZE:
+                return await self._finalize_turn(
+                    summary,
+                    emit,
+                    reason_code=completion_decision.finalize_reason_code
+                    or "turn_complete",
+                    reason_summary=completion_decision.finalize_reason_summary
+                    or "Finalizing completed turn",
                 )
-
-            summary.final_response = final_response
-            await emit(AgentEvent(type="response", content=final_response))
             break
 
         return await self._finalize_turn(
