@@ -38,6 +38,9 @@ class AgentEvent:
     dod_status: str | None = None
     pending_items_count: int | None = None
     last_verification_result: str | None = None
+    workflow_mode: str | None = None
+    artifact_kind: str | None = None
+    artifact_path: str | None = None
 
     decomposition: TaskDecomposition | None = None
     subtask: Subtask | None = None
@@ -63,3 +66,4 @@ class TurnSummary:
     usage: dict[str, int] = field(default_factory=dict)
     trace: list[RuntimeTraceEvent] = field(default_factory=list)
     definition_of_done: DefinitionOfDone | None = None
+    workflow_mode: str | None = None

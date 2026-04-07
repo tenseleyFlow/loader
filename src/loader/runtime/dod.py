@@ -53,6 +53,11 @@ class DefinitionOfDone:
     line_changes: int = 0
     storage_path: str | None = None
     last_verification_result: str | None = None
+    current_mode: str = "execute"
+    mode_history: list[str] = field(default_factory=list)
+    clarify_brief: str | None = None
+    implementation_plan: str | None = None
+    verification_plan: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the DoD state for persistence."""
@@ -83,6 +88,11 @@ class DefinitionOfDone:
             line_changes=int(data.get("line_changes", 0)),
             storage_path=data.get("storage_path"),
             last_verification_result=data.get("last_verification_result"),
+            current_mode=data.get("current_mode", "execute"),
+            mode_history=list(data.get("mode_history", [])),
+            clarify_brief=data.get("clarify_brief"),
+            implementation_plan=data.get("implementation_plan"),
+            verification_plan=data.get("verification_plan"),
         )
 
 

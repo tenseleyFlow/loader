@@ -1,7 +1,7 @@
 """Prompt templates for the agent."""
 
 import os
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..context.project import ProjectContext
@@ -145,17 +145,43 @@ def format_tool_descriptions(tools: list[dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
+MODE_GUIDANCE = {
+    "clarify": """
+## Clarify Mode
+- Ask exactly one focused question with `AskUserQuestion`
+- Clarify intent, outcome, scope, or boundaries before proposing solutions
+- Do not start coding or writing patch plans yet
+- Keep the question high-leverage and brief
+""",
+    "plan": """
+## Plan Mode
+- Produce persistent implementation and verification planning artifacts
+- Do not start writing code in this mode
+- Be explicit about file touchpoints, order of work, risks, acceptance criteria, and verification commands
+- Prefer concrete, repository-grounded plans over generic checklists
+""",
+    "execute": """
+## Execute Mode
+- Use tools directly to perform the task
+- Read relevant files before editing them
+- Keep `TodoWrite` current for multi-step work when progress tracking matters
+- Concise reporting is fine, and numbered lists are allowed when they communicate plan or evidence clearly
+""",
+    "verify": """
+## Verify Mode
+- Run the planned verification commands and capture evidence
+- Do not declare the task complete while any verification step is failing
+- Report concrete pass/fail evidence rather than vague confidence
+""",
+}
+
+
 SYSTEM_PROMPT = """You are Loader, an AI coding agent.
 
 Current directory: {cwd}
 
-## Tools
-- bash: Run shell commands
-- write: Create files
-- read: Read files
-- edit: Modify files
-- glob: Find files
-- grep: Search in files
+## Tools Available
+{tool_descriptions}
 
 ## How to Use Tools
 Output a tool call in this format:
@@ -166,12 +192,19 @@ Output a tool call in this format:
 [write: file_path="hello.py", content="print('hello')"]
 [read: file_path="config.json"]
 [edit: file_path="app.py", old_string="old", new_string="new"]
+[TodoWrite: todos=[{{content="Run tests", active_form="Running tests", status="in_progress"}}]]
+[AskUserQuestion: question="Which path matters more?", options=["Speed", "Correctness"]]
+
+## Active Workflow Mode
+{workflow_mode}
+
+{mode_guidance}
 
 ## Rules
-1. Use tools immediately - don't explain first
-2. No code blocks (```) - use the write tool instead
-3. No numbered steps - just do the task
-4. Read files before editing them
+1. Follow the active workflow mode rather than improvising a different one
+2. Use tools or concise prose directly instead of narrating fake tool use
+3. Use the write tool for files rather than pasting long code blocks
+4. Keep responses grounded in repository evidence and verification output
 """
 
 
@@ -200,11 +233,16 @@ Current directory: {cwd}
 {{"name": "read", "arguments": {{"file_path": "config.json"}}}}
 </tool_call>
 
+## Active Workflow Mode
+{workflow_mode}
+
+{mode_guidance}
+
 ## Rules
-1. Use tools immediately - don't explain first
-2. No code blocks - use the write tool instead
-3. No numbered steps - just do the task
-4. Read files before editing them
+1. Follow the active workflow mode rather than improvising a different one
+2. Use tools or concise prose directly instead of narrating fake tool use
+3. Use the write tool for files rather than pasting long code blocks
+4. Keep responses grounded in repository evidence and verification output
 """
 
 
@@ -212,6 +250,7 @@ def build_system_prompt(
     tools: list[dict[str, Any]],
     use_react: bool = False,
     project_context: "str | ProjectContext | None" = None,
+    workflow_mode: str = "execute",
 ) -> str:
     """Build the system prompt with tool descriptions.
 
@@ -224,15 +263,23 @@ def build_system_prompt(
         Formatted system prompt
     """
     cwd = os.getcwd()
+    tool_descriptions = format_tool_descriptions(tools)
+    mode_guidance = MODE_GUIDANCE.get(workflow_mode, MODE_GUIDANCE["execute"])
 
     if use_react:
-        tool_descriptions = format_tool_descriptions(tools)
         prompt = REACT_SYSTEM_PROMPT.format(
             cwd=cwd,
             tool_descriptions=tool_descriptions,
+            workflow_mode=workflow_mode,
+            mode_guidance=mode_guidance,
         )
     else:
-        prompt = SYSTEM_PROMPT.format(cwd=cwd)
+        prompt = SYSTEM_PROMPT.format(
+            cwd=cwd,
+            tool_descriptions=tool_descriptions,
+            workflow_mode=workflow_mode,
+            mode_guidance=mode_guidance,
+        )
 
     # Add project context if available
     if project_context:

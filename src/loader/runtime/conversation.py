@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ..agent.parsing import parse_tool_calls
@@ -30,6 +32,17 @@ from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
 from .hooks import build_default_tool_hooks
 from .tracing import RuntimeTracer
+from .workflow import (
+    ClarifyBrief,
+    ModeRouter,
+    PlanningArtifacts,
+    VERIFICATION_SEPARATOR,
+    WorkflowArtifactStore,
+    WorkflowMode,
+    build_execute_bridge,
+    extract_verification_commands_from_markdown,
+    sync_todos_to_definition_of_done,
+)
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
@@ -63,6 +76,8 @@ class ConversationRuntime:
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
         self.dod_store = DefinitionOfDoneStore(agent.project_root)
+        self.router = ModeRouter()
+        self.artifact_store = WorkflowArtifactStore(agent.project_root)
 
     async def run_turn(
         self,
@@ -70,6 +85,7 @@ class ConversationRuntime:
         emit: EventSink,
         on_confirmation: ConfirmationHandler = None,
         on_user_question: UserQuestionHandler = None,
+        requested_mode: str | None = None,
         original_task: str | None = None,
     ) -> TurnSummary:
         """Run one task turn and return a structured summary."""
@@ -109,6 +125,16 @@ class ConversationRuntime:
         )
         summary.definition_of_done = dod
         await self._emit_dod_status(emit, dod)
+
+        task = await self._prepare_workflow(
+            task=task,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            requested_mode=requested_mode,
+        )
 
         while iterations < self.agent.config.max_iterations:
             iterations += 1
@@ -315,6 +341,13 @@ class ConversationRuntime:
 
                     if outcome.state == ToolExecutionState.EXECUTED and not outcome.is_error:
                         record_successful_tool_call(dod, tool_call)
+                        if (
+                            tool_call.name == "TodoWrite"
+                            and outcome.registry_result is not None
+                        ):
+                            new_todos = outcome.registry_result.metadata.get("new_todos", [])
+                            if isinstance(new_todos, list):
+                                sync_todos_to_definition_of_done(dod, new_todos)
                         self.dod_store.save(dod)
                         self.agent._recovery_context = None
                         is_loop, loop_description = self.agent.safeguards.detect_loop()
@@ -730,6 +763,433 @@ class ConversationRuntime:
             is_error=True,
         )
 
+    async def _prepare_workflow(
+        self,
+        *,
+        task: str,
+        dod: DefinitionOfDone,
+        emit: EventSink,
+        summary: TurnSummary,
+        on_confirmation: ConfirmationHandler,
+        on_user_question: UserQuestionHandler,
+        requested_mode: str | None,
+    ) -> str:
+        requested = WorkflowMode.from_str(requested_mode)
+        decision = self.router.route(
+            task,
+            requested_mode=requested,
+            has_brief=self._artifact_exists(dod.clarify_brief),
+            has_plan=self._artifact_exists(dod.implementation_plan)
+            and self._artifact_exists(dod.verification_plan),
+        )
+        await self._set_workflow_mode(
+            decision.mode,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+            reason=decision.reason,
+        )
+
+        if decision.mode == WorkflowMode.CLARIFY:
+            await self._run_clarify_mode(
+                task=task,
+                dod=dod,
+                emit=emit,
+                summary=summary,
+                on_user_question=on_user_question,
+            )
+            decision = self.router.route(
+                task,
+                has_brief=self._artifact_exists(dod.clarify_brief),
+                has_plan=self._artifact_exists(dod.implementation_plan)
+                and self._artifact_exists(dod.verification_plan),
+                allow_clarify=False,
+            )
+            await self._set_workflow_mode(
+                decision.mode,
+                dod=dod,
+                emit=emit,
+                summary=summary,
+                reason=f"clarify handoff: {decision.reason}",
+            )
+
+        if decision.mode == WorkflowMode.PLAN:
+            await self._run_plan_mode(
+                task=task,
+                dod=dod,
+                emit=emit,
+                summary=summary,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+            )
+            await self._set_workflow_mode(
+                WorkflowMode.EXECUTE,
+                dod=dod,
+                emit=emit,
+                summary=summary,
+                reason="plan artifacts created; switching to execute",
+            )
+
+        bridge = build_execute_bridge(
+            Path(dod.clarify_brief) if dod.clarify_brief else None,
+            Path(dod.implementation_plan) if dod.implementation_plan else None,
+            Path(dod.verification_plan) if dod.verification_plan else None,
+        )
+        if bridge and not any(
+            message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
+            for message in self.agent.messages[-4:]
+        ):
+            self.agent.session.append(
+                Message(
+                    role=Role.USER,
+                    content=(
+                        "[WORKFLOW BRIDGE]\n"
+                        f"{bridge}\n\n"
+                        "Honor these artifacts while you execute the task. "
+                        "Keep TodoWrite current when the work spans multiple steps."
+                    ),
+                )
+            )
+        return task
+
+    async def _set_workflow_mode(
+        self,
+        mode: WorkflowMode,
+        *,
+        dod: DefinitionOfDone,
+        emit: EventSink,
+        summary: TurnSummary,
+        reason: str,
+    ) -> None:
+        self.agent.set_workflow_mode(mode.value)
+        dod.current_mode = mode.value
+        if not dod.mode_history or dod.mode_history[-1] != mode.value:
+            dod.mode_history.append(mode.value)
+        summary.workflow_mode = mode.value
+        summary.definition_of_done = dod
+        self.dod_store.save(dod)
+        await emit(
+            AgentEvent(
+                type="workflow_mode",
+                content=f"Workflow: {mode.value} ({reason})",
+                workflow_mode=mode.value,
+                definition_of_done=dod,
+            )
+        )
+
+    async def _emit_artifact(
+        self,
+        *,
+        emit: EventSink,
+        kind: str,
+        path: Path,
+        preview: str,
+    ) -> None:
+        await emit(
+            AgentEvent(
+                type="artifact",
+                content=preview,
+                artifact_kind=kind,
+                artifact_path=str(path),
+            )
+        )
+
+    async def _complete_in_mode(
+        self,
+        *,
+        prompt: str,
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int,
+        temperature: float = 0.2,
+    ):
+        return await self.agent.backend.complete(
+            messages=self.agent.session.build_request_messages()
+            + [Message(role=Role.USER, content=prompt)],
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def _run_clarify_mode(
+        self,
+        *,
+        task: str,
+        dod: DefinitionOfDone,
+        emit: EventSink,
+        summary: TurnSummary,
+        on_user_question: UserQuestionHandler,
+    ) -> None:
+        ask_tool = self.agent.registry.get("AskUserQuestion")
+        assert ask_tool is not None
+        prompt = (
+            "Clarify the task before planning or implementation.\n"
+            "Ask exactly one focused question with AskUserQuestion.\n"
+            "Target missing outcome, scope, or decision-boundary information.\n"
+            "Do not propose solutions yet.\n\n"
+            f"Task: {task}"
+        )
+        response = await self._complete_in_mode(
+            prompt=prompt,
+            tools=[ask_tool.to_schema()],
+            max_tokens=300,
+        )
+        tool_call = next(
+            (
+                tool
+                for tool in response.tool_calls
+                if tool.name == "AskUserQuestion"
+            ),
+            None,
+        )
+        if tool_call is None:
+            tool_call = ToolCall(
+                id="clarify-question-1",
+                name="AskUserQuestion",
+                arguments={
+                    "question": self._fallback_clarify_question(task, response.content),
+                },
+            )
+
+        assistant_message = Message(
+            role=Role.ASSISTANT,
+            content=response.content or tool_call.arguments.get("question", ""),
+            tool_calls=[tool_call],
+        )
+        self.agent.session.append(assistant_message)
+        summary.assistant_messages.append(assistant_message)
+
+        await emit(
+            AgentEvent(
+                type="tool_call",
+                tool_name=tool_call.name,
+                tool_args=tool_call.arguments,
+                phase="clarify",
+            )
+        )
+        assert self.executor is not None
+        outcome = await self.executor.execute_tool_call(
+            tool_call,
+            on_confirmation=None,
+            on_user_question=on_user_question,
+            emit_confirmation=None,
+            source="clarify",
+            skip_duplicate_check=True,
+            record_action=False,
+            skip_confirmation=True,
+        )
+        await emit(
+            AgentEvent(
+                type="tool_result",
+                content=outcome.event_content,
+                tool_name=tool_call.name,
+                is_error=outcome.is_error,
+                phase="clarify",
+            )
+        )
+        self.agent.session.append(outcome.message)
+        summary.tool_result_messages.append(outcome.message)
+
+        question = str(tool_call.arguments.get("question", "")).strip()
+        answer = ""
+        if outcome.registry_result is not None:
+            answer = str(outcome.registry_result.metadata.get("answer", "")).strip()
+
+        brief_prompt = (
+            "Write a concise task brief in markdown using these exact sections:\n"
+            "## Task Statement\n"
+            "## Desired Outcome\n"
+            "## In Scope\n"
+            "## Non Goals\n"
+            "## Decision Boundaries\n"
+            "## Constraints\n"
+            "## Likely Touchpoints\n"
+            "## Assumptions\n"
+            "## Acceptance Criteria\n\n"
+            "Use short bullet lists when helpful. Do not start implementing.\n\n"
+            f"Task: {task}\n"
+            f"Question: {question}\n"
+            f"Answer: {answer or 'No answer provided.'}"
+        )
+        brief_response = await self._complete_in_mode(
+            prompt=brief_prompt,
+            tools=None,
+            max_tokens=900,
+            temperature=0.1,
+        )
+        brief = (
+            ClarifyBrief.from_markdown(
+                brief_response.content,
+                task_statement=task,
+                question=question,
+                answer=answer,
+            )
+            if brief_response.content.strip()
+            else ClarifyBrief.fallback(
+                task_statement=task,
+                question=question,
+                answer=answer,
+            )
+        )
+        brief_path = self.artifact_store.write_brief(task, brief)
+        dod.clarify_brief = str(brief_path)
+        dod.acceptance_criteria = list(dict.fromkeys(brief.acceptance_criteria))
+        self.dod_store.save(dod)
+        await self._emit_artifact(
+            emit=emit,
+            kind="clarify_brief",
+            path=brief_path,
+            preview=(
+                f"Clarify brief: {brief_path}\n"
+                f"Outcome: {brief.desired_outcome[0]}"
+            ),
+        )
+
+    async def _run_plan_mode(
+        self,
+        *,
+        task: str,
+        dod: DefinitionOfDone,
+        emit: EventSink,
+        summary: TurnSummary,
+        on_confirmation: ConfirmationHandler,
+        on_user_question: UserQuestionHandler,
+    ) -> None:
+        prompt = (
+            "Produce two markdown planning artifacts separated by the exact line "
+            f"`{VERIFICATION_SEPARATOR}`.\n\n"
+            "Before the separator, write an Implementation Plan with these sections:\n"
+            "## File Changes\n"
+            "## Execution Order\n"
+            "## Risks\n\n"
+            "After the separator, write a Verification Plan with these sections:\n"
+            "## Acceptance Criteria\n"
+            "## Verification Commands\n"
+            "## Notes\n\n"
+            "Do not start writing code.\n\n"
+            f"Task: {task}"
+        )
+        response = await self._complete_in_mode(
+            prompt=prompt,
+            tools=None,
+            max_tokens=1400,
+            temperature=0.2,
+        )
+        artifacts = (
+            PlanningArtifacts.from_model_output(
+                response.content,
+                task_statement=task,
+            )
+            if response.content.strip()
+            else PlanningArtifacts.fallback(task_statement=task)
+        )
+        implementation_path, verification_path = self.artifact_store.write_plan(
+            task,
+            artifacts,
+        )
+        dod.implementation_plan = str(implementation_path)
+        dod.verification_plan = str(verification_path)
+        dod.acceptance_criteria = list(
+            dict.fromkeys(dod.acceptance_criteria + artifacts.acceptance_criteria)
+        )
+        if artifacts.verification_commands:
+            dod.verification_commands = artifacts.verification_commands
+        self.dod_store.save(dod)
+        await self._emit_artifact(
+            emit=emit,
+            kind="implementation_plan",
+            path=implementation_path,
+            preview=(
+                f"Implementation plan: {implementation_path}\n"
+                f"Steps: {len(artifacts.implementation_steps)}"
+            ),
+        )
+        await self._emit_artifact(
+            emit=emit,
+            kind="verification_plan",
+            path=verification_path,
+            preview=(
+                f"Verification plan: {verification_path}\n"
+                f"Commands: {len(artifacts.verification_commands)}"
+            ),
+        )
+        await self._seed_todos_from_plan(
+            artifacts=artifacts,
+            dod=dod,
+            emit=emit,
+        )
+
+    async def _seed_todos_from_plan(
+        self,
+        *,
+        artifacts: PlanningArtifacts,
+        dod: DefinitionOfDone,
+        emit: EventSink,
+    ) -> None:
+        if not artifacts.implementation_steps:
+            return
+
+        todos = [
+            {
+                "content": step,
+                "active_form": f"Working on: {step}",
+                "status": "pending",
+            }
+            for step in artifacts.implementation_steps[:8]
+        ]
+        tool_call = ToolCall(
+            id="plan-todos-1",
+            name="TodoWrite",
+            arguments={"todos": todos},
+        )
+        await emit(
+            AgentEvent(
+                type="tool_call",
+                tool_name=tool_call.name,
+                tool_args=tool_call.arguments,
+                phase="plan",
+            )
+        )
+        assert self.executor is not None
+        outcome = await self.executor.execute_tool_call(
+            tool_call,
+            on_confirmation=None,
+            on_user_question=None,
+            emit_confirmation=None,
+            source="plan",
+            skip_duplicate_check=True,
+            record_action=False,
+            skip_confirmation=True,
+        )
+        await emit(
+            AgentEvent(
+                type="tool_result",
+                content=outcome.event_content,
+                tool_name=tool_call.name,
+                is_error=outcome.is_error,
+                phase="plan",
+            )
+        )
+        if outcome.registry_result is not None:
+            new_todos = outcome.registry_result.metadata.get("new_todos", [])
+            if isinstance(new_todos, list):
+                sync_todos_to_definition_of_done(dod, new_todos)
+                self.dod_store.save(dod)
+
+    @staticmethod
+    def _artifact_exists(path_str: str | None) -> bool:
+        return bool(path_str and Path(path_str).exists())
+
+    @staticmethod
+    def _fallback_clarify_question(task: str, response_content: str) -> str:
+        match = re.search(r"([A-Z][^?]+\?)", response_content)
+        if match:
+            return match.group(1).strip()
+        return (
+            "What outcome matters most here, and what should stay out of scope?"
+            if task.strip()
+            else "What outcome matters most?"
+        )
+
     async def _run_definition_of_done_gate(
         self,
         *,
@@ -743,8 +1203,31 @@ class ConversationRuntime:
             dod.pending_items.remove(implementation_item)
             dod.completed_items.append(implementation_item)
 
+        tracked_pending_items = [
+            item
+            for item in dod.pending_items
+            if item != "Collect verification evidence"
+        ]
+
         mutating_paths = [path for path in dod.touched_files if path]
         requires_verification = bool(mutating_paths or dod.mutating_actions)
+        if tracked_pending_items and not requires_verification:
+            pending_text = "\n".join(f"- {item}" for item in tracked_pending_items)
+            self.dod_store.save(dod)
+            await self._emit_dod_status(emit, dod)
+            self.agent.session.append(
+                Message(
+                    role=Role.USER,
+                    content=(
+                        "[PENDING WORK REMAINS]\n"
+                        "The tracked work items are not complete yet:\n"
+                        f"{pending_text}\n\n"
+                        "Continue the task, and update TodoWrite as you make progress."
+                    ),
+                )
+            )
+            return CompletionGateResult(should_continue=True, final_response="")
+
         if not requires_verification:
             dod.status = "done"
             dod.last_verification_result = "skipped"
@@ -761,6 +1244,11 @@ class ConversationRuntime:
         if verify_item not in dod.pending_items and verify_item not in dod.completed_items:
             dod.pending_items.append(verify_item)
 
+        if not dod.verification_commands and dod.verification_plan and Path(dod.verification_plan).exists():
+            dod.verification_commands = extract_verification_commands_from_markdown(
+                Path(dod.verification_plan).read_text()
+            )
+
         if not dod.verification_commands:
             dod.verification_commands = derive_verification_commands(
                 dod,
@@ -768,6 +1256,13 @@ class ConversationRuntime:
                 task_statement=dod.task_statement,
             )
 
+        await self._set_workflow_mode(
+            WorkflowMode.VERIFY,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+            reason="definition-of-done gate requires verification",
+        )
         verification_passed = await self._verify_definition_of_done(
             dod=dod,
             emit=emit,
@@ -778,6 +1273,10 @@ class ConversationRuntime:
                 dod.pending_items.remove(verify_item)
             if verify_item not in dod.completed_items:
                 dod.completed_items.append(verify_item)
+            for pending in list(dod.pending_items):
+                if pending not in dod.completed_items:
+                    dod.completed_items.append(pending)
+            dod.pending_items = []
             dod.status = "done"
             dod.last_verification_result = "passed"
             dod.confidence = "high"
@@ -817,6 +1316,13 @@ class ConversationRuntime:
         dod.confidence = "medium"
         self.dod_store.save(dod)
         await self._emit_dod_status(emit, dod)
+        await self._set_workflow_mode(
+            WorkflowMode.EXECUTE,
+            dod=dod,
+            emit=emit,
+            summary=summary,
+            reason="verification failed; returning to execute for fixes",
+        )
         failure_prompt = (
             "[DEFINITION OF DONE CHECK FAILED]\n"
             f"Task: {dod.task_statement}\n"

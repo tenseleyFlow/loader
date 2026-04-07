@@ -12,7 +12,12 @@ from tests.helpers.runtime_harness import ScriptedBackend, run_scenario
 def non_streaming_config() -> AgentConfig:
     """Shared deterministic config for runtime tool tests."""
 
-    return AgentConfig(auto_context=False, stream=False, max_iterations=4)
+    return AgentConfig(
+        auto_context=False,
+        stream=False,
+        max_iterations=4,
+        workflow_mode_override="execute",
+    )
 
 
 async def _answer(question: str, options: list[str] | None) -> str:

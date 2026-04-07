@@ -13,6 +13,7 @@ from ..runtime.conversation import ConversationRuntime
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.permissions import PermissionMode, build_permission_policy
 from ..runtime.session import ConversationSession
+from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
 from .planner import (
     PLANNING_PROMPT,
@@ -89,6 +90,7 @@ class AgentConfig:
     max_recovery_attempts: int = 2  # Reduced from 3
     verification_retry_budget: int = 3  # Retry budget for verify/fix loop
     permission_mode: PermissionMode = PermissionMode.WORKSPACE_WRITE
+    workflow_mode_override: str | None = None
     stream: bool = True  # Stream LLM responses for real-time output
 
     # Reasoning stages configuration
@@ -126,6 +128,7 @@ class Agent:
             messages=self.messages,
         )
         self._system_message: Message | None = None
+        self.workflow_mode = WorkflowMode.EXECUTE.value
         self._use_react: bool | None = None
         self.capability_profile = resolve_backend_capability_profile(self.backend)
         self.last_turn_summary: TurnSummary | None = None
@@ -204,12 +207,21 @@ class Agent:
                 tools=tool_schemas,
                 use_react=self.use_react,
                 project_context=self.project_context,
+                workflow_mode=self.workflow_mode,
             )
             self._system_message = Message(
                 role=Role.SYSTEM,
                 content=content,
             )
         return self._system_message
+
+    def set_workflow_mode(self, workflow_mode: str) -> None:
+        """Update the active workflow mode used by the system prompt."""
+
+        if workflow_mode == self.workflow_mode:
+            return
+        self.workflow_mode = workflow_mode
+        self._system_message = None
 
     def _build_messages(self) -> list[Message]:
         """Build the full message list for the LLM."""
@@ -553,52 +565,6 @@ class Agent:
                 else:
                     return f"Task partially completed. {decomposition.to_prompt()}"
 
-        # Check if we should use planning
-        should_use_plan = use_plan
-        if should_use_plan is None and self.config.auto_plan:
-            await emit(AgentEvent(type="thinking"))
-            should_use_plan = await self._should_plan(user_message)
-
-        # If planning, create and execute plan
-        if should_use_plan:
-            plan = await self._create_plan(user_message)
-            if plan.steps:
-                await emit(AgentEvent(type="plan", content=plan.to_prompt()))
-
-                # Execute each step
-                while not plan.is_complete():
-                    step = plan.next_step()
-                    if not step:
-                        break
-
-                    await emit(AgentEvent(
-                        type="step",
-                        step_info=f"{plan.progress_str()} {step.description}",
-                    ))
-
-                    # Run the step
-                    step_prompt = format_step_prompt(plan, step)
-                    await self._run_inner(
-                        step_prompt,
-                        emit,
-                        on_confirmation,
-                        on_user_question=on_user_question,
-                        original_task=self._current_task,
-                    )
-
-                    plan.complete_current()
-
-                # Final summary
-                self.messages.append(Message(role=Role.USER, content=user_message))
-                summary_prompt = f"I've completed the plan. Summarize what was done:\n{plan.to_prompt()}"
-                return await self._run_inner(
-                    summary_prompt,
-                    emit,
-                    on_confirmation,
-                    on_user_question=on_user_question,
-                    original_task=self._current_task,
-                )
-
         # No planning or decomposition - run directly
         self.messages.append(Message(role=Role.USER, content=user_message))
         return await self._run_inner(
@@ -606,6 +572,7 @@ class Agent:
             emit,
             on_confirmation,
             on_user_question=on_user_question,
+            requested_mode=self._requested_workflow_mode(use_plan),
             original_task=self._current_task,
         )
 
@@ -615,6 +582,7 @@ class Agent:
         emit: Callable[[AgentEvent], Awaitable[None]],
         on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
         on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
+        requested_mode: str | None = None,
         original_task: str | None = None,
     ) -> str:
         """Inner execution loop without planning."""
@@ -625,9 +593,23 @@ class Agent:
             emit,
             on_confirmation=on_confirmation,
             on_user_question=on_user_question,
+            requested_mode=requested_mode,
             original_task=original_task,
         )
         return self.last_turn_summary.final_response
+
+    def _requested_workflow_mode(self, use_plan: bool | None) -> str | None:
+        """Resolve the explicit workflow-mode override for the current turn."""
+
+        if use_plan is True:
+            return WorkflowMode.PLAN.value
+        if use_plan is False:
+            return WorkflowMode.EXECUTE.value
+        if self.config.workflow_mode_override:
+            return self.config.workflow_mode_override
+        if self.config.auto_plan:
+            return WorkflowMode.PLAN.value
+        return None
 
     async def run_streaming(
         self,
@@ -1001,4 +983,6 @@ class Agent:
         self._recovery_context = None
         self._current_task = None
         self.last_turn_summary = None
+        self.workflow_mode = WorkflowMode.EXECUTE.value
+        self._system_message = None
         self.safeguards.reset()  # Reset all runtime safeguards
