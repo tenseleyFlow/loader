@@ -27,7 +27,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - verify/fix retries return to execute mode without re-triggering clarify or plan
 - task-size-aware verification command derivation based on actual tool history
 - verification command loading from persisted `verification.md` artifacts when present
-- heuristic completion nudges only for non-mutating tasks; mutating tasks now complete through the DoD gate
+- mutating tasks complete through the DoD gate, and non-mutating tasks now return their answer directly instead of injecting continuation nudges
 - typed `TurnSummary` output for completed turns, including trace events and tool-result messages
 - normalized per-turn usage plus cumulative session usage in `TurnSummary`
 - automatic transcript compaction with priority-aware line compression and continuation instructions
@@ -46,7 +46,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 
 ## Known weak spots
 
-- the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it still owns workflow routing, prompt repair, self-critique/completion heuristics, and other coordination logic that remains more heuristic-heavy than the reference runtime in `refs/claw-code`
+- the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it still owns workflow routing, remaining loop safeguards, and other coordination logic that remains more heuristic-heavy than the reference runtime in `refs/claw-code`
 - planning, decomposition, and several helper behaviors still live in [`src/loader/agent/loop.py`](../src/loader/agent/loop.py), so ownership is cleaner than Sprint 00 but not fully simplified yet
 - the mode router is still heuristic-only; Loader does not yet implement OMX's deeper ambiguity scoring, pressure-pass discipline, or branch-specific routing policy
 - clarify mode currently stops after one structured question and one brief artifact; it does not yet run a deeper Socratic loop
@@ -88,7 +88,7 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 - `deny_rule_blocks_allowed_mode`: green
 - `ask_rule_prompts_even_when_mode_would_allow`: green
 - `raw_json_tool_call_fallback`: green
-- `completion_check_continuation`: green
+- `non_mutating_completion_no_longer_forces_continuation`: green
 - `tool_result_contract_regression`: green
 - `turn_summary_smoke_for_multi_tool_turn`: green
 - `native_and_raw_tool_paths_share_executor_trace`: green
@@ -109,7 +109,7 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-07:
 
-- `uv run pytest -q`: 167 passed
+- `uv run pytest -q`: 211 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers router heuristics, clarify/plan artifact round trips, DoD workflow links, and todo-to-DoD syncing

@@ -54,7 +54,7 @@ SCENARIO_NAMES = [
     "explore_mode_skips_dod_and_router",
     "explore_mode_denies_write",
     "explore_mode_ignores_global_allow_policy",
-    "completion_check_continuation",
+    "non_mutating_completion_no_longer_forces_continuation",
     "tool_result_contract_regression",
 ]
 
@@ -1617,7 +1617,7 @@ async def test_explore_mode_ignores_global_allow_policy(temp_dir: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_completion_check_continuation(
+async def test_non_mutating_completion_no_longer_forces_continuation(
     temp_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1626,19 +1626,6 @@ async def test_completion_check_continuation(
     backend = ScriptedBackend(
         completions=[
             final_response("Done."),
-            native_tool_response(
-                ToolCall(
-                    id="write-1",
-                    name="write",
-                    arguments={"file_path": str(target), "content": "print('hello from loader')\n"},
-                ),
-                content="You're right, I'll create the file first.",
-            ),
-            native_tool_response(
-                ToolCall(id="bash-1", name="bash", arguments={"command": f"python {target.name}"}),
-                content="Now I'll run the script.",
-            ),
-            final_response("Successfully created and ran hello.py."),
         ]
     )
     config = non_streaming_config(completion_check=True)
@@ -1650,11 +1637,10 @@ async def test_completion_check_continuation(
         project_root=temp_dir,
     )
 
-    assert target.exists()
-    assert any(event.type == "completion_check" for event in run.events)
-    assert tool_event_names(run) == ["write", "bash"]
-    assert any("hello from loader" in message for message in tool_result_messages(run))
-    assert "Successfully created and ran hello.py." in run.response
+    assert not target.exists()
+    assert not any(event.type == "completion_check" for event in run.events)
+    assert tool_event_names(run) == []
+    assert run.response == "Done."
 
 
 @pytest.mark.asyncio

@@ -180,9 +180,9 @@
     "description": "Explore mode ignores global allow rules so the read-only lane cannot be elevated into write access."
   },
   {
-    "name": "completion_check_continuation",
+    "name": "non_mutating_completion_no_longer_forces_continuation",
     "category": "behavior",
-    "description": "Premature completion triggers a continuation prompt and the task continues."
+    "description": "Non-mutating tasks now return the model response directly instead of injecting a continuation prompt."
   },
   {
     "name": "tool_result_contract_regression",

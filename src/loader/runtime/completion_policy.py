@@ -5,11 +5,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from ..agent.reasoning import (
-    TaskCompletionCheck,
-    detect_premature_completion,
-    get_continuation_prompt,
-)
 from ..llm.base import Message, Role
 from .context import RuntimeContext
 from .events import AgentEvent, TurnSummary
@@ -26,15 +21,8 @@ class TextLoopDecision:
     failure: str | None = None
 
 
-@dataclass(slots=True)
-class ContinuationDecision:
-    """Decision returned from the non-mutating completion nudge."""
-
-    should_continue: bool
-
-
 class CompletionPolicy:
-    """Owns critique, loop bailout, and non-mutating completion nudges."""
+    """Owns loop bailout and final response cleanup."""
 
     def __init__(self, context: RuntimeContext) -> None:
         self.context = context
@@ -73,51 +61,6 @@ class CompletionPolicy:
             final_response=final_response,
             failure=loop_description,
         )
-
-    async def maybe_continue_for_completion(
-        self,
-        *,
-        content: str,
-        response_content: str,
-        task: str,
-        actions_taken: list[str],
-        continuation_count: int,
-        emit: EventSink,
-    ) -> ContinuationDecision:
-        """Nudge non-mutating tasks to continue when completion looks premature."""
-
-        cfg = self.context.config.reasoning
-        if continuation_count >= cfg.max_continuation_prompts:
-            return ContinuationDecision(should_continue=False)
-
-        is_premature = (
-            detect_premature_completion(task, content, actions_taken)
-            if cfg.use_quick_completion
-            else False
-        )
-        if not is_premature:
-            return ContinuationDecision(should_continue=False)
-
-        continuation_prompt = get_continuation_prompt(
-            task,
-            actions_taken,
-            content,
-        )
-        await emit(
-            AgentEvent(
-                type="completion_check",
-                content=f"Task may be incomplete ({len(actions_taken)} actions taken)",
-                completion_check=TaskCompletionCheck(
-                    original_task=task,
-                    is_complete=False,
-                    accomplished=[action.split(":")[0] for action in actions_taken],
-                    continuation_prompt=continuation_prompt,
-                ),
-            )
-        )
-        self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
-        self.context.session.append(Message(role=Role.USER, content=continuation_prompt))
-        return ContinuationDecision(should_continue=True)
 
     @staticmethod
     def finalize_response_text(

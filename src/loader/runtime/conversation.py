@@ -85,7 +85,6 @@ class ConversationRuntime:
         iterations = 0
         final_response = ""
         actions_taken: list[str] = []
-        continuation_count = 0
         empty_retry_count = 0
         max_empty_retries = 1
         extracted_iterations = 0
@@ -291,25 +290,6 @@ class ConversationRuntime:
                 return await self._finalize_turn(summary, emit)
 
             self.context.safeguards.record_response(content)
-            effective_task = original_task or task
-            if (
-                cfg.completion_check
-                and not dod.mutating_actions
-                and continuation_count < cfg.max_continuation_prompts
-            ):
-                continuation_decision = (
-                    await self.completion_policy.maybe_continue_for_completion(
-                        content=content,
-                        response_content=response_content,
-                        task=effective_task,
-                        actions_taken=actions_taken,
-                        continuation_count=continuation_count,
-                        emit=emit,
-                    )
-                )
-                if continuation_decision.should_continue:
-                    continuation_count += 1
-                    continue
 
             final_response = self.completion_policy.finalize_response_text(
                 content=content,

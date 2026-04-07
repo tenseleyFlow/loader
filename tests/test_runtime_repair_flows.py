@@ -177,12 +177,11 @@ async def test_deflection_response_no_longer_injects_use_your_tools_prompt(
 
 
 @pytest.mark.asyncio
-async def test_text_loop_bailout_stops_after_repeated_continuation_response(
+async def test_non_mutating_completion_no_longer_loops_into_text_bailout(
     temp_dir: Path,
 ) -> None:
     backend = ScriptedBackend(
         completions=[
-            CompletionResponse(content="Done."),
             CompletionResponse(content="Done."),
         ]
     )
@@ -195,11 +194,9 @@ async def test_text_loop_bailout_stops_after_repeated_continuation_response(
     )
 
     assert tool_event_names(run) == []
-    assert run.response == (
-        "I seem to be repeating myself. "
-        "Let me know if you'd like me to try a different approach."
-    )
-    assert any(
+    assert run.response == "Done."
+    assert len(backend.invocations) == 1
+    assert not any(
         event.type == "error" and "Text loop detected" in event.content
         for event in run.events
     )

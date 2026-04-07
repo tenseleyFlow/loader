@@ -2,13 +2,15 @@
 
 ## Status on `cleanup-audit-plan`
 
-- repo verification is currently `212 passed`
+- repo verification is currently `211 passed`
 - `src/loader/agent/loop.py` is down to `926` lines from the Sprint 09 baseline of `1111`
 - the sprint has already deleted:
   - the post-action follow-up suffix
   - the first-turn `[` prefill trick
   - fake-tool narration repair prompts
   - deflection repair prompts
+  - self-critique rerouting
+  - non-mutating completion nudges
 - empty-response handling has been tightened to one honest retry plus explicit failure
 - raw-text parsing has been unified onto `src/loader/agent/parsing.py`
   - `src/loader/agent/loop.py` no longer carries `_extract_raw_json_tool_calls(...)`
@@ -16,7 +18,7 @@
   - `src/loader/llm/ollama.py` now routes both complete-mode and streaming final text parsing through the shared parser
 - the sprint is not complete yet
   - the hard subtraction target is still missed by `115` lines
-  - self-critique rerouting, text-loop bailout, non-mutating completion nudges, and action-loop bailout still need an explicit keep/delete decision
+  - text-loop bailout and action-loop bailout still need an explicit keep/delete decision
 
 ## Prerequisites
 
@@ -81,9 +83,7 @@ For each remaining heuristic, decide whether it should be:
 
 This includes:
 
-- self-critique rerouting
 - text-loop bailout
-- non-mutating completion nudges
 - deflection handling
 
 No heuristic survives this sprint without a written reason tied back to Sprint 09 evidence.
