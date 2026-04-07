@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 from .dod import slugify
 
@@ -66,7 +67,10 @@ class ModeDecision:
 
 @dataclass(slots=True)
 class ClarifyBrief:
-    """Execution-ready brief created from one clarify round."""
+    """Execution-ready brief created from Loader's single-question clarify flow."""
+
+    protocol_label: ClassVar[str] = "single-question clarify brief"
+    follow_up_mode: ClassVar[str] = WorkflowMode.EXECUTE.value
 
     task_statement: str
     desired_outcome: list[str] = field(default_factory=list)
@@ -157,10 +161,15 @@ class ClarifyBrief:
             "",
             f"Generated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')}",
             "",
+        ]
+        lines.extend(_render_section("Workflow Contract", self.workflow_contract()))
+        lines.extend(
+            [
             "## Task Statement",
             self.task_statement,
             "",
-        ]
+            ]
+        )
         lines.extend(_render_section("Desired Outcome", self.desired_outcome))
         lines.extend(_render_section("In Scope", self.in_scope))
         lines.extend(_render_section("Non Goals", self.non_goals))
@@ -174,6 +183,16 @@ class ClarifyBrief:
         if self.answer:
             lines.extend(_render_section("Clarify Answer", [self.answer]))
         return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
+    def workflow_contract(cls) -> list[str]:
+        return [
+            f"Protocol: {cls.protocol_label}.",
+            (
+                "Ask exactly one focused question, persist one brief artifact, "
+                f"then return control to `{cls.follow_up_mode}` mode."
+            ),
+        ]
 
 
 @dataclass(slots=True)

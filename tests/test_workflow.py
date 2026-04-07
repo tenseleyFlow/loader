@@ -52,14 +52,17 @@ def test_clarify_brief_round_trips_and_seeds_acceptance_criteria() -> None:
         question="What outcome matters most?",
         answer="Add login without touching the signup flow.",
     )
+    markdown = brief.to_markdown()
 
     loaded = ClarifyBrief.from_markdown(
-        brief.to_markdown(),
+        markdown,
         task_statement=brief.task_statement,
         question=brief.question,
         answer=brief.answer,
     )
 
+    assert "single-question clarify brief" in markdown
+    assert "return control to `execute` mode" in markdown
     assert loaded.task_statement == brief.task_statement
     assert "Add login" in loaded.acceptance_criteria[0]
     assert loaded.non_goals

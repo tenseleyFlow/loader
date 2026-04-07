@@ -110,6 +110,9 @@ async def test_ambiguous_prompt_routes_to_clarify_and_persists_brief(
     assert artifact_kinds(run) == ["clarify_brief"]
     assert dod.clarify_brief is not None
     assert Path(dod.clarify_brief).exists()
+    brief_markdown = Path(dod.clarify_brief).read_text()
+    assert "single-question clarify brief" in brief_markdown
+    assert "return control to `execute` mode" in brief_markdown
     assert "runtime behavior" in dod.acceptance_criteria[0].lower()
     assert "## Clarify Mode" in backend.invocations[0].messages[0].content
 

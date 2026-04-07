@@ -603,7 +603,10 @@ class ConversationRuntime:
             emit=emit,
             kind="clarify_brief",
             path=brief_path,
-            preview=(f"Clarify brief: {brief_path}\nOutcome: {brief.desired_outcome[0]}"),
+            preview=(
+                f"Clarify brief ({ClarifyBrief.protocol_label}): {brief_path}\n"
+                f"Outcome: {brief.desired_outcome[0]}"
+            ),
         )
 
     async def _run_plan_mode(
