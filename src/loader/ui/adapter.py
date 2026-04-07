@@ -203,6 +203,14 @@ class WorkflowModeChanged(Message):
 
 
 @dataclass
+class TurnPhaseChanged(Message):
+    """Turn phase changed."""
+
+    turn_phase: str
+    content: str
+
+
+@dataclass
 class ArtifactCreated(Message):
     """A workflow artifact was created."""
 
@@ -460,6 +468,14 @@ class EventAdapter:
                 self.app.post_message(
                     WorkflowModeChanged(
                         workflow_mode=event.workflow_mode or "",
+                        content=event.content,
+                    )
+                )
+
+            case "turn_phase":
+                self.app.post_message(
+                    TurnPhaseChanged(
+                        turn_phase=event.turn_phase or "",
                         content=event.content,
                     )
                 )

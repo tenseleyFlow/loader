@@ -22,6 +22,7 @@ from .compaction import (
 SESSION_VERSION = 3
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
+_UNSET = object()
 
 
 def _utc_now() -> str:
@@ -387,7 +388,7 @@ class ConversationSession:
         permission_rules_source: str | None = None,
         prompt_format: str | None = None,
         prompt_sections: list[str] | None = None,
-        active_turn_phase: str | None = None,
+        active_turn_phase: str | None | object = _UNSET,
     ) -> None:
         """Update persisted runtime state that lives beside the messages."""
 
@@ -411,7 +412,8 @@ class ConversationSession:
             self.prompt_format = prompt_format
         if prompt_sections is not None:
             self.prompt_sections = normalize_prompt_sections(prompt_sections)
-        self.active_turn_phase = active_turn_phase
+        if active_turn_phase is not _UNSET:
+            self.active_turn_phase = active_turn_phase
         self.touch()
         self.persist()
 

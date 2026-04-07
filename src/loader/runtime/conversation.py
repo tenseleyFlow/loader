@@ -7,23 +7,21 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from ..agent.parsing import parse_tool_calls
 from ..agent.reasoning import (
     RollbackPlan,
-    TaskCompletionCheck,
-    detect_premature_completion,
     estimate_complexity,
-    get_continuation_prompt,
     get_token_budget,
-    should_self_critique,
 )
 from ..llm.base import Message, Role, ToolCall
 from .assistant_turns import AssistantTurnRequester
+from .completion_policy import CompletionPolicy
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer, merge_usage
 from .hooks import build_default_tool_hooks
+from .phases import TurnPhase, TurnPhaseTracker
+from .repair import ResponseRepairer
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .workflow import (
@@ -54,6 +52,9 @@ class ConversationRuntime:
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
         self.turn_requester = AssistantTurnRequester(agent, self.tracer)
         self.tool_batches = ToolBatchRunner(agent, self.dod_store)
+        self.repairer = ResponseRepairer(agent)
+        self.completion_policy = CompletionPolicy(agent)
+        self.phase_tracker = TurnPhaseTracker(agent, self.tracer)
         self.finalizer = TurnFinalizer(
             agent,
             self.tracer,
@@ -72,6 +73,11 @@ class ConversationRuntime:
     ) -> TurnSummary:
         """Run one task turn and return a structured summary."""
 
+        await self.phase_tracker.enter(
+            TurnPhase.PREPARE,
+            emit,
+            detail="Preparing runtime state",
+        )
         await self._prepare_runtime_capabilities()
 
         iterations = 0
@@ -164,6 +170,11 @@ class ConversationRuntime:
                     )
                 )
 
+            await self.phase_tracker.enter(
+                TurnPhase.ASSISTANT,
+                emit,
+                detail="Requesting assistant response",
+            )
             await emit(AgentEvent(type="thinking"))
             assistant_turn = await self.turn_requester.request_turn(
                 emit=emit,
@@ -177,74 +188,80 @@ class ConversationRuntime:
             pending_tool_calls_seen = set(assistant_turn.pending_tool_calls_seen)
 
             if not content.strip():
+                await self.phase_tracker.enter(
+                    TurnPhase.REPAIR,
+                    emit,
+                    detail="Repairing empty assistant response",
+                )
                 empty_retry_count += 1
-                if empty_retry_count <= max_empty_retries:
-                    task_context = original_task or task
-                    retry_prompts = [
-                        "Great! Now let me proceed with the task. I'll start by using my tools.",
-                        "I understand. Let me create that now using my tools (write, bash, etc.).",
-                        (
-                            f"Proceeding with: {task_context[:80]}. "
-                            "I'll use the write tool to create the files."
-                        ),
-                        "Starting now. First step: create the necessary files and directories.",
-                        (
-                            "Let me complete this task step by step. "
-                            f"The goal is: {task_context[:100]}"
-                        ),
-                    ]
-                    prompt = retry_prompts[min(empty_retry_count - 1, len(retry_prompts) - 1)]
-                    self.agent.session.append(Message(role=Role.ASSISTANT, content=prompt))
+                empty_decision = self.repairer.handle_empty_response(
+                    task=task,
+                    original_task=original_task,
+                    empty_retry_count=empty_retry_count,
+                    max_empty_retries=max_empty_retries,
+                )
+                if empty_decision.should_continue and empty_decision.retry_prompt:
+                    self.agent.session.append(
+                        Message(
+                            role=Role.ASSISTANT,
+                            content=empty_decision.retry_prompt,
+                        )
+                    )
                     continue
 
-                final_response = (
-                    "I need a bit more direction. "
-                    "What specifically would you like me to create or do?"
-                )
+                final_response = empty_decision.final_response or ""
                 summary.final_response = final_response
-                summary.failures.append("assistant returned empty output repeatedly")
+                if empty_decision.failure:
+                    summary.failures.append(empty_decision.failure)
                 await emit(AgentEvent(type="response", content=final_response))
                 break
 
-            if self.agent.use_react:
-                parsed = parse_tool_calls(content)
-                tool_calls = parsed.tool_calls
-                content = parsed.content
+            analysis = self.repairer.analyze_response(
+                content=content,
+                response_content=response_content,
+                tool_calls=tool_calls,
+                extracted_iterations=extracted_iterations,
+                max_extracted_iterations=max_extracted_iterations,
+            )
+            content = analysis.content
+            tool_calls = list(analysis.tool_calls)
+            tool_source = analysis.tool_source
+            extracted_iterations = analysis.extracted_iterations
+            if analysis.clear_stream:
+                await self.phase_tracker.enter(
+                    TurnPhase.REPAIR,
+                    emit,
+                    detail="Repairing raw-text tool fallback",
+                )
+                await emit(AgentEvent(type="clear_stream"))
 
-                if parsed.is_final_answer and not tool_calls:
+            if analysis.is_final_answer:
+                assistant_message = Message(role=Role.ASSISTANT, content=response_content)
+                self.agent.session.append(assistant_message)
+                summary.assistant_messages.append(assistant_message)
+                final_response = analysis.final_response or content
+                summary.final_response = final_response
+                self.tracer.record("turn.completed", reason="final_answer")
+                await emit(AgentEvent(type="response", content=final_response))
+                break
+
+            if tool_calls:
+                if analysis.should_stop:
                     assistant_message = Message(role=Role.ASSISTANT, content=response_content)
                     self.agent.session.append(assistant_message)
                     summary.assistant_messages.append(assistant_message)
-                    final_response = content
+                    final_response = analysis.final_response or content
                     summary.final_response = final_response
-                    self.tracer.record("turn.completed", reason="final_answer")
+                    if analysis.failure:
+                        summary.failures.append(analysis.failure)
                     await emit(AgentEvent(type="response", content=final_response))
                     break
 
-            tool_source = "native"
-            if not tool_calls:
-                raw_tool_calls = self.agent._extract_raw_json_tool_calls(response_content)
-                if raw_tool_calls:
-                    tool_calls = raw_tool_calls
-                    tool_source = "raw_text"
-                    await emit(AgentEvent(type="clear_stream"))
-
-            if tool_calls:
-                if tool_source == "raw_text":
-                    extracted_iterations += 1
-                    if extracted_iterations > max_extracted_iterations:
-                        final_response = (
-                            content
-                            + "\n\nLet me know if you'd like me to continue or make changes."
-                        )
-                        assistant_message = Message(role=Role.ASSISTANT, content=response_content)
-                        self.agent.session.append(assistant_message)
-                        summary.assistant_messages.append(assistant_message)
-                        summary.final_response = final_response
-                        summary.failures.append("raw tool extraction exceeded iteration budget")
-                        await emit(AgentEvent(type="response", content=final_response))
-                        break
-
+                await self.phase_tracker.enter(
+                    TurnPhase.TOOLS,
+                    emit,
+                    detail="Executing tool batch",
+                )
                 assistant_message = Message(
                     role=Role.ASSISTANT,
                     content=response_content,
@@ -274,106 +291,71 @@ class ConversationRuntime:
                 actions_taken.extend(batch_result.actions_taken)
                 consecutive_errors = batch_result.consecutive_errors
                 if batch_result.halted:
-                    return self.finalizer.finalize_summary(summary)
+                    return await self._finalize_turn(summary, emit)
 
                 continue
 
-            if self.agent._contains_unexecuted_code(response_content):
-                if iterations < self.agent.config.max_iterations - 1:
-                    self.agent.session.append(
-                        Message(role=Role.ASSISTANT, content=response_content)
-                    )
-                    self.agent.session.append(
-                        Message(
-                            role=Role.USER,
-                            content=(
-                                "CRITICAL ERROR: You are PRETENDING to use tools "
-                                "instead of actually "
-                                "using them.\n\n"
-                                "DO NOT write:\n"
-                                "- 'Used bash tool with command...' (THIS IS FAKE)\n"
-                                "- 'Created a file using the write tool...' (THIS IS FAKE)\n"
-                                "- 'Here is what I did:' followed by descriptions\n"
-                                "- Numbered steps or instructions\n"
-                                "- Code blocks for me to copy\n\n"
-                                "Your tool calls MUST go through the proper tool interface.\n"
-                                "Writing 'Used bash tool...' does NOT execute anything!\n\n"
-                                "ACTUALLY call the tools using the tool_call mechanism.\n"
-                                "DO IT NOW - stop narrating and start executing."
-                            ),
-                        )
-                    )
-                    continue
+            repair_message = self.repairer.fake_tool_narration_message(
+                response_content=response_content,
+                iterations=iterations,
+                max_iterations=self.agent.config.max_iterations,
+            )
+            if repair_message is not None:
+                await self.phase_tracker.enter(
+                    TurnPhase.REPAIR,
+                    emit,
+                    detail="Repairing fake tool narration",
+                )
+                self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                self.agent.session.append(Message(role=Role.USER, content=repair_message))
+                continue
 
-            if (
-                not self.agent.use_react
-                and len(actions_taken) == 0
-                and iterations < self.agent.config.max_iterations - 2
-            ):
-                deflection_phrases = ["you can", "you should", "you could", "try running"]
-                if any(phrase in content.lower() for phrase in deflection_phrases):
-                    self.agent.session.append(
-                        Message(role=Role.ASSISTANT, content=response_content)
-                    )
-                    self.agent.session.append(
-                        Message(
-                            role=Role.USER,
-                            content=(
-                                "Please use your tools to execute the task "
-                                "rather than telling me what to do."
-                            ),
-                        )
-                    )
-                    continue
+            deflection_message = self.repairer.deflection_message(
+                content=content,
+                actions_taken=actions_taken,
+                iterations=iterations,
+                max_iterations=self.agent.config.max_iterations,
+            )
+            if deflection_message is not None:
+                await self.phase_tracker.enter(
+                    TurnPhase.REPAIR,
+                    emit,
+                    detail="Repairing execution deflection",
+                )
+                self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
+                self.agent.session.append(
+                    Message(role=Role.USER, content=deflection_message)
+                )
+                continue
 
             cfg = self.agent.config.reasoning
             if cfg.self_critique and len(content) > 100:
-                is_code_response = "```" in content or any(
-                    keyword in content.lower()
-                    for keyword in ["def ", "function ", "class ", "import "]
+                await self.phase_tracker.enter(
+                    TurnPhase.CRITIQUE,
+                    emit,
+                    detail="Evaluating self-critique",
                 )
-                if should_self_critique(content, is_code=is_code_response):
-                    critique = await self.agent._self_critique(content, task)
-                    await emit(
-                        AgentEvent(
-                            type="critique",
-                            content=f"Self-critique: {len(critique.issues_found)} issues found",
-                            critique=critique,
-                        )
-                    )
-                    if critique.can_revise():
-                        revision_message = (
-                            "[SELF-CRITIQUE] Review your response:\n"
-                            f"Issues found: {', '.join(critique.issues_found)}\n"
-                            f"Suggestions: {', '.join(critique.suggestions)}\n\n"
-                            "Please provide an improved response addressing these issues."
-                        )
-                        self.agent.session.append(
-                            Message(role=Role.ASSISTANT, content=response_content)
-                        )
-                        self.agent.session.append(Message(role=Role.USER, content=revision_message))
-                        critique.revision_count += 1
-                        continue
+                critique_decision = await self.completion_policy.maybe_self_critique(
+                    content=content,
+                    response_content=response_content,
+                    task=task,
+                    emit=emit,
+                )
+                if critique_decision.should_continue:
+                    continue
 
-            is_text_loop, loop_description = self.agent.safeguards.detect_text_loop(content)
-            if is_text_loop:
-                final_response = (
-                    "I seem to be repeating myself. "
-                    "Let me know if you'd like me to try a different approach."
-                )
-                summary.final_response = final_response
-                summary.failures.append(loop_description)
-                final_message = Message(role=Role.ASSISTANT, content=final_response)
-                self.agent.session.append(final_message)
-                summary.assistant_messages.append(final_message)
-                await emit(
-                    AgentEvent(
-                        type="error",
-                        content=f"Text loop detected: {loop_description}. Stopping.",
-                    )
-                )
-                await emit(AgentEvent(type="response", content=final_response))
-                return self.finalizer.finalize_summary(summary)
+            await self.phase_tracker.enter(
+                TurnPhase.COMPLETION,
+                emit,
+                detail="Checking completion policy",
+            )
+            text_loop_decision = await self.completion_policy.maybe_stop_for_text_loop(
+                content=content,
+                emit=emit,
+                summary=summary,
+            )
+            if text_loop_decision.should_stop:
+                return await self._finalize_turn(summary, emit)
 
             self.agent.safeguards.record_response(content)
             effective_task = original_task or task
@@ -382,46 +364,24 @@ class ConversationRuntime:
                 and not dod.mutating_actions
                 and continuation_count < cfg.max_continuation_prompts
             ):
-                is_premature = (
-                    detect_premature_completion(effective_task, content, actions_taken)
-                    if cfg.use_quick_completion
-                    else False
+                continuation_decision = (
+                    await self.completion_policy.maybe_continue_for_completion(
+                        content=content,
+                        response_content=response_content,
+                        task=effective_task,
+                        actions_taken=actions_taken,
+                        continuation_count=continuation_count,
+                        emit=emit,
+                    )
                 )
-                if is_premature:
+                if continuation_decision.should_continue:
                     continuation_count += 1
-                    continuation_prompt = get_continuation_prompt(
-                        effective_task,
-                        actions_taken,
-                        content,
-                    )
-                    await emit(
-                        AgentEvent(
-                            type="completion_check",
-                            content=f"Task may be incomplete ({len(actions_taken)} actions taken)",
-                            completion_check=TaskCompletionCheck(
-                                original_task=effective_task,
-                                is_complete=False,
-                                accomplished=[action.split(":")[0] for action in actions_taken],
-                                continuation_prompt=continuation_prompt,
-                            ),
-                        )
-                    )
-                    self.agent.session.append(
-                        Message(role=Role.ASSISTANT, content=response_content)
-                    )
-                    self.agent.session.append(Message(role=Role.USER, content=continuation_prompt))
                     continue
 
-            final_response = content
-            if (
-                actions_taken
-                and final_response.strip()
-                and not final_response.rstrip().endswith("?")
-            ):
-                final_response = (
-                    final_response.rstrip()
-                    + "\n\nWould you like me to make any changes or additions?"
-                )
+            final_response = self.completion_policy.finalize_response_text(
+                content=content,
+                actions_taken=actions_taken,
+            )
 
             final_message = Message(role=Role.ASSISTANT, content=response_content)
             self.agent.session.append(final_message)
@@ -451,7 +411,21 @@ class ConversationRuntime:
             await emit(AgentEvent(type="response", content=final_response))
             break
 
-        return self.finalizer.finalize_summary(summary)
+        return await self._finalize_turn(summary, emit)
+
+    async def _finalize_turn(
+        self,
+        summary: TurnSummary,
+        emit: EventSink,
+    ) -> TurnSummary:
+        await self.phase_tracker.enter(
+            TurnPhase.FINALIZE,
+            emit,
+            detail="Finalizing turn summary",
+        )
+        final_summary = self.finalizer.finalize_summary(summary)
+        self.phase_tracker.clear()
+        return final_summary
 
     async def _prepare_workflow(
         self,
