@@ -252,6 +252,67 @@ async def test_post_action_follow_up_suffix_is_appended_to_final_response(
 
 
 @pytest.mark.asyncio
+async def test_action_loop_bailout_stops_repeating_tool_pattern(
+    temp_dir: Path,
+) -> None:
+    first = temp_dir / "first.txt"
+    second = temp_dir / "second.txt"
+    first.write_text("first\n")
+    second.write_text("second\n")
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I'll inspect both files.",
+                tool_calls=[
+                    ToolCall(
+                        id="read-1",
+                        name="read",
+                        arguments={"file_path": str(first)},
+                    ),
+                    ToolCall(
+                        id="read-2",
+                        name="read",
+                        arguments={"file_path": str(second)},
+                    ),
+                ],
+            ),
+            CompletionResponse(
+                content="I'll inspect them again.",
+                tool_calls=[
+                    ToolCall(
+                        id="read-3",
+                        name="read",
+                        arguments={"file_path": str(first)},
+                    ),
+                    ToolCall(
+                        id="read-4",
+                        name="read",
+                        arguments={"file_path": str(second)},
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    run = await run_scenario(
+        "Read both fixture files.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read", "read", "read", "read"]
+    assert run.response == (
+        "I noticed I was repeating the same actions. "
+        "Let me know what you'd like me to do differently."
+    )
+    assert any(
+        event.type == "error" and "Loop detected: Repeating pattern detected" in event.content
+        for event in run.events
+    )
+
+
+@pytest.mark.asyncio
 async def test_self_critique_reroutes_long_code_response_for_revision(
     temp_dir: Path,
 ) -> None:
