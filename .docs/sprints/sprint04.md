@@ -113,3 +113,29 @@ When verify phase runs, it pulls verification commands from `verification.md` if
 - mode-specific prompts replace the single generic prompt
 - simple tasks stay lightweight; complex tasks become more structured
 - the TUI surfaces the active mode
+
+## Audit
+
+### Landed
+
+- `TodoWrite` now persists workflow tasks under `.loader/todos/` and `AskUserQuestion` now routes through the same typed executor path as every other tool
+- Loader now routes entry turns through a heuristic `clarify` / `plan` / `execute` decision and records the active mode in the DoD object
+- `clarify` mode now asks one structured question, writes a persisted brief under `.loader/briefs/`, and seeds DoD acceptance criteria from that artifact
+- `plan` mode now writes persisted `implementation.md` and `verification.md` artifacts under `.loader/plans/`, seeds DoD verification commands from `verification.md`, and seeds todo state from the implementation steps
+- the verify gate now advertises `verify` mode explicitly, reads verification commands from the persisted plan when present, and returns to `execute` on retry without re-running clarify or plan
+- mode-specific system prompts now change model behavior by mode instead of using one generic prompt for every turn
+- CLI and TUI surfaces now show workflow mode transitions, artifact creation, and real `AskUserQuestion` answer collection
+
+### Verification
+
+- `uv run pytest -q` is green: `126 passed`
+- `tests/test_runtime_harness.py` now includes explicit workflow parity for clarify routing, plan routing, and verify-fix handoff stability
+- `tests/test_workflow.py` and `tests/test_workflow_runtime.py` cover the artifact stores, router heuristics, DoD wiring, and mode-specific runtime behavior
+- `tests/test_workflow_tools.py` and `tests/test_workflow_runtime_tools.py` cover the new tool contracts and user-question callback plumbing
+
+### Residual debt
+
+- clarify mode is intentionally shallow compared with OMX deep-interview: one question, one brief, no pressure-pass loop, and no ambiguity re-scoring
+- plan mode is intentionally lighter than OMX ralplan: one pass, no consensus review agents, and no ADR-quality output contract yet
+- todo state is now real, but Loader still auto-clears remaining plan todos on successful verification rather than requiring richer per-step completion semantics
+- `conversation.py` is now more capable but even more responsibility-dense, so Sprint 05+ should keep carving this into smaller runtime components instead of letting the turn engine become the new monolith
