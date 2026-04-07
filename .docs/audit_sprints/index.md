@@ -70,6 +70,7 @@ The repo has moved since the audit snapshot. On this planning branch:
 - [Sprint 12](sprint12.md) — Workflow Protocol Hardening and Decomposition Decision
 - [Sprint 13](sprint13.md) — Legacy Runtime Retirement and Safeguard Refactor
 - [Sprint 13 Closure](sprint13_closure.md) — Final scoreboard, remaining debt, and audit-closure honesty pass
+- [Trunk Sitrep](trunk_sitrep.md) — Divergence snapshot and integration recommendation against current `trunk`
 
 ## Working principles
 
