@@ -13,12 +13,13 @@ from .completion_policy import CompletionPolicy
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
-from .finalization import TurnFinalizer, merge_usage
+from .finalization import TurnFinalizer
 from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
 from .repair import ResponseRepairer
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
-from .turn_completion import TurnCompletionAction, TurnCompletionController
+from .turn_completion import TurnCompletionController
+from .turn_iteration import TurnIterationAction, TurnIterationController
 from .turn_preparation import TurnPreparationController
 from .workflow import (
     ModeDecision,
@@ -50,8 +51,6 @@ class ConversationRuntime:
         self.workflow_policy = WorkflowPolicy(self.workflow_signals)
         self.artifact_invalidation = ArtifactInvalidationAssessor()
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
-        self.turn_requester = AssistantTurnRequester(agent, self.tracer)
-        self.tool_batches = ToolBatchRunner(agent, self.dod_store)
         self.workflow_lanes = WorkflowLaneRunner(
             agent,
             artifact_store=self.artifact_store,
@@ -84,6 +83,15 @@ class ConversationRuntime:
             finalizer=self.finalizer,
             phase_tracker=self.phase_tracker,
         )
+        self.turn_iteration = TurnIterationController(
+            agent,
+            tracer=self.tracer,
+            phase_tracker=self.phase_tracker,
+            turn_requester=AssistantTurnRequester(agent, self.tracer),
+            repairer=self.repairer,
+            tool_batches=ToolBatchRunner(agent, self.dod_store),
+            turn_completion=self.turn_completion,
+        )
         self.turn_preparation = TurnPreparationController(
             agent,
             tracer=self.tracer,
@@ -110,7 +118,6 @@ class ConversationRuntime:
         """Run one task turn and return a structured summary."""
 
         iterations = 0
-        final_response = ""
         actions_taken: list[str] = []
         continuation_count = 0
         empty_retry_count = 0
@@ -180,168 +187,44 @@ class ConversationRuntime:
             ):
                 continue
 
-            await self.phase_tracker.enter(
-                TurnPhase.ASSISTANT,
-                emit,
-                detail="Requesting assistant response",
-                reason_code="request_assistant_response",
-            )
-            await emit(AgentEvent(type="thinking"))
-            assistant_turn = await self.turn_requester.request_turn(
-                emit=emit,
-                max_tokens=effective_max_tokens,
-            )
-            merge_usage(summary.usage, assistant_turn.usage)
-
-            content = assistant_turn.content
-            response_content = assistant_turn.response_content
-            tool_calls = list(assistant_turn.tool_calls)
-            pending_tool_calls_seen = set(assistant_turn.pending_tool_calls_seen)
-
-            if not content.strip():
-                await self.phase_tracker.enter(
-                    TurnPhase.REPAIR,
-                    emit,
-                    detail="Repairing empty assistant response",
-                    reason_code="repair_empty_response",
-                    kind=TurnTransitionKind.RETRY,
-                )
-                empty_retry_count += 1
-                empty_decision = self.repairer.handle_empty_response(
-                    task=task,
-                    original_task=original_task,
-                    empty_retry_count=empty_retry_count,
-                    max_empty_retries=max_empty_retries,
-                )
-                if empty_decision.should_continue and empty_decision.retry_prompt:
-                    self.agent.session.append(
-                        Message(
-                            role=Role.ASSISTANT,
-                            content=empty_decision.retry_prompt,
-                        )
-                    )
-                    continue
-
-                final_response = empty_decision.final_response or ""
-                summary.final_response = final_response
-                if empty_decision.failure:
-                    summary.failures.append(empty_decision.failure)
-                await emit(AgentEvent(type="response", content=final_response))
-                break
-
-            analysis = self.repairer.analyze_response(
-                content=content,
-                response_content=response_content,
-                tool_calls=tool_calls,
-                extracted_iterations=extracted_iterations,
-                max_extracted_iterations=max_extracted_iterations,
-            )
-            content = analysis.content
-            tool_calls = list(analysis.tool_calls)
-            tool_source = analysis.tool_source
-            extracted_iterations = analysis.extracted_iterations
-            if analysis.clear_stream:
-                await self.phase_tracker.enter(
-                    TurnPhase.REPAIR,
-                    emit,
-                    detail="Repairing raw-text tool fallback",
-                    reason_code="repair_raw_text_tool_fallback",
-                    kind=TurnTransitionKind.REROUTE,
-                )
-                await emit(AgentEvent(type="clear_stream"))
-
-            if analysis.is_final_answer:
-                assistant_message = Message(role=Role.ASSISTANT, content=response_content)
-                self.agent.session.append(assistant_message)
-                summary.assistant_messages.append(assistant_message)
-                final_response = analysis.final_response or content
-                summary.final_response = final_response
-                self.tracer.record("turn.completed", reason="final_answer")
-                await emit(AgentEvent(type="response", content=final_response))
-                break
-
-            if tool_calls:
-                if analysis.should_stop:
-                    assistant_message = Message(role=Role.ASSISTANT, content=response_content)
-                    self.agent.session.append(assistant_message)
-                    summary.assistant_messages.append(assistant_message)
-                    final_response = analysis.final_response or content
-                    summary.final_response = final_response
-                    if analysis.failure:
-                        summary.failures.append(analysis.failure)
-                    await emit(AgentEvent(type="response", content=final_response))
-                    break
-
-                await self.phase_tracker.enter(
-                    TurnPhase.TOOLS,
-                    emit,
-                    detail="Executing tool batch",
-                    reason_code="execute_tool_batch",
-                )
-                assistant_message = Message(
-                    role=Role.ASSISTANT,
-                    content=response_content,
-                    tool_calls=tool_calls,
-                )
-                self.agent.session.append(assistant_message)
-                summary.assistant_messages.append(assistant_message)
-                self.tracer.record(
-                    "assistant.tool_batch",
-                    tool_count=len(tool_calls),
-                    source=tool_source,
-                )
-
-                batch_result = await self.tool_batches.execute_batch(
-                    tool_calls=tool_calls,
-                    tool_source=tool_source,
-                    pending_tool_calls_seen=pending_tool_calls_seen,
-                    emit=emit,
-                    summary=summary,
-                    dod=dod,
-                    executor=self.executor,
-                    on_confirmation=on_confirmation,
-                    on_user_question=on_user_question,
-                    emit_confirmation=self._emit_confirmation(emit),
-                    consecutive_errors=consecutive_errors,
-                )
-                actions_taken.extend(batch_result.actions_taken)
-                consecutive_errors = batch_result.consecutive_errors
-                if batch_result.halted:
-                    return await self._finalize_turn(
-                        summary,
-                        emit,
-                        reason_code="tool_batch_halted",
-                        reason_summary="Finalizing after halted tool batch",
-                    )
-
-                continue
-
             assert self.executor is not None
-            completion_decision = await self.turn_completion.handle_text_response(
-                content=content,
-                response_content=response_content,
+            iteration_decision = await self.turn_iteration.run_iteration(
                 task=task,
                 effective_task=effective_task,
+                original_task=original_task,
+                effective_max_tokens=effective_max_tokens,
                 iterations=iterations,
                 max_iterations=self.agent.config.max_iterations,
                 actions_taken=actions_taken,
                 continuation_count=continuation_count,
+                empty_retry_count=empty_retry_count,
+                max_empty_retries=max_empty_retries,
+                extracted_iterations=extracted_iterations,
+                max_extracted_iterations=max_extracted_iterations,
+                consecutive_errors=consecutive_errors,
                 dod=dod,
                 emit=emit,
                 summary=summary,
                 executor=self.executor,
                 rollback_plan=rollback_plan,
+                on_confirmation=on_confirmation,
+                on_user_question=on_user_question,
+                emit_confirmation=self._emit_confirmation(emit),
             )
-            continuation_count = completion_decision.continuation_count
-            if completion_decision.action == TurnCompletionAction.CONTINUE:
+            continuation_count = iteration_decision.continuation_count
+            empty_retry_count = iteration_decision.empty_retry_count
+            extracted_iterations = iteration_decision.extracted_iterations
+            consecutive_errors = iteration_decision.consecutive_errors
+            actions_taken.extend(iteration_decision.new_actions_taken)
+            if iteration_decision.action == TurnIterationAction.CONTINUE:
                 continue
-            if completion_decision.action == TurnCompletionAction.FINALIZE:
+            if iteration_decision.action == TurnIterationAction.FINALIZE:
                 return await self._finalize_turn(
                     summary,
                     emit,
-                    reason_code=completion_decision.finalize_reason_code
+                    reason_code=iteration_decision.finalize_reason_code
                     or "turn_complete",
-                    reason_summary=completion_decision.finalize_reason_summary
+                    reason_summary=iteration_decision.finalize_reason_summary
                     or "Finalizing completed turn",
                 )
             break
