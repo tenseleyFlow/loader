@@ -141,27 +141,6 @@ class ConversationRuntime:
             summary.iterations = iterations
             self.tracer.record("turn.iteration_started", iteration=iterations)
 
-            if iterations == 1 and len(self.context.legacy.message_history()) == 1:
-                task_lower = task.lower()
-                action_keywords = [
-                    "create",
-                    "write",
-                    "make",
-                    "run",
-                    "execute",
-                    "build",
-                    "install",
-                    "delete",
-                    "remove",
-                    "add",
-                    "edit",
-                    "modify",
-                    "update",
-                    "fix",
-                ]
-                if any(keyword in task_lower for keyword in action_keywords):
-                    self.context.session.append(Message(role=Role.ASSISTANT, content="["))
-
             steering_messages = self.context.legacy.drain_steering_queue()
             for steering_message in steering_messages:
                 await emit(AgentEvent(type="steering", content=steering_message))

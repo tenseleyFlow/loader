@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from loader.agent.loop import Agent, AgentConfig
+from loader.agent.loop import AgentConfig
 from loader.llm.base import CompletionResponse, Message, Role, ToolCall
 from tests.helpers.runtime_harness import ScriptedBackend, run_scenario
 
@@ -46,23 +46,25 @@ def tool_event_names(run) -> list[str]:
     ]
 
 
-def test_fresh_agent_messages_are_disconnected_from_session_history(
+@pytest.mark.asyncio
+async def test_first_turn_action_prompt_does_not_inject_prefill_message(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
+    backend = ScriptedBackend(
+        completions=[CompletionResponse(content="I can help with that.")]
+    )
+
+    await run_scenario(
+        "Create allowed.txt with a greeting.",
+        backend,
         config=non_streaming_config(),
         project_root=temp_dir,
     )
 
-    agent.session.append(
-        Message(role=Role.USER, content="Create allowed.txt with a greeting.")
+    assert not any(
+        message.role == Role.ASSISTANT and message.content == "["
+        for message in backend.invocations[0].messages
     )
-
-    assert agent.messages == []
-    assert [message.content for message in agent.session.messages] == [
-        "Create allowed.txt with a greeting."
-    ]
 
 
 @pytest.mark.asyncio
