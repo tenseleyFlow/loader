@@ -18,6 +18,7 @@ from ..runtime.permissions import (
     build_permission_policy,
     load_permission_rules,
 )
+from ..runtime.prompt_history import PromptSnapshot
 from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
@@ -315,6 +316,16 @@ class Agent:
             self.session.update_runtime_state(
                 prompt_format=prompt_result.prompt_format,
                 prompt_sections=prompt_result.dynamic_section_names,
+            )
+            self.session.append_prompt_snapshot(
+                PromptSnapshot.create(
+                    workflow_mode=self.workflow_mode,
+                    permission_mode=self.active_permission_mode,
+                    current_task=self._current_task,
+                    prompt_format=prompt_result.prompt_format,
+                    prompt_sections=prompt_result.dynamic_section_names,
+                    content=prompt_result.content,
+                )
             )
             self._system_message = Message(
                 role=Role.SYSTEM,

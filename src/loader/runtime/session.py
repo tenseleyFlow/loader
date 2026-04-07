@@ -18,10 +18,11 @@ from .compaction import (
     compact_session_messages,
     estimate_message_tokens,
 )
+from .prompt_history import PromptSnapshot, normalize_prompt_history
 from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 
-SESSION_VERSION = 6
+SESSION_VERSION = 7
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -175,6 +176,7 @@ class SessionSnapshot:
     permission_rules_source: str | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
+    prompt_history: list[PromptSnapshot] = field(default_factory=list)
     active_turn_phase: str | None = None
     workflow_reason_code: str | None = None
     workflow_reason_summary: str | None = None
@@ -207,6 +209,7 @@ class SessionSnapshot:
             "permission_rules_source": self.permission_rules_source,
             "prompt_format": self.prompt_format,
             "prompt_sections": list(self.prompt_sections),
+            "prompt_history": [item.to_dict() for item in self.prompt_history],
             "active_turn_phase": self.active_turn_phase,
             "workflow_reason_code": self.workflow_reason_code,
             "workflow_reason_summary": self.workflow_reason_summary,
@@ -247,6 +250,7 @@ class SessionSnapshot:
             permission_rules_source=data.get("permission_rules_source"),
             prompt_format=data.get("prompt_format"),
             prompt_sections=normalize_prompt_sections(data.get("prompt_sections")),
+            prompt_history=normalize_prompt_history(data.get("prompt_history")),
             active_turn_phase=data.get("active_turn_phase"),
             workflow_reason_code=normalize_optional_text(
                 data.get("workflow_reason_code")
@@ -410,6 +414,7 @@ class ConversationSession:
     permission_rules_source: str | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
+    prompt_history: list[PromptSnapshot] = field(default_factory=list)
     active_turn_phase: str | None = None
     workflow_reason_code: str | None = None
     workflow_reason_summary: str | None = None
@@ -483,6 +488,7 @@ class ConversationSession:
         self.last_turn_transition_reason_code = None
         self.workflow_timeline = []
         self.workflow_ledger = WorkflowLedger()
+        self.prompt_history = []
         self.compaction = None
         self.usage_totals = {}
         self.touch()
@@ -591,6 +597,22 @@ class ConversationSession:
         self.touch()
         self.persist()
 
+    def append_prompt_snapshot(
+        self,
+        snapshot: PromptSnapshot,
+        *,
+        max_entries: int = 16,
+    ) -> None:
+        """Persist one prompt snapshot unless it duplicates the latest contract."""
+
+        if self.prompt_history and self.prompt_history[-1].matches_contract(snapshot):
+            return
+        self.prompt_history.append(snapshot)
+        if len(self.prompt_history) > max_entries:
+            self.prompt_history[:] = self.prompt_history[-max_entries:]
+        self.touch()
+        self.persist()
+
     def update_workflow_ledger(self, ledger: WorkflowLedger) -> None:
         """Replace persisted workflow-ledger state."""
 
@@ -667,6 +689,7 @@ class ConversationSession:
             permission_rules_source=self.permission_rules_source,
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
+            prompt_history=list(self.prompt_history),
             active_turn_phase=self.active_turn_phase,
             workflow_reason_code=self.workflow_reason_code,
             workflow_reason_summary=self.workflow_reason_summary,
@@ -726,6 +749,7 @@ class ConversationSession:
         instance.permission_rules_source = snapshot.permission_rules_source
         instance.prompt_format = snapshot.prompt_format
         instance.prompt_sections = list(snapshot.prompt_sections)
+        instance.prompt_history = list(snapshot.prompt_history)
         instance.active_turn_phase = snapshot.active_turn_phase
         instance.workflow_reason_code = snapshot.workflow_reason_code
         instance.workflow_reason_summary = snapshot.workflow_reason_summary

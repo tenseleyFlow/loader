@@ -8,6 +8,7 @@ import pytest
 
 from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, Message, Role, ToolCall
+from loader.runtime.prompt_history import PromptSnapshot
 from loader.runtime.session import ConversationSession
 from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
 from loader.runtime.workflow_policy import WorkflowTimelineEntry
@@ -269,6 +270,55 @@ def test_session_persists_workflow_ledger_state(temp_dir: Path) -> None:
     assert reloaded.workflow_ledger.decision_boundaries[0].text == (
         "Escalate before broad UX changes."
     )
+
+
+def test_session_persists_prompt_history_state(temp_dir: Path) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+    )
+
+    session.append_prompt_snapshot(
+        PromptSnapshot(
+            timestamp="2026-04-07T14:00:00Z",
+            workflow_mode="plan",
+            permission_mode="prompt",
+            current_task="Tighten Loader workflow behavior",
+            prompt_format="native",
+            prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            content="# Introduction\nplan around planned.txt\n",
+        )
+    )
+    session.append_prompt_snapshot(
+        PromptSnapshot(
+            timestamp="2026-04-07T14:02:00Z",
+            workflow_mode="execute",
+            permission_mode="prompt",
+            current_task="Tighten Loader workflow behavior",
+            prompt_format="native",
+            prompt_sections=[
+                "Runtime Config",
+                "Workflow Context",
+                "Mode Guidance",
+                "Project Context",
+            ],
+            content="# Introduction\nexecute around notes.txt\n# Project Context\npython\n",
+        )
+    )
+
+    reloaded = ConversationSession.load(
+        project_root=temp_dir,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        session_id=session.session_id,
+    )
+
+    assert reloaded is not None
+    assert len(reloaded.prompt_history) == 2
+    assert reloaded.prompt_history[0].workflow_mode == "plan"
+    assert reloaded.prompt_history[-1].workflow_mode == "execute"
+    assert "notes.txt" in reloaded.prompt_history[-1].content
 
 
 @pytest.mark.asyncio
