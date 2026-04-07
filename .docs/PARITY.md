@@ -31,6 +31,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - task-size-aware verification command derivation based on actual tool history
 - verification command loading from persisted `verification.md` artifacts when present
 - mutating tasks complete through the DoD gate, and non-mutating tasks now return their answer directly instead of injecting continuation nudges
+- runtime-owned safeguard, rollback, recovery, parsing, reasoning-type, and task-classification services, with `src/loader/runtime/` no longer importing `agent/*` directly
 - typed `TurnSummary` output for completed turns, including trace events and tool-result messages
 - normalized per-turn usage plus cumulative session usage in `TurnSummary`
 - automatic transcript compaction with priority-aware line compression and continuation instructions
@@ -50,6 +51,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 ## Known weak spots
 
 - the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it still owns workflow routing, remaining loop safeguards, and other coordination logic that remains more heuristic-heavy than the reference runtime in `refs/claw-code`
+- runtime ownership is much cleaner than the audit snapshot, but some behavior still hangs off explicit legacy callbacks into `agent/reasoning.py` and streamed filtering still lives in `agent/safeguards.py`
 - workflow routing is cleaner than Sprint 00, but the router and artifact bridge still live in [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py) and remain more heuristic than the reference runtimes
 - the mode router is still heuristic-only; Loader does not yet implement OMX's deeper ambiguity scoring, pressure-pass discipline, or branch-specific routing policy
 - clarify mode is now explicitly a single-question brief flow, not a deeper Socratic protocol
@@ -112,7 +114,7 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-07:
 
-- `uv run pytest -q`: 211 passed
+- `uv run pytest -q`: 226 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers router heuristics, clarify/plan artifact round trips, DoD workflow links, and todo-to-DoD syncing
@@ -142,3 +144,4 @@ As of 2026-04-07:
 - Sprint 05 adds durable sessions, resume, compaction, and native memory/notepad tools, but it stops short of Sprint 06's inspectable session/status product surfaces and still uses heuristic continuity summaries rather than richer semantic memory extraction.
 - Sprint 06 adds inspectable product surfaces, a constrained explore lane, and a broader tool registry, but it still stops short of interactive explore workflows, richer git ergonomics, AST/LSP-aware editing, or any multi-agent/team runtime.
 - Sprint 07 is complete: Loader now has prompt/allow modes, rule-based permission policy, policy-backed prompting, persisted policy inspection state, and smaller assistant-turn/tool-batch/finalization runtime seams, but it still stops short of a richer rule UX, deeper policy sandboxing, and the more opinionated workflow/runtime contracts in the refs.
+- Sprint 13 closes the runtime-ownership import gap: `runtime/*` no longer imports `agent/*` directly, and the remaining debt is now concentrated in explicit legacy callbacks, streamed safeguards, workflow depth, and still-blocked live backend validation.
