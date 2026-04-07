@@ -126,6 +126,8 @@ class SessionSummary:
     message_count: int
     workflow_mode: str
     permission_mode: str
+    permission_prompting_enabled: bool
+    permission_rule_counts: dict[str, int]
     current_task: str | None
     active_dod_path: str | None
     dod_status: str | None
@@ -279,6 +281,20 @@ def collect_status_snapshot(
         )
 
     dod = _load_dod(snapshot.active_dod_path, project_root=resolved_root)
+    has_persisted_policy = snapshot.permission_rules_source is not None
+    permission_rule_counts = (
+        dict(snapshot.permission_rule_counts)
+        if has_persisted_policy
+        else rule_status.rules.counts
+    )
+    permission_prompting_enabled = (
+        snapshot.permission_prompting_enabled
+        if has_persisted_policy
+        else (
+            (snapshot.permission_mode or default_permission_mode) == "prompt"
+            or bool(rule_status.rules.ask)
+        )
+    )
     return StatusSnapshot(
         project_root=resolved_root,
         model=resolved_model,
@@ -286,11 +302,8 @@ def collect_status_snapshot(
         active_session_id=snapshot.session_id,
         workflow_mode=snapshot.workflow_mode,
         permission_mode=snapshot.permission_mode or default_permission_mode,
-        permission_prompting_enabled=(
-            (snapshot.permission_mode or default_permission_mode) == "prompt"
-            or bool(rule_status.rules.ask)
-        ),
-        permission_rule_counts=rule_status.rules.counts,
+        permission_prompting_enabled=permission_prompting_enabled,
+        permission_rule_counts=permission_rule_counts,
         permission_rules_valid=rule_status.valid,
         current_task=snapshot.current_task,
         message_count=len(snapshot.messages),
@@ -328,6 +341,11 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                 message_count=len(snapshot.messages),
                 workflow_mode=snapshot.workflow_mode,
                 permission_mode=snapshot.permission_mode,
+                permission_prompting_enabled=(
+                    snapshot.permission_prompting_enabled
+                    or snapshot.permission_mode == "prompt"
+                ),
+                permission_rule_counts=dict(snapshot.permission_rule_counts),
                 current_task=snapshot.current_task,
                 active_dod_path=snapshot.active_dod_path,
                 dod_status=dod.status if dod else None,

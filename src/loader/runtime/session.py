@@ -19,7 +19,7 @@ from .compaction import (
     estimate_message_tokens,
 )
 
-SESSION_VERSION = 1
+SESSION_VERSION = 2
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 
@@ -55,6 +55,24 @@ def normalize_usage(usage: dict[str, int] | None) -> dict[str, int]:
             continue
         normalized[target_key] = normalized.get(target_key, 0) + int(value)
     return normalized
+
+
+def default_permission_rule_counts() -> dict[str, int]:
+    """Return an empty permission-rule count summary."""
+
+    return {"allow": 0, "deny": 0, "ask": 0}
+
+
+def normalize_permission_rule_counts(value: Any) -> dict[str, int]:
+    """Coerce persisted permission rule counts into the canonical shape."""
+
+    if not isinstance(value, dict):
+        return default_permission_rule_counts()
+    return {
+        "allow": int(value.get("allow", 0)),
+        "deny": int(value.get("deny", 0)),
+        "ask": int(value.get("ask", 0)),
+    }
 
 
 @dataclass(slots=True)
@@ -100,6 +118,11 @@ class SessionSnapshot:
     current_task: str | None = None
     workflow_mode: str = "execute"
     permission_mode: str = "workspace-write"
+    permission_prompting_enabled: bool = False
+    permission_rule_counts: dict[str, int] = field(
+        default_factory=default_permission_rule_counts
+    )
+    permission_rules_source: str | None = None
     compaction: SessionCompaction | None = None
     version: int = SESSION_VERSION
 
@@ -115,6 +138,9 @@ class SessionSnapshot:
             "current_task": self.current_task,
             "workflow_mode": self.workflow_mode,
             "permission_mode": self.permission_mode,
+            "permission_prompting_enabled": self.permission_prompting_enabled,
+            "permission_rule_counts": dict(self.permission_rule_counts),
+            "permission_rules_source": self.permission_rules_source,
             "compaction": self.compaction.to_dict() if self.compaction else None,
         }
 
@@ -134,6 +160,13 @@ class SessionSnapshot:
             current_task=data.get("current_task"),
             workflow_mode=str(data.get("workflow_mode", "execute")),
             permission_mode=str(data.get("permission_mode", "workspace-write")),
+            permission_prompting_enabled=bool(
+                data.get("permission_prompting_enabled", False)
+            ),
+            permission_rule_counts=normalize_permission_rule_counts(
+                data.get("permission_rule_counts")
+            ),
+            permission_rules_source=data.get("permission_rules_source"),
             compaction=(
                 SessionCompaction.from_dict(data["compaction"])
                 if data.get("compaction")
@@ -258,6 +291,11 @@ class ConversationSession:
     current_task: str | None = None
     workflow_mode: str = "execute"
     permission_mode: str = "workspace-write"
+    permission_prompting_enabled: bool = False
+    permission_rule_counts: dict[str, int] = field(
+        default_factory=default_permission_rule_counts
+    )
+    permission_rules_source: str | None = None
     compaction: SessionCompaction | None = None
     rotate_after_bytes: int = DEFAULT_ROTATE_AFTER_BYTES
     max_rotated_files: int = MAX_ROTATED_FILES
@@ -324,6 +362,9 @@ class ConversationSession:
         current_task: str | None = None,
         workflow_mode: str | None = None,
         permission_mode: str | None = None,
+        permission_prompting_enabled: bool | None = None,
+        permission_rule_counts: dict[str, int] | None = None,
+        permission_rules_source: str | None = None,
     ) -> None:
         """Update persisted runtime state that lives beside the messages."""
 
@@ -335,6 +376,14 @@ class ConversationSession:
             self.workflow_mode = workflow_mode
         if permission_mode is not None:
             self.permission_mode = permission_mode
+        if permission_prompting_enabled is not None:
+            self.permission_prompting_enabled = permission_prompting_enabled
+        if permission_rule_counts is not None:
+            self.permission_rule_counts = normalize_permission_rule_counts(
+                permission_rule_counts
+            )
+        if permission_rules_source is not None:
+            self.permission_rules_source = permission_rules_source
         self.touch()
         self.persist()
 
@@ -402,6 +451,9 @@ class ConversationSession:
             current_task=self.current_task,
             workflow_mode=self.workflow_mode,
             permission_mode=self.permission_mode,
+            permission_prompting_enabled=self.permission_prompting_enabled,
+            permission_rule_counts=dict(self.permission_rule_counts),
+            permission_rules_source=self.permission_rules_source,
             compaction=self.compaction,
         )
         return self.store.save(snapshot)
@@ -416,7 +468,9 @@ class ConversationSession:
         session_id: str | None = None,
         rotate_after_bytes: int = DEFAULT_ROTATE_AFTER_BYTES,
         max_rotated_files: int = MAX_ROTATED_FILES,
-        auto_compaction_input_tokens_threshold: int = DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        auto_compaction_input_tokens_threshold: int = (
+            DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD
+        ),
         compaction_keep_last_messages: int = DEFAULT_COMPACTION_KEEP_LAST_MESSAGES,
     ) -> ConversationSession | None:
         """Load the latest or named conversation session from disk."""
@@ -442,6 +496,9 @@ class ConversationSession:
         instance.current_task = snapshot.current_task
         instance.workflow_mode = snapshot.workflow_mode
         instance.permission_mode = snapshot.permission_mode
+        instance.permission_prompting_enabled = snapshot.permission_prompting_enabled
+        instance.permission_rule_counts = dict(snapshot.permission_rule_counts)
+        instance.permission_rules_source = snapshot.permission_rules_source
         instance.compaction = snapshot.compaction
         instance.rotate_after_bytes = rotate_after_bytes
         instance.max_rotated_files = max_rotated_files

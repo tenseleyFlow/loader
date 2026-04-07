@@ -176,6 +176,9 @@ class Agent:
             project_root=self.project_root,
             messages=messages or [],
             permission_mode=self.permission_policy.active_mode.as_str(),
+            permission_prompting_enabled=self.permission_policy.prompting_enabled,
+            permission_rule_counts=self.permission_policy.rule_counts(),
+            permission_rules_source=str(self.permission_config_status.source_path),
             workflow_mode=self.workflow_mode,
             rotate_after_bytes=self.config.session_rotate_after_bytes,
             auto_compaction_input_tokens_threshold=(

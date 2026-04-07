@@ -115,6 +115,9 @@ class ConversationRuntime:
             current_task=original_task or task,
             workflow_mode=self.agent.workflow_mode,
             permission_mode=self.agent.active_permission_mode,
+            permission_prompting_enabled=self.agent.permission_policy.prompting_enabled,
+            permission_rule_counts=self.agent.active_permission_rule_counts,
+            permission_rules_source=str(self.agent.permission_config_status.source_path),
         )
         await self.finalizer.emit_dod_status(emit, dod)
 

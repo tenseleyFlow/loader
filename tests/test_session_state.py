@@ -127,6 +127,41 @@ def test_session_compaction_persists_summary_and_recent_messages(temp_dir: Path)
     ]
 
 
+def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+        permission_mode="prompt",
+        permission_prompting_enabled=True,
+        permission_rule_counts={"allow": 1, "deny": 2, "ask": 3},
+        permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
+    )
+
+    session.update_runtime_state(
+        current_task="Inspect permission history",
+        permission_mode="allow",
+        permission_prompting_enabled=True,
+        permission_rule_counts={"allow": 2, "deny": 1, "ask": 4},
+        permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
+    )
+
+    reloaded = ConversationSession.load(
+        project_root=temp_dir,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        session_id=session.session_id,
+    )
+
+    assert reloaded is not None
+    assert reloaded.permission_mode == "allow"
+    assert reloaded.permission_prompting_enabled is True
+    assert reloaded.permission_rule_counts == {"allow": 2, "deny": 1, "ask": 4}
+    assert reloaded.permission_rules_source == str(
+        temp_dir / ".loader" / "permission-rules.json"
+    )
+
+
 @pytest.mark.asyncio
 async def test_turn_summary_usage_rolls_up_into_session_totals(temp_dir: Path) -> None:
     backend = ScriptedBackend(

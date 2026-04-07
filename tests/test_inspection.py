@@ -97,7 +97,10 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         active_dod_path=str(dod_path),
         current_task="Fix the failing tests",
         workflow_mode="execute",
-        permission_mode="workspace-write",
+        permission_mode="prompt",
+        permission_prompting_enabled=True,
+        permission_rule_counts={"allow": 1, "deny": 2, "ask": 1},
+        permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
     )
     SessionStore(temp_dir).save(snapshot)
     return snapshot.session_id, str(dod_path)
@@ -206,19 +209,25 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.dod_pending_items_count == 1
     assert snapshot.last_verification_result == "failed"
     assert snapshot.active_dod_path == dod_path
-    assert snapshot.permission_rule_counts == {"allow": 0, "deny": 0, "ask": 0}
-    assert snapshot.permission_prompting_enabled is False
+    assert snapshot.permission_mode == "prompt"
+    assert snapshot.permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
+    assert snapshot.permission_prompting_enabled is True
     assert snapshot.permission_rules_valid is True
 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
     assert sessions[0].is_current is True
     assert sessions[0].dod_status == "fixing"
+    assert sessions[0].permission_prompting_enabled is True
+    assert sessions[0].permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
 
     assert detail.snapshot.session_id == session_id
     assert detail.is_current is True
     assert detail.definition_of_done is not None
     assert detail.definition_of_done.status == "fixing"
+    assert detail.snapshot.permission_rules_source == str(
+        temp_dir / ".loader" / "permission-rules.json"
+    )
 
 
 def test_status_and_session_commands_render_persisted_state(
@@ -239,13 +248,18 @@ def test_status_and_session_commands_render_persisted_state(
     assert status_result.exit_code == 0
     assert session_id in status_result.output
     assert "fixing" in status_result.output
+    assert "1 allow / 2 deny / 1 ask" in status_result.output
 
     assert list_result.exit_code == 0
-    assert "Session" in list_result.output
+    assert session_id in list_result.output
+    assert "1 allow / 2 deny / 1 ask" in list_result.output
+    assert "prompting enabled" in list_result.output
 
     assert show_result.exit_code == 0
     assert session_id in show_result.output
     assert "Patch the broken parser" in show_result.output
+    assert "1 allow / 2 deny / 1 ask" in show_result.output
+    assert "enabled" in show_result.output
 
 
 def test_status_snapshot_reports_invalid_permission_rules(temp_dir: Path) -> None:

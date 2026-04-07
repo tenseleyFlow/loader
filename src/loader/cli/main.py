@@ -1122,27 +1122,38 @@ def _session_list_main() -> None:
         console.print("[yellow]No persisted sessions found.[/yellow]")
         return
 
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("Current", width=7)
-    table.add_column("Session", style="white")
-    table.add_column("Updated", style="white")
-    table.add_column("Messages", justify="right")
-    table.add_column("Workflow", style="white")
-    table.add_column("Perms", style="white")
-    table.add_column("DoD", style="white")
-    table.add_column("Task", style="dim")
-    for entry in entries:
-        table.add_row(
-            "*" if entry.is_current else "",
-            entry.session_id,
-            entry.updated_at,
-            str(entry.message_count),
-            entry.workflow_mode,
-            entry.permission_mode,
-            entry.dod_status or "none",
-            entry.current_task or "",
+    for index, entry in enumerate(entries):
+        policy_summary = (
+            f"{entry.permission_rule_counts['allow']} allow / "
+            f"{entry.permission_rule_counts['deny']} deny / "
+            f"{entry.permission_rule_counts['ask']} ask"
         )
-    console.print(table)
+        if entry.permission_prompting_enabled:
+            policy_summary = f"{policy_summary} (prompting enabled)"
+        else:
+            policy_summary = f"{policy_summary} (prompting disabled)"
+
+        table = Table(show_header=False, box=None)
+        table.add_column("Field", style="bold cyan")
+        table.add_column("Value", style="white")
+        table.add_row("Current", "yes" if entry.is_current else "no")
+        table.add_row("Created", entry.created_at)
+        table.add_row("Updated", entry.updated_at)
+        table.add_row("Messages", str(entry.message_count))
+        table.add_row("Workflow", entry.workflow_mode)
+        table.add_row("Permissions", entry.permission_mode)
+        table.add_row("Policy", policy_summary)
+        table.add_row("DoD", entry.dod_status or "none")
+        table.add_row("Task", entry.current_task or "none")
+        console.print(
+            Panel.fit(
+                table,
+                title=f"[bold blue]{entry.session_id}[/bold blue]",
+                border_style="blue",
+            )
+        )
+        if index < len(entries) - 1:
+            console.print()
 
 
 def _session_show_main(session_id: str) -> None:
@@ -1163,6 +1174,19 @@ def _session_show_main(session_id: str) -> None:
     table.add_row("Messages", str(len(snapshot.messages)))
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row(
+        "Prompting",
+        "enabled" if snapshot.permission_prompting_enabled else "disabled",
+    )
+    table.add_row(
+        "Policy Rules",
+        (
+            f"{snapshot.permission_rule_counts['allow']} allow / "
+            f"{snapshot.permission_rule_counts['deny']} deny / "
+            f"{snapshot.permission_rule_counts['ask']} ask"
+        ),
+    )
+    table.add_row("Rules Source", snapshot.permission_rules_source or "none")
     table.add_row("Task", snapshot.current_task or "none")
     table.add_row("Active DoD", snapshot.active_dod_path or "none")
     if snapshot.usage:
