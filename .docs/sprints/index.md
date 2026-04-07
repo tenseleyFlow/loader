@@ -39,6 +39,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 10](sprint10.md) — Route Pressure, Clarify Depth, and Workflow Timeline
 
+## Phase 9: Semantic Workflow and Orchestration
+
+- [Sprint 11](sprint11.md) — Semantic Signals, Clarify Strategy, and Orchestrator Split
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
