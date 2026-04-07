@@ -54,7 +54,7 @@ class ConversationRuntime:
         self.artifact_store = WorkflowArtifactStore(self.context.project_root)
         self.turn_requester = AssistantTurnRequester(self.context, self.tracer)
         self.tool_batches = ToolBatchRunner(self.context, self.dod_store)
-        self.repairer = ResponseRepairer(agent)
+        self.repairer = ResponseRepairer(self.context)
         self.completion_policy = CompletionPolicy(self.context)
         self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
         self.finalizer = TurnFinalizer(

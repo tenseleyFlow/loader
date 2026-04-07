@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from ..agent.parsing import parse_tool_calls
 from ..llm.base import ToolCall
+from .context import RuntimeContext
 
 
 @dataclass(slots=True)
@@ -37,8 +38,8 @@ class ToolCallAnalysis:
 class ResponseRepairer:
     """Owns response-repair heuristics that used to live inline in the loop."""
 
-    def __init__(self, agent) -> None:
-        self.agent = agent
+    def __init__(self, context: RuntimeContext) -> None:
+        self.context = context
 
     def handle_empty_response(
         self,
@@ -97,7 +98,7 @@ class ResponseRepairer:
         normalized_tool_calls = list(tool_calls)
         tool_source = "native"
 
-        if self.agent.use_react:
+        if self.context.use_react:
             parsed = parse_tool_calls(content)
             normalized_tool_calls = parsed.tool_calls
             normalized_content = parsed.content
@@ -120,7 +121,9 @@ class ResponseRepairer:
                 tool_source = "raw_text"
                 clear_stream = True
             else:
-                raw_tool_calls = self.agent._extract_raw_json_tool_calls(response_content)
+                raw_tool_calls = self.context.legacy.extract_raw_json_tool_calls(
+                    response_content
+                )
                 if raw_tool_calls:
                     normalized_tool_calls = raw_tool_calls
                     tool_source = "raw_text"
@@ -162,7 +165,7 @@ class ResponseRepairer:
     ) -> str | None:
         """Return a repair message when the assistant narrates fake tool use."""
 
-        if not self.agent._contains_unexecuted_code(response_content):
+        if not self.context.legacy.contains_unexecuted_code(response_content):
             return None
         if iterations >= max_iterations - 1:
             return None
@@ -191,7 +194,7 @@ class ResponseRepairer:
     ) -> str | None:
         """Return a repair message when the assistant deflects instead of acting."""
 
-        if self.agent.use_react:
+        if self.context.use_react:
             return None
         if actions_taken:
             return None
