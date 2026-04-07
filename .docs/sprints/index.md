@@ -31,6 +31,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 08](sprint08.md) — Prompt Builder, Runtime Phases, and Permission Operator UX
 
+## Phase 7: Workflow State Discipline
+
+- [Sprint 09](sprint09.md) — Turn State Machine, Workflow Contracts, and Prompt Preview
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
