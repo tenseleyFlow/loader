@@ -300,7 +300,7 @@ async def test_action_loop_bailout_stops_repeating_tool_pattern(
 
 
 @pytest.mark.asyncio
-async def test_self_critique_reroutes_long_code_response_for_revision(
+async def test_long_code_response_no_longer_reroutes_for_self_critique(
     temp_dir: Path,
 ) -> None:
     initial_response = (
@@ -310,16 +310,9 @@ async def test_self_critique_reroutes_long_code_response_for_revision(
         "        summary.append(f'result-{item}')\n"
         "    return '\\n'.join(summary)\n\n"
     ) * 4
-    critique_json = (
-        '{"issues": ["Missing explanation"], '
-        '"suggestions": ["Summarize the code changes more clearly"], '
-        '"should_revise": true, "severity": "moderate"}'
-    )
     backend = ScriptedBackend(
         completions=[
             CompletionResponse(content=initial_response),
-            CompletionResponse(content=critique_json),
-            CompletionResponse(content="Revised answer with a concise explanation."),
         ]
     )
 
@@ -331,15 +324,6 @@ async def test_self_critique_reroutes_long_code_response_for_revision(
     )
 
     assert tool_event_names(run) == []
-    assert run.response == "Revised answer with a concise explanation."
-    assert any(event.type == "critique" for event in run.events)
-    assert any(
-        "Review your response and identify potential issues."
-        in invocation.messages[0].content
-        for invocation in backend.invocations
-        if invocation.mode == "complete" and invocation.messages
-    )
-    assert any(
-        message.role == Role.USER and "[SELF-CRITIQUE] Review your response:" in message.content
-        for message in backend.invocations[-1].messages
-    )
+    assert run.response == initial_response.strip()
+    assert not any(event.type == "critique" for event in run.events)
+    assert len(backend.invocations) == 1

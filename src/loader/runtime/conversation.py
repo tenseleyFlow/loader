@@ -276,27 +276,12 @@ class ConversationRuntime:
 
                 continue
 
-            cfg = self.context.config.reasoning
-            if cfg.self_critique and len(content) > 100:
-                await self.phase_tracker.enter(
-                    TurnPhase.CRITIQUE,
-                    emit,
-                    detail="Evaluating self-critique",
-                )
-                critique_decision = await self.completion_policy.maybe_self_critique(
-                    content=content,
-                    response_content=response_content,
-                    task=task,
-                    emit=emit,
-                )
-                if critique_decision.should_continue:
-                    continue
-
             await self.phase_tracker.enter(
                 TurnPhase.COMPLETION,
                 emit,
                 detail="Checking completion policy",
             )
+            cfg = self.context.config.reasoning
             text_loop_decision = await self.completion_policy.maybe_stop_for_text_loop(
                 content=content,
                 emit=emit,

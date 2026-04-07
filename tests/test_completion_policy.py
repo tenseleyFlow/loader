@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from loader.agent.reasoning import SelfCritique
 from loader.llm.base import Message, Role
 from loader.runtime.completion_policy import CompletionPolicy
 from loader.runtime.context import RuntimeContext, RuntimeLegacyServices
@@ -67,8 +66,6 @@ def build_context(
     *,
     temp_dir: Path,
     safeguards: FakeSafeguards,
-    self_critique,
-    self_critique_enabled: bool = False,
     use_quick_completion: bool = True,
     max_continuation_prompts: int = 5,
 ) -> RuntimeContext:
@@ -95,7 +92,7 @@ def build_context(
                 completion_check=True,
                 use_quick_completion=use_quick_completion,
                 max_continuation_prompts=max_continuation_prompts,
-                self_critique=self_critique_enabled,
+                self_critique=False,
                 confidence_scoring=False,
                 min_confidence_for_action=3,
                 verification=False,
@@ -113,7 +110,7 @@ def build_context(
             queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,
             refresh_capability_profile=lambda: None,
-            self_critique=self_critique,
+            self_critique=lambda response, task: None,  # type: ignore[arg-type]
             assess_confidence=lambda tool_name, tool_args, context: None,  # type: ignore[arg-type]
             verify_action=lambda tool_name, tool_args, result, expected: None,  # type: ignore[arg-type]
             contains_unexecuted_code=lambda content: False,
@@ -124,76 +121,12 @@ def build_context(
 
 
 @pytest.mark.asyncio
-async def test_completion_policy_self_critique_uses_legacy_context_service(
-    temp_dir: Path,
-) -> None:
-    async def self_critique(content: str, task: str) -> SelfCritique:
-        return SelfCritique(
-            original_response=content,
-            issues_found=["Missing explanation"],
-            suggestions=["Explain the tradeoff more clearly"],
-            should_revise=True,
-        )
-
-    context = build_context(
-        temp_dir=temp_dir,
-        safeguards=FakeSafeguards(),
-        self_critique=self_critique,
-        self_critique_enabled=True,
-    )
-    policy = CompletionPolicy(context)
-    events: list[AgentEvent] = []
-    content = (
-        "```python\n"
-        "def update_runtime_context():\n"
-        "    details = {\n"
-        "        'status': 'migrated',\n"
-        "        'runtime': 'context-first',\n"
-        "        'ownership': 'explicit',\n"
-        "        'notes': [\n"
-        "            'assistant turns now receive a typed context',\n"
-        "            'conversation runtime uses the context for safe ownership sites',\n"
-        "            'follow-up slices will migrate completion policy and finalization helpers',\n"
-        "        ],\n"
-        "    }\n"
-        "    return details\n"
-        "```\n"
-        "This code updates the runtime context and returns a status payload with minimal explanation. "
-        "It intentionally leaves out the design tradeoffs, the migration risks, and the behavioral "
-        "boundaries between the legacy agent and the typed runtime context so the self-critique gate "
-        "has something substantive to flag for revision."
-    )
-
-    async def emit(event: AgentEvent) -> None:
-        events.append(event)
-
-    decision = await policy.maybe_self_critique(
-        content=content,
-        response_content=content,
-        task="Explain the runtime change",
-        emit=emit,
-    )
-
-    assert decision.should_continue is True
-    assert [message.role for message in context.session.messages[-2:]] == [
-        Role.ASSISTANT,
-        Role.USER,
-    ]
-    assert "[SELF-CRITIQUE]" in context.session.messages[-1].content
-    assert any(event.type == "critique" for event in events)
-
-
-@pytest.mark.asyncio
 async def test_completion_policy_stops_on_text_loop_using_context_safeguards(
     temp_dir: Path,
 ) -> None:
-    async def self_critique(content: str, task: str) -> SelfCritique:
-        raise AssertionError("Self-critique should not run in this scenario")
-
     context = build_context(
         temp_dir=temp_dir,
         safeguards=FakeSafeguards(text_loop_result=(True, "repeated continuation text")),
-        self_critique=self_critique,
     )
     policy = CompletionPolicy(context)
     summary = TurnSummary(final_response="")

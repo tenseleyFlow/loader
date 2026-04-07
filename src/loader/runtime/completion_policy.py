@@ -9,20 +9,12 @@ from ..agent.reasoning import (
     TaskCompletionCheck,
     detect_premature_completion,
     get_continuation_prompt,
-    should_self_critique,
 )
 from ..llm.base import Message, Role
 from .context import RuntimeContext
 from .events import AgentEvent, TurnSummary
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
-
-
-@dataclass(slots=True)
-class CritiqueDecision:
-    """Decision returned from self-critique handling."""
-
-    should_continue: bool
 
 
 @dataclass(slots=True)
@@ -46,49 +38,6 @@ class CompletionPolicy:
 
     def __init__(self, context: RuntimeContext) -> None:
         self.context = context
-
-    async def maybe_self_critique(
-        self,
-        *,
-        content: str,
-        response_content: str,
-        task: str,
-        emit: EventSink,
-    ) -> CritiqueDecision:
-        """Run self-critique when enabled and revision would be useful."""
-
-        cfg = self.context.config.reasoning
-        if not (cfg.self_critique and len(content) > 100):
-            return CritiqueDecision(should_continue=False)
-
-        is_code_response = "```" in content or any(
-            keyword in content.lower()
-            for keyword in ["def ", "function ", "class ", "import "]
-        )
-        if not should_self_critique(content, is_code=is_code_response):
-            return CritiqueDecision(should_continue=False)
-
-        critique = await self.context.legacy.self_critique(content, task)
-        await emit(
-            AgentEvent(
-                type="critique",
-                content=f"Self-critique: {len(critique.issues_found)} issues found",
-                critique=critique,
-            )
-        )
-        if not critique.can_revise():
-            return CritiqueDecision(should_continue=False)
-
-        revision_message = (
-            "[SELF-CRITIQUE] Review your response:\n"
-            f"Issues found: {', '.join(critique.issues_found)}\n"
-            f"Suggestions: {', '.join(critique.suggestions)}\n\n"
-            "Please provide an improved response addressing these issues."
-        )
-        self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
-        self.context.session.append(Message(role=Role.USER, content=revision_message))
-        critique.revision_count += 1
-        return CritiqueDecision(should_continue=True)
 
     async def maybe_stop_for_text_loop(
         self,
