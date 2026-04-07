@@ -82,6 +82,7 @@ class ClarifyBrief:
     acceptance_criteria: list[str] = field(default_factory=list)
     question: str | None = None
     answer: str | None = None
+    explicit_sections: list[str] = field(default_factory=list)
 
     @classmethod
     def from_markdown(
@@ -105,6 +106,7 @@ class ClarifyBrief:
             acceptance_criteria=sections.get("acceptance_criteria", []),
             question=question,
             answer=answer,
+            explicit_sections=sorted(sections.keys()),
         )
         brief.fill_defaults()
         return brief

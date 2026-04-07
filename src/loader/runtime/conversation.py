@@ -14,6 +14,7 @@ from ..agent.reasoning import (
 )
 from ..llm.base import Message, Role, ToolCall
 from .assistant_turns import AssistantTurnRequester
+from .clarify_strategy import ClarifySnapshot, build_clarify_question, describe_clarify_slot
 from .completion_policy import CompletionPolicy
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
@@ -676,6 +677,8 @@ class ConversationRuntime:
             should_continue=False,
             reason_code="clarify_complete",
             reason_summary="clarify gathered enough boundaries to proceed",
+            unresolved_slots=[],
+            focus_slot=None,
         )
 
         for round_index in range(1, max_rounds + 1):
@@ -687,12 +690,13 @@ class ConversationRuntime:
                 round_index=round_index,
                 rounds=rounds,
                 unresolved_questions=review.unresolved_questions,
+                unresolved_slots=review.unresolved_slots,
             )
             rounds.append((question, answer))
             review = self.workflow_policy.review_clarify(
                 task=task,
                 answer=answer,
-                non_goals=latest_brief.non_goals,
+                snapshot=self._clarify_snapshot(task, latest_brief),
                 round_index=round_index,
                 max_rounds=max_rounds,
             )
@@ -893,6 +897,7 @@ class ConversationRuntime:
         round_index: int,
         rounds: list[tuple[str, str]],
         unresolved_questions: list[str],
+        unresolved_slots: list[str],
     ) -> tuple[ClarifyBrief, str, str]:
         ask_tool = self.agent.registry.get("AskUserQuestion")
         assert ask_tool is not None
@@ -902,6 +907,7 @@ class ConversationRuntime:
                 round_index=round_index,
                 rounds=rounds,
                 unresolved_questions=unresolved_questions,
+                unresolved_slots=unresolved_slots,
             ),
             tools=[ask_tool.to_schema()],
             max_tokens=300,
@@ -915,7 +921,11 @@ class ConversationRuntime:
                 id=f"clarify-question-{round_index}",
                 name="AskUserQuestion",
                 arguments={
-                    "question": self._fallback_clarify_question(task, response.content),
+                    "question": self._fallback_clarify_question(
+                        task,
+                        response.content,
+                        unresolved_slots,
+                    ),
                 },
             )
 
@@ -995,13 +1005,17 @@ class ConversationRuntime:
         round_index: int,
         rounds: list[tuple[str, str]],
         unresolved_questions: list[str],
+        unresolved_slots: list[str],
     ) -> str:
+        focus_slot = unresolved_slots[0] if unresolved_slots else None
+        focus_label = describe_clarify_slot(focus_slot)
         if round_index == 1:
             return (
                 "Clarify the task before planning or implementation.\n"
                 "Ask exactly one focused question with AskUserQuestion.\n"
                 "Target missing outcome, scope, or decision-boundary information.\n"
                 "Do not propose solutions yet.\n\n"
+                f"Focus slot: {focus_label}\n"
                 f"Task: {task}"
             )
 
@@ -1014,6 +1028,7 @@ class ConversationRuntime:
             "Continue clarify mode with one focused follow-up question.\n"
             "Ask exactly one question with AskUserQuestion.\n"
             "Only target the highest-leverage remaining uncertainty.\n\n"
+            f"Focus slot: {focus_label}\n\n"
             f"Task: {task}\n\n"
             f"Previous clarify rounds:\n{history}\n\n"
             f"Still unresolved:\n{unresolved}"
@@ -1184,14 +1199,28 @@ class ConversationRuntime:
             )
 
     @staticmethod
-    def _fallback_clarify_question(task: str, response_content: str) -> str:
+    def _fallback_clarify_question(
+        task: str,
+        response_content: str,
+        unresolved_slots: list[str],
+    ) -> str:
         match = re.search(r"([A-Z][^?]+\?)", response_content)
         if match:
             return match.group(1).strip()
-        return (
-            "What outcome matters most here, and what should stay out of scope?"
-            if task.strip()
-            else "What outcome matters most?"
+        focus_slot = unresolved_slots[0] if unresolved_slots else None
+        return build_clarify_question(task, focus_slot)
+
+    @staticmethod
+    def _clarify_snapshot(task: str, brief: ClarifyBrief) -> ClarifySnapshot:
+        return ClarifySnapshot(
+            task_statement=task,
+            explicit_sections=list(brief.explicit_sections),
+            desired_outcome=list(brief.desired_outcome),
+            non_goals=list(brief.non_goals),
+            acceptance_criteria=list(brief.acceptance_criteria),
+            constraints=list(brief.constraints),
+            decision_boundaries=list(brief.decision_boundaries),
+            likely_touchpoints=list(brief.likely_touchpoints),
         )
 
     async def _prepare_runtime_capabilities(self) -> None:

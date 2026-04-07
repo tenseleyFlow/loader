@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from .clarify_strategy import ClarifySnapshot, assess_clarify_snapshot, describe_clarify_slot
 from .workflow_signals import WorkflowSignalExtractor, WorkflowSignalPacket
 
 
@@ -169,6 +170,8 @@ class ClarifyReview:
     reason_code: str
     reason_summary: str
     unresolved_questions: list[str] = field(default_factory=list)
+    unresolved_slots: list[str] = field(default_factory=list)
+    focus_slot: str | None = None
 
 
 @dataclass(slots=True)
@@ -490,33 +493,32 @@ class WorkflowPolicy:
         *,
         task: str,
         answer: str,
-        non_goals: list[str],
+        snapshot: ClarifySnapshot,
         round_index: int,
         max_rounds: int,
     ) -> ClarifyReview:
         """Determine whether clarify should continue for another round."""
 
-        unresolved: list[str] = []
-        normalized_answer = answer.strip()
-        if not normalized_answer:
-            unresolved.append("No answer was provided to the clarification question.")
-        if len(re.findall(r"\w+", normalized_answer)) < 4:
-            unresolved.append("The answer is still too short to lock task boundaries.")
-        answer_ambiguity = self._ambiguity_score(f"{task} {normalized_answer}")
-        if answer_ambiguity >= 0.5:
-            unresolved.append("The clarified scope still uses broad or ambiguous language.")
-        if any(
-            "anything not confirmed" in item.lower()
-            for item in non_goals
-        ):
-            unresolved.append("Out-of-scope boundaries are still underspecified.")
+        assessment = assess_clarify_snapshot(
+            task=task,
+            answer=answer,
+            snapshot=snapshot,
+        )
+        unresolved = list(assessment.unresolved_questions)
+        focus_slot = assessment.focus_slot.value if assessment.focus_slot else None
+        focus_label = describe_clarify_slot(assessment.focus_slot)
 
         if unresolved and round_index < max_rounds:
             return ClarifyReview(
                 should_continue=True,
                 reason_code="clarify_follow_up_needed",
-                reason_summary="clarify pressure remains high after the latest answer",
+                reason_summary=(
+                    "clarify pressure remains high around "
+                    f"{focus_label} after the latest answer"
+                ),
                 unresolved_questions=unresolved,
+                unresolved_slots=[slot.value for slot in assessment.unresolved_slots],
+                focus_slot=focus_slot,
             )
 
         if unresolved:
@@ -525,6 +527,8 @@ class WorkflowPolicy:
                 reason_code="clarify_budget_exhausted",
                 reason_summary="clarify budget exhausted; carrying unresolved questions forward",
                 unresolved_questions=unresolved,
+                unresolved_slots=[slot.value for slot in assessment.unresolved_slots],
+                focus_slot=focus_slot,
             )
 
         return ClarifyReview(
@@ -532,6 +536,8 @@ class WorkflowPolicy:
             reason_code="clarify_complete",
             reason_summary="clarify gathered enough boundaries to proceed",
             unresolved_questions=[],
+            unresolved_slots=[],
+            focus_slot=None,
         )
 
     def assess_artifact_freshness(

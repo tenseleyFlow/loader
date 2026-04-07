@@ -218,6 +218,7 @@ async def test_clarify_can_continue_for_a_second_round_when_scope_stays_ambiguou
     assert workflow_modes(run)[:2] == ["clarify", "execute"]
     assert workflow_timeline_kinds(run).count("clarify_continue") == 1
     assert "clarify_exit" in workflow_timeline_kinds(run)
+    assert "Focus slot: likely touchpoints" in backend.invocations[2].messages[-1].content
     assert any(
         entry.reason_code == "clarify_follow_up_needed"
         for entry in run.agent.last_turn_summary.workflow_timeline

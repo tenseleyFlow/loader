@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from loader.runtime.clarify_strategy import ClarifySnapshot
 from loader.runtime.workflow import (
     WorkflowMode,
     WorkflowPolicy,
@@ -75,7 +76,10 @@ def test_workflow_policy_requests_follow_up_when_clarify_answer_is_still_ambiguo
     review = policy.review_clarify(
         task="Improve Loader so it feels more like claw-code.",
         answer="Make it nicer.",
-        non_goals=["Anything not confirmed in the clarification answer."],
+        snapshot=ClarifySnapshot(
+            task_statement="Improve Loader so it feels more like claw-code.",
+            explicit_sections=[],
+        ),
         round_index=1,
         max_rounds=2,
     )
@@ -83,6 +87,8 @@ def test_workflow_policy_requests_follow_up_when_clarify_answer_is_still_ambiguo
     assert review.should_continue is True
     assert review.reason_code == "clarify_follow_up_needed"
     assert review.unresolved_questions
+    assert review.unresolved_slots
+    assert review.focus_slot == "likely_touchpoints"
 
 
 def test_workflow_timeline_entry_round_trips() -> None:
