@@ -10,6 +10,7 @@ from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role, ToolCall
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.conversation import ConversationRuntime
+from ..runtime.context import RuntimeContext, RuntimeLegacyServices
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.explore import ExploreRuntime
@@ -337,6 +338,57 @@ class Agent:
         if refreshed_profile != previous_profile:
             self._system_message = None
         self._use_react = None
+
+    def _build_runtime_context(self) -> RuntimeContext:
+        """Build the typed runtime context used by turn helpers."""
+
+        context_holder: dict[str, RuntimeContext] = {}
+
+        def queue_steering_message(message: str) -> None:
+            self._steering_queue.put_nowait(message)
+
+        def set_workflow_mode(workflow_mode: str) -> None:
+            self.set_workflow_mode(workflow_mode)
+            context_holder["context"].workflow_mode = self.workflow_mode
+
+        def refresh_capability_profile() -> None:
+            self.refresh_capability_profile()
+            context_holder["context"].capability_profile = self.capability_profile
+
+        def get_recovery_context() -> RecoveryContext | None:
+            return self._recovery_context
+
+        def set_recovery_context(value: RecoveryContext | None) -> None:
+            self._recovery_context = value
+
+        context = RuntimeContext(
+            project_root=self.project_root,
+            backend=self.backend,
+            registry=self.registry,
+            session=self.session,
+            config=self.config,
+            capability_profile=self.capability_profile,
+            project_context=self.project_context,
+            permission_policy=self.permission_policy,
+            permission_config_status=self.permission_config_status,
+            workflow_mode=self.workflow_mode,
+            safeguards=self.safeguards,
+            legacy=RuntimeLegacyServices(
+                drain_steering_queue=self._drain_steering_queue,
+                queue_steering_message=queue_steering_message,
+                set_workflow_mode=set_workflow_mode,
+                refresh_capability_profile=refresh_capability_profile,
+                self_critique=self._self_critique,
+                assess_confidence=self._assess_confidence,
+                verify_action=self._verify_action,
+                contains_unexecuted_code=self._contains_unexecuted_code,
+                extract_raw_json_tool_calls=self._extract_raw_json_tool_calls,
+                get_recovery_context=get_recovery_context,
+                set_recovery_context=set_recovery_context,
+            ),
+        )
+        context_holder["context"] = context
+        return context
 
     def _get_few_shot_examples(self) -> list[Message]:
         """Get few-shot examples demonstrating proper tool use."""
