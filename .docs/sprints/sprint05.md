@@ -122,3 +122,33 @@ This is how the durability layer integrates with the rest of the runtime instead
 - multi-turn work becomes more predictable
 - usage tracking is wired into the turn summary
 - the file layout is stable enough that Sprint 06's product surfaces can rely on it
+
+## Audit
+
+### Landed
+
+- Loader now persists full session snapshots under `.loader/sessions/` and tracks the active session pointer under `.loader/state/current_session.json`
+- persisted sessions now carry typed messages, cumulative usage totals, compaction metadata, the active DoD path, the current task, workflow mode, and permission mode
+- `Agent.resume_session(...)` now restores message history, the active DoD object, workflow mode, permission mode, and current task across process restarts
+- the CLI now supports both `loader --resume` and `loader --resume <session-id>` by rewriting that syntax into an internal hidden option before Click parsing
+- transcript compaction now triggers automatically at the configured input-token threshold, keeps the latest four messages verbatim, and inserts a claw-inspired continuation summary with priority-aware line compression
+- `TurnSummary` now carries normalized per-turn usage and cumulative session usage, with streamed Ollama responses reporting prompt/output token counts when available
+- Loader now exposes native `project_memory_*` and `notepad_*` tools backed by `.loader/project-memory.json` and `.loader/notepad.md`
+- the hook lifecycle now mirrors successful memory writes into the notepad, and finalized DoD evidence summaries are captured into project memory when verification produced useful evidence
+
+### Verification
+
+- `uv run pytest -q` is green: `137 passed`
+- `tests/test_session_state.py` covers persistence, resume, rotation, compaction persistence, and cumulative usage rollups
+- `tests/test_compaction.py` covers priority-aware summary compression and continuation-message compaction behavior
+- `tests/test_memory_tools.py` covers project-memory writes, notepad writes, lifecycle-hook mirroring, and DoD-summary capture into project memory
+- `tests/test_cli_resume.py` covers `--resume` argument rewriting for latest and named-session restore
+- `tests/test_runtime_harness.py` and `tests/test_workflow_runtime.py` remain green after the session/memory changes, so Sprint 05 did not regress the earlier parity baseline
+
+### Residual debt
+
+- session compaction summaries are runtime-authored heuristics; Loader still does not have claw-code's richer continuation semantics or OMX-style semantic memory extraction
+- the DoD-to-project-memory capture is intentionally conservative and may miss higher-value repo conventions unless the evidence summary makes them explicit
+- Sprint 05 restores sessions in the CLI runtime, but Sprint 06 still needs to surface session ids, listing, and inspection as first-class product commands
+- cache token tracking is normalized when the backend provides it, but Loader still does not estimate cost and some backends may report fewer usage fields than Ollama
+- `conversation.py` keeps growing as Sprint 05 logic lands, so Sprint 06+ should keep carving persistence/finalization concerns into smaller runtime components instead of leaving durability inside the turn monolith
