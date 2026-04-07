@@ -227,12 +227,12 @@ async def test_clarify_prompt_and_brief_include_workspace_evidence(
         on_user_question=answer,
     )
 
-    assert "Workspace evidence:" in backend.invocations[0].messages[-1].content
+    assert "Relevant workspace evidence:" in backend.invocations[0].messages[-1].content
     assert (
         "Referenced paths that exist: src/loader/runtime/workflow_lanes.py"
-        in backend.invocations[0].messages[-1].content
+        in backend.invocations[1].messages[-1].content
     )
-    assert "Observed repo facts:" in backend.invocations[0].messages[-1].content
+    assert "Relevant repo facts:" in backend.invocations[0].messages[-1].content
     assert "class WorkflowLaneRunner:" in backend.invocations[0].messages[-1].content
     assert "Observed workspace evidence:" in backend.invocations[1].messages[-1].content
     assert "class WorkflowLaneRunner:" in backend.invocations[1].messages[-1].content
@@ -435,6 +435,115 @@ async def test_second_round_fallback_question_uses_workspace_grounding(
         for event in run.events
         if event.type == "tool_call" and event.tool_name
     ][:2] == ["AskUserQuestion", "AskUserQuestion"]
+
+
+@pytest.mark.asyncio
+async def test_second_round_non_goal_prompt_uses_slot_aware_repo_facts(
+    temp_dir: Path,
+) -> None:
+    seed_runtime_workspace(temp_dir)
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I need one clarification before I proceed.",
+                tool_calls=[
+                    ToolCall(
+                        id="ask-1",
+                        name="AskUserQuestion",
+                        arguments={
+                            "question": "Which runtime file should I focus on first?",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep clarify behavior grounded in brownfield repo facts.",
+                        "",
+                        "## In Scope",
+                        "- Focus on runtime lane handling first.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Acceptance Criteria",
+                        "- The next round clarifies what stays unchanged.",
+                    ]
+                )
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "## Task Statement",
+                        "Tighten Loader runtime clarify behavior.",
+                        "",
+                        "## Desired Outcome",
+                        "- Keep clarify behavior grounded in brownfield repo facts.",
+                        "",
+                        "## In Scope",
+                        "- Focus on runtime lane handling first.",
+                        "",
+                        "## Non Goals",
+                        "- Leave clarify strategy behavior unchanged for now.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Stop and confirm before broadening beyond runtime lanes.",
+                        "",
+                        "## Constraints",
+                        "- Stay within the current repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- src/loader/runtime/workflow_lanes.py",
+                        "",
+                        "## Acceptance Criteria",
+                        "- workflow_lanes.py remains the primary touchpoint.",
+                    ]
+                )
+            ),
+            CompletionResponse(content="I can move forward now."),
+            CompletionResponse(content="Done."),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    asked_questions: list[str] = []
+    answers = iter(
+        [
+            "Start with src/loader/runtime/workflow_lanes.py.",
+            "Keep clarify_strategy.py unchanged while we tighten the workflow lanes.",
+        ]
+    )
+
+    async def answer(question: str, _: list[str] | None) -> str:
+        asked_questions.append(question)
+        return next(answers)
+
+    await run_scenario(
+        "Tighten Loader runtime clarify behavior.",
+        backend,
+        config=non_streaming_clarify_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    round_two_prompt = backend.invocations[2].messages[-1].content
+    assert "Focus slot: non-goals" in round_two_prompt
+    assert "Relevant workspace evidence:" in round_two_prompt
+    assert "workflow_lanes.py" in round_two_prompt
+    assert "clarify_strategy.py" in round_two_prompt
+    assert "Relevant repo facts:" in round_two_prompt
+    assert len(asked_questions) == 2
+    assert "clarify_strategy.py" in asked_questions[1]
+    assert "unchanged" in asked_questions[1].lower()
 
 
 @pytest.mark.asyncio
