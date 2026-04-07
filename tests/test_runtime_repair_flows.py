@@ -27,6 +27,15 @@ def completion_check_config() -> AgentConfig:
     return config
 
 
+def self_critique_config() -> AgentConfig:
+    """Shared config for self-critique characterization."""
+
+    config = AgentConfig(auto_context=False, stream=False, max_iterations=8)
+    config.reasoning.completion_check = False
+    config.reasoning.self_critique = True
+    return config
+
+
 def tool_event_names(run) -> list[str]:
     """Return non-verification tool events in order."""
 
@@ -220,4 +229,50 @@ async def test_post_action_follow_up_suffix_is_appended_to_final_response(
     assert run.response == (
         "Inspected the file successfully.\n\n"
         "Would you like me to make any changes or additions?"
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_critique_reroutes_long_code_response_for_revision(
+    temp_dir: Path,
+) -> None:
+    initial_response = (
+        "def build_report():\n"
+        "    summary = []\n"
+        "    for item in range(20):\n"
+        "        summary.append(f'result-{item}')\n"
+        "    return '\\n'.join(summary)\n\n"
+    ) * 4
+    critique_json = (
+        '{"issues": ["Missing explanation"], '
+        '"suggestions": ["Summarize the code changes more clearly"], '
+        '"should_revise": true, "severity": "moderate"}'
+    )
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=initial_response),
+            CompletionResponse(content=critique_json),
+            CompletionResponse(content="Revised answer with a concise explanation."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Explain the code changes clearly.",
+        backend,
+        config=self_critique_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == []
+    assert run.response == "Revised answer with a concise explanation."
+    assert any(event.type == "critique" for event in run.events)
+    assert any(
+        "Review your response and identify potential issues."
+        in invocation.messages[0].content
+        for invocation in backend.invocations
+        if invocation.mode == "complete" and invocation.messages
+    )
+    assert any(
+        message.role == Role.USER and "[SELF-CRITIQUE] Review your response:" in message.content
+        for message in backend.invocations[-1].messages
     )
