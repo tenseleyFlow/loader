@@ -55,7 +55,7 @@ class ConversationRuntime:
         self.turn_requester = AssistantTurnRequester(self.context, self.tracer)
         self.tool_batches = ToolBatchRunner(self.context, self.dod_store)
         self.repairer = ResponseRepairer(agent)
-        self.completion_policy = CompletionPolicy(agent)
+        self.completion_policy = CompletionPolicy(self.context)
         self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
         self.finalizer = TurnFinalizer(
             agent,

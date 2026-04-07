@@ -12,6 +12,7 @@ from ..agent.reasoning import (
     should_self_critique,
 )
 from ..llm.base import Message, Role
+from .context import RuntimeContext
 from .events import AgentEvent, TurnSummary
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -43,8 +44,8 @@ class ContinuationDecision:
 class CompletionPolicy:
     """Owns critique, loop bailout, and non-mutating completion nudges."""
 
-    def __init__(self, agent) -> None:
-        self.agent = agent
+    def __init__(self, context: RuntimeContext) -> None:
+        self.context = context
 
     async def maybe_self_critique(
         self,
@@ -56,7 +57,7 @@ class CompletionPolicy:
     ) -> CritiqueDecision:
         """Run self-critique when enabled and revision would be useful."""
 
-        cfg = self.agent.config.reasoning
+        cfg = self.context.config.reasoning
         if not (cfg.self_critique and len(content) > 100):
             return CritiqueDecision(should_continue=False)
 
@@ -67,7 +68,7 @@ class CompletionPolicy:
         if not should_self_critique(content, is_code=is_code_response):
             return CritiqueDecision(should_continue=False)
 
-        critique = await self.agent._self_critique(content, task)
+        critique = await self.context.legacy.self_critique(content, task)
         await emit(
             AgentEvent(
                 type="critique",
@@ -84,8 +85,8 @@ class CompletionPolicy:
             f"Suggestions: {', '.join(critique.suggestions)}\n\n"
             "Please provide an improved response addressing these issues."
         )
-        self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-        self.agent.session.append(Message(role=Role.USER, content=revision_message))
+        self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
+        self.context.session.append(Message(role=Role.USER, content=revision_message))
         critique.revision_count += 1
         return CritiqueDecision(should_continue=True)
 
@@ -98,7 +99,7 @@ class CompletionPolicy:
     ) -> TextLoopDecision:
         """Stop the turn when the assistant starts repeating textually."""
 
-        is_text_loop, loop_description = self.agent.safeguards.detect_text_loop(content)
+        is_text_loop, loop_description = self.context.safeguards.detect_text_loop(content)
         if not is_text_loop:
             return TextLoopDecision(should_stop=False)
 
@@ -109,7 +110,7 @@ class CompletionPolicy:
         summary.final_response = final_response
         summary.failures.append(loop_description)
         final_message = Message(role=Role.ASSISTANT, content=final_response)
-        self.agent.session.append(final_message)
+        self.context.session.append(final_message)
         summary.assistant_messages.append(final_message)
         await emit(
             AgentEvent(
@@ -136,7 +137,7 @@ class CompletionPolicy:
     ) -> ContinuationDecision:
         """Nudge non-mutating tasks to continue when completion looks premature."""
 
-        cfg = self.agent.config.reasoning
+        cfg = self.context.config.reasoning
         if continuation_count >= cfg.max_continuation_prompts:
             return ContinuationDecision(should_continue=False)
 
@@ -165,8 +166,8 @@ class CompletionPolicy:
                 ),
             )
         )
-        self.agent.session.append(Message(role=Role.ASSISTANT, content=response_content))
-        self.agent.session.append(Message(role=Role.USER, content=continuation_prompt))
+        self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
+        self.context.session.append(Message(role=Role.USER, content=continuation_prompt))
         return ContinuationDecision(should_continue=True)
 
     @staticmethod

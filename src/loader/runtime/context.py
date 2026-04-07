@@ -27,6 +27,7 @@ class ReasoningConfigProtocol(Protocol):
     rollback: bool
     show_rollback_plan: bool
     completion_check: bool
+    use_quick_completion: bool
     max_continuation_prompts: int
     self_critique: bool
     confidence_scoring: bool
