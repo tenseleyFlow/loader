@@ -217,3 +217,12 @@ async def test_completion_policy_stops_on_text_loop_using_context_safeguards(
     assert context.session.messages[-1].role == Role.ASSISTANT
     assert any(event.type == "error" for event in events)
     assert any(event.type == "response" for event in events)
+
+
+def test_completion_policy_finalize_response_text_keeps_original_response() -> None:
+    response = CompletionPolicy.finalize_response_text(
+        content="Inspected the file successfully.",
+        actions_taken=["read: README.md"],
+    )
+
+    assert response == "Inspected the file successfully."

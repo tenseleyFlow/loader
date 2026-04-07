@@ -176,12 +176,7 @@ class CompletionPolicy:
         content: str,
         actions_taken: list[str],
     ) -> str:
-        """Add the post-action follow-up question when appropriate."""
+        """Return the assistant response without a synthetic follow-up suffix."""
 
-        if not (
-            actions_taken
-            and content.strip()
-            and not content.rstrip().endswith("?")
-        ):
-            return content
-        return content.rstrip() + "\n\nWould you like me to make any changes or additions?"
+        _ = actions_taken
+        return content

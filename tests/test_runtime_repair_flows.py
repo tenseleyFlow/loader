@@ -216,7 +216,7 @@ async def test_text_loop_bailout_stops_after_repeated_continuation_response(
 
 
 @pytest.mark.asyncio
-async def test_post_action_follow_up_suffix_is_appended_to_final_response(
+async def test_post_action_follow_up_suffix_is_not_appended_to_final_response(
     temp_dir: Path,
 ) -> None:
     fixture = temp_dir / "fixture.txt"
@@ -245,10 +245,7 @@ async def test_post_action_follow_up_suffix_is_appended_to_final_response(
     )
 
     assert tool_event_names(run) == ["read"]
-    assert run.response == (
-        "Inspected the file successfully.\n\n"
-        "Would you like me to make any changes or additions?"
-    )
+    assert run.response == "Inspected the file successfully."
 
 
 @pytest.mark.asyncio
