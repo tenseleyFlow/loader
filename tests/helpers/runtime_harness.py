@@ -105,6 +105,7 @@ async def run_scenario(
     config: AgentConfig | None = None,
     project_root: Path | str | None = None,
     on_confirmation=None,
+    on_user_question=None,
 ) -> ScenarioRun:
     """Run a scripted agent scenario and collect emitted events."""
 
@@ -119,7 +120,12 @@ async def run_scenario(
     async def capture(event: AgentEvent) -> None:
         events.append(event)
 
-    response = await agent.run(prompt, on_event=capture, on_confirmation=on_confirmation)
+    response = await agent.run(
+        prompt,
+        on_event=capture,
+        on_confirmation=on_confirmation,
+        on_user_question=on_user_question,
+    )
     return ScenarioRun(
         response=response,
         events=events,

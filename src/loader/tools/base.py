@@ -181,6 +181,7 @@ def create_default_registry(
     from .file_tools import EditTool, GlobTool, ReadTool, WriteTool
     from .search_tools import GrepTool
     from .shell_tools import BashTool
+    from .workflow_tools import AskUserQuestionTool, TodoWriteTool
 
     registry = ToolRegistry(workspace_root=workspace_root)
     registry.register(ReadTool())
@@ -189,5 +190,7 @@ def create_default_registry(
     registry.register(GlobTool())
     registry.register(BashTool())
     registry.register(GrepTool())
+    registry.register(TodoWriteTool())
+    registry.register(AskUserQuestionTool())
 
     return registry

@@ -426,6 +426,7 @@ class Agent:
         user_message: str,
         on_event: Callable[[AgentEvent], None] | Callable[[AgentEvent], Awaitable[None]] | None = None,
         on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
         use_plan: bool | None = None,
     ) -> str:
         """Run the agent with a user message.
@@ -434,6 +435,7 @@ class Agent:
             user_message: The user's input
             on_event: Optional callback for streaming events (sync or async)
             on_confirmation: Optional callback for tool confirmation. Takes (tool_name, message, details) and returns True to confirm.
+            on_user_question: Optional callback for AskUserQuestion. Takes (question, options) and returns the answer.
             use_plan: Force planning on/off. None = auto-detect.
 
         Returns:
@@ -451,7 +453,13 @@ class Agent:
         # Mark agent as running (enables steering)
         self._is_running = True
         try:
-            return await self._run_with_steering(user_message, emit, on_confirmation, use_plan)
+            return await self._run_with_steering(
+                user_message,
+                emit,
+                on_confirmation,
+                on_user_question,
+                use_plan,
+            )
         finally:
             self._is_running = False
 
@@ -460,6 +468,7 @@ class Agent:
         user_message: str,
         emit: Callable[[AgentEvent], Awaitable[None]],
         on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None,
+        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None,
         use_plan: bool | None,
     ) -> str:
         """Internal run method that supports steering."""
@@ -506,7 +515,10 @@ class Agent:
                                 f"Verification: {subtask.verification}",
                     ))
                     subtask_response = await self._run_inner(
-                        subtask.description, emit, on_confirmation,
+                        subtask.description,
+                        emit,
+                        on_confirmation,
+                        on_user_question=on_user_question,
                         original_task=self._current_task,
                     )
 
@@ -532,7 +544,10 @@ class Agent:
                     )
                     self.messages.append(Message(role=Role.USER, content=summary_prompt))
                     return await self._run_inner(
-                        summary_prompt, emit, on_confirmation,
+                        summary_prompt,
+                        emit,
+                        on_confirmation,
+                        on_user_question=on_user_question,
                         original_task=self._current_task,
                     )
                 else:
@@ -564,7 +579,10 @@ class Agent:
                     # Run the step
                     step_prompt = format_step_prompt(plan, step)
                     await self._run_inner(
-                        step_prompt, emit, on_confirmation,
+                        step_prompt,
+                        emit,
+                        on_confirmation,
+                        on_user_question=on_user_question,
                         original_task=self._current_task,
                     )
 
@@ -574,14 +592,20 @@ class Agent:
                 self.messages.append(Message(role=Role.USER, content=user_message))
                 summary_prompt = f"I've completed the plan. Summarize what was done:\n{plan.to_prompt()}"
                 return await self._run_inner(
-                    summary_prompt, emit, on_confirmation,
+                    summary_prompt,
+                    emit,
+                    on_confirmation,
+                    on_user_question=on_user_question,
                     original_task=self._current_task,
                 )
 
         # No planning or decomposition - run directly
         self.messages.append(Message(role=Role.USER, content=user_message))
         return await self._run_inner(
-            user_message, emit, on_confirmation,
+            user_message,
+            emit,
+            on_confirmation,
+            on_user_question=on_user_question,
             original_task=self._current_task,
         )
 
@@ -590,6 +614,7 @@ class Agent:
         task: str,
         emit: Callable[[AgentEvent], Awaitable[None]],
         on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
         original_task: str | None = None,
     ) -> str:
         """Inner execution loop without planning."""
@@ -599,6 +624,7 @@ class Agent:
             task,
             emit,
             on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
             original_task=original_task,
         )
         return self.last_turn_summary.final_response

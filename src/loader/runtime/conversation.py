@@ -33,6 +33,7 @@ from .tracing import RuntimeTracer
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
+UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 
 
 @dataclass
@@ -68,6 +69,7 @@ class ConversationRuntime:
         task: str,
         emit: EventSink,
         on_confirmation: ConfirmationHandler = None,
+        on_user_question: UserQuestionHandler = None,
         original_task: str | None = None,
     ) -> TurnSummary:
         """Run one task turn and return a structured summary."""
@@ -281,6 +283,7 @@ class ConversationRuntime:
                     outcome = await self.executor.execute_tool_call(
                         tool_call,
                         on_confirmation=on_confirmation,
+                        on_user_question=on_user_question,
                         emit_confirmation=self._emit_confirmation(emit),
                         source=tool_source,
                     )

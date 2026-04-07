@@ -12,6 +12,7 @@ from ..agent.recovery import ErrorCategory, categorize_error
 from ..llm.base import Message, ToolCall
 from ..tools.base import ConfirmationRequired, ToolRegistry
 from ..tools.base import ToolResult as RegistryToolResult
+from ..tools.workflow_tools import UserQuestionHandler
 from .hooks import HookContext, HookDecision, HookManager
 from .permissions import PermissionDecision, PermissionMode, PermissionPolicy
 from .tracing import RuntimeTracer
@@ -66,6 +67,7 @@ class ToolExecutor:
         tool_call: ToolCall,
         *,
         on_confirmation: BrowserConfirmation = None,
+        on_user_question: UserQuestionHandler | None = None,
         emit_confirmation: ConfirmationEmitter = None,
         source: str,
         skip_duplicate_check: bool = False,
@@ -249,6 +251,7 @@ class ToolExecutor:
         result = await self._execute_registry(
             tool_call,
             on_confirmation,
+            on_user_question,
             emit_confirmation,
             skip_confirmation=skip_confirmation,
         )
@@ -354,6 +357,7 @@ class ToolExecutor:
         self,
         tool_call: ToolCall,
         on_confirmation: BrowserConfirmation,
+        on_user_question: UserQuestionHandler | None,
         emit_confirmation: ConfirmationEmitter,
         *,
         skip_confirmation: bool = False,
@@ -362,7 +366,14 @@ class ToolExecutor:
         if skip_confirmation:
             self.registry.skip_confirmation = True
         try:
-            return await self.registry.execute(tool_call.name, **tool_call.arguments)
+            extra_kwargs: dict[str, Any] = {}
+            if tool_call.name == "AskUserQuestion":
+                extra_kwargs["user_response_handler"] = on_user_question
+            return await self.registry.execute(
+                tool_call.name,
+                **tool_call.arguments,
+                **extra_kwargs,
+            )
         except ConfirmationRequired as confirmation:
             self.tracer.record(
                 "tool.confirmation_requested",
@@ -392,7 +403,14 @@ class ToolExecutor:
 
             self.registry.skip_confirmation = True
             try:
-                return await self.registry.execute(tool_call.name, **tool_call.arguments)
+                extra_kwargs: dict[str, Any] = {}
+                if tool_call.name == "AskUserQuestion":
+                    extra_kwargs["user_response_handler"] = on_user_question
+                return await self.registry.execute(
+                    tool_call.name,
+                    **tool_call.arguments,
+                    **extra_kwargs,
+                )
             finally:
                 self.registry.skip_confirmation = previous_skip
         finally:
