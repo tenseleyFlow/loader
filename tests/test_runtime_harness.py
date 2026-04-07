@@ -10,6 +10,7 @@ import pytest
 from loader.agent.loop import Agent, AgentConfig
 from loader.llm.base import CompletionResponse, Role, StreamChunk, ToolCall
 from loader.runtime.capabilities import resolve_capability_profile
+from loader.runtime.permissions import PermissionMode
 from tests.helpers.runtime_harness import ScriptedBackend, run_scenario
 
 SCENARIO_NAMES = [
@@ -22,6 +23,11 @@ SCENARIO_NAMES = [
     "bash_stdout_roundtrip",
     "bash_confirmation_prompt_approved",
     "bash_confirmation_prompt_denied",
+    "read_only_mode_denies_write",
+    "read_only_mode_denies_mutating_bash",
+    "read_only_mode_allows_safe_bash",
+    "workspace_write_denies_write_outside_root",
+    "danger_full_access_allows_dangerous_bash",
     "raw_json_tool_call_fallback",
     "native_and_raw_tool_paths_share_executor_trace",
     "backend_capability_probe_refreshes_native_tool_mode",
@@ -395,6 +401,158 @@ async def test_bash_confirmation_prompt_denied(
 
     assert not target.exists()
     assert "left the shell command undone" in run.response.lower()
+    assert any(event.type == "confirmation" for event in run.events)
+
+
+@pytest.mark.asyncio
+async def test_read_only_mode_denies_write(temp_dir: Path) -> None:
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.READ_ONLY
+    config.auto_recover = False
+    target = temp_dir / "blocked-by-policy.txt"
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "denied\n"},
+                ),
+                content="I'll create the file.",
+            ),
+            final_response("The write was blocked."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create blocked-by-policy.txt.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert not target.exists()
+    assert any("requires workspace-write" in message for message in tool_result_messages(run))
+
+
+@pytest.mark.asyncio
+async def test_read_only_mode_denies_mutating_bash(temp_dir: Path) -> None:
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.READ_ONLY
+    config.auto_recover = False
+    target = temp_dir / "bash-blocked.txt"
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="bash-1",
+                    name="bash",
+                    arguments={"command": f"touch {target}"},
+                ),
+                content="I'll create the file with bash.",
+            ),
+            final_response("The bash command was blocked."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create bash-blocked.txt using bash.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert not target.exists()
+    assert any("requires workspace-write" in message for message in tool_result_messages(run))
+
+
+@pytest.mark.asyncio
+async def test_read_only_mode_allows_safe_bash(temp_dir: Path) -> None:
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.READ_ONLY
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(id="bash-1", name="bash", arguments={"command": "pwd"}),
+                content="I'll inspect the current directory.",
+            ),
+            final_response("Inspected the current directory."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Show the current directory.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["bash"]
+    assert not any("requires" in message for message in tool_result_messages(run))
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_denies_write_outside_root(temp_dir: Path) -> None:
+    config = non_streaming_config()
+    config.auto_recover = False
+    outside = temp_dir.parent / "outside-root.txt"
+    if outside.exists():
+        outside.unlink()
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(outside), "content": "outside\n"},
+                ),
+                content="I'll write outside the workspace.",
+            ),
+            final_response("The write was blocked."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Write a file outside the workspace.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert not outside.exists()
+    assert any("escapes workspace boundary" in message for message in tool_result_messages(run))
+
+
+@pytest.mark.asyncio
+async def test_danger_full_access_allows_dangerous_bash(temp_dir: Path) -> None:
+    target = temp_dir / "mode.txt"
+    target.write_text("hello\n")
+    config = non_streaming_config()
+    config.permission_mode = PermissionMode.DANGER_FULL_ACCESS
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="bash-1",
+                    name="bash",
+                    arguments={"command": f"chmod 600 {target}"},
+                ),
+                content="I'll change the file permissions.",
+            ),
+            final_response("Updated the file permissions."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Lock down mode.txt permissions.",
+        backend,
+        config=config,
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["bash"]
+    assert not any("requires" in message for message in tool_result_messages(run))
     assert any(event.type == "confirmation" for event in run.events)
 
 

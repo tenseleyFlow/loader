@@ -45,6 +45,31 @@
     "description": "A destructive bash command is denied through the callback path."
   },
   {
+    "name": "read_only_mode_denies_write",
+    "category": "permissions",
+    "description": "Read-only mode blocks write tool calls before execution."
+  },
+  {
+    "name": "read_only_mode_denies_mutating_bash",
+    "category": "permissions",
+    "description": "Read-only mode blocks mutating shell commands while keeping the runtime alive."
+  },
+  {
+    "name": "read_only_mode_allows_safe_bash",
+    "category": "permissions",
+    "description": "Read-only mode still allows safe read-only shell commands."
+  },
+  {
+    "name": "workspace_write_denies_write_outside_root",
+    "category": "permissions",
+    "description": "Workspace-write mode rejects writes that escape the configured workspace root."
+  },
+  {
+    "name": "danger_full_access_allows_dangerous_bash",
+    "category": "permissions",
+    "description": "Danger-full-access mode permits dangerous shell operations when approved."
+  },
+  {
     "name": "raw_json_tool_call_fallback",
     "category": "fallback",
     "description": "Raw JSON tool syntax is recovered when native tool calls are absent."
