@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..agent.parsing import parse_tool_calls
 from ..llm.base import ToolCall
 from .context import RuntimeContext
+from .parsing import parse_tool_calls
 
 
 @dataclass(slots=True)

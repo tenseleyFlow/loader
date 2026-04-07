@@ -2,7 +2,7 @@
 
 import json
 
-from loader.agent.parsing import format_tool_result, parse_tool_calls
+from loader.runtime.parsing import format_tool_result, parse_tool_calls
 
 
 class TestParseToolCalls:

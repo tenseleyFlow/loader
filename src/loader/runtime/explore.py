@@ -5,15 +5,15 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 
-from ..agent.parsing import parse_tool_calls
-from ..agent.prompts import format_tool_descriptions, get_project_specific_tips
 from ..llm.base import Message, Role
-from .context import RuntimeContext
 from ..runtime.events import AgentEvent, TurnSummary
 from ..tools.base import create_explore_registry
+from .context import RuntimeContext
 from .executor import ToolExecutionState, ToolExecutor
 from .hooks import build_default_tool_hooks
+from .parsing import parse_tool_calls
 from .permissions import PermissionMode, PermissionRuleSet, build_permission_policy
+from .prompting import format_tool_descriptions, get_project_specific_tips
 from .tracing import RuntimeTracer
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
