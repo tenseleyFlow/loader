@@ -136,6 +136,8 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
         permission_prompting_enabled=True,
         permission_rule_counts={"allow": 1, "deny": 2, "ask": 3},
         permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
+        prompt_format="react",
+        prompt_sections=["Runtime Config", "Workflow Context"],
     )
 
     session.update_runtime_state(
@@ -144,6 +146,8 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
         permission_prompting_enabled=True,
         permission_rule_counts={"allow": 2, "deny": 1, "ask": 4},
         permission_rules_source=str(temp_dir / ".loader" / "permission-rules.json"),
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context", "Project Context"],
     )
 
     reloaded = ConversationSession.load(
@@ -160,6 +164,12 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     assert reloaded.permission_rules_source == str(
         temp_dir / ".loader" / "permission-rules.json"
     )
+    assert reloaded.prompt_format == "native"
+    assert reloaded.prompt_sections == [
+        "Runtime Config",
+        "Workflow Context",
+        "Project Context",
+    ]
 
 
 @pytest.mark.asyncio

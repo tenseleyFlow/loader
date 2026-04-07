@@ -19,7 +19,7 @@ from .compaction import (
     estimate_message_tokens,
 )
 
-SESSION_VERSION = 2
+SESSION_VERSION = 3
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 
@@ -75,6 +75,14 @@ def normalize_permission_rule_counts(value: Any) -> dict[str, int]:
     }
 
 
+def normalize_prompt_sections(value: Any) -> list[str]:
+    """Coerce persisted prompt-section metadata into a string list."""
+
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
 @dataclass(slots=True)
 class SessionCompaction:
     """Metadata describing the latest transcript compaction."""
@@ -123,6 +131,9 @@ class SessionSnapshot:
         default_factory=default_permission_rule_counts
     )
     permission_rules_source: str | None = None
+    prompt_format: str | None = None
+    prompt_sections: list[str] = field(default_factory=list)
+    active_turn_phase: str | None = None
     compaction: SessionCompaction | None = None
     version: int = SESSION_VERSION
 
@@ -141,6 +152,9 @@ class SessionSnapshot:
             "permission_prompting_enabled": self.permission_prompting_enabled,
             "permission_rule_counts": dict(self.permission_rule_counts),
             "permission_rules_source": self.permission_rules_source,
+            "prompt_format": self.prompt_format,
+            "prompt_sections": list(self.prompt_sections),
+            "active_turn_phase": self.active_turn_phase,
             "compaction": self.compaction.to_dict() if self.compaction else None,
         }
 
@@ -167,6 +181,9 @@ class SessionSnapshot:
                 data.get("permission_rule_counts")
             ),
             permission_rules_source=data.get("permission_rules_source"),
+            prompt_format=data.get("prompt_format"),
+            prompt_sections=normalize_prompt_sections(data.get("prompt_sections")),
+            active_turn_phase=data.get("active_turn_phase"),
             compaction=(
                 SessionCompaction.from_dict(data["compaction"])
                 if data.get("compaction")
@@ -296,6 +313,9 @@ class ConversationSession:
         default_factory=default_permission_rule_counts
     )
     permission_rules_source: str | None = None
+    prompt_format: str | None = None
+    prompt_sections: list[str] = field(default_factory=list)
+    active_turn_phase: str | None = None
     compaction: SessionCompaction | None = None
     rotate_after_bytes: int = DEFAULT_ROTATE_AFTER_BYTES
     max_rotated_files: int = MAX_ROTATED_FILES
@@ -365,6 +385,9 @@ class ConversationSession:
         permission_prompting_enabled: bool | None = None,
         permission_rule_counts: dict[str, int] | None = None,
         permission_rules_source: str | None = None,
+        prompt_format: str | None = None,
+        prompt_sections: list[str] | None = None,
+        active_turn_phase: str | None = None,
     ) -> None:
         """Update persisted runtime state that lives beside the messages."""
 
@@ -384,6 +407,11 @@ class ConversationSession:
             )
         if permission_rules_source is not None:
             self.permission_rules_source = permission_rules_source
+        if prompt_format is not None:
+            self.prompt_format = prompt_format
+        if prompt_sections is not None:
+            self.prompt_sections = normalize_prompt_sections(prompt_sections)
+        self.active_turn_phase = active_turn_phase
         self.touch()
         self.persist()
 
@@ -454,6 +482,9 @@ class ConversationSession:
             permission_prompting_enabled=self.permission_prompting_enabled,
             permission_rule_counts=dict(self.permission_rule_counts),
             permission_rules_source=self.permission_rules_source,
+            prompt_format=self.prompt_format,
+            prompt_sections=list(self.prompt_sections),
+            active_turn_phase=self.active_turn_phase,
             compaction=self.compaction,
         )
         return self.store.save(snapshot)
@@ -499,6 +530,9 @@ class ConversationSession:
         instance.permission_prompting_enabled = snapshot.permission_prompting_enabled
         instance.permission_rule_counts = dict(snapshot.permission_rule_counts)
         instance.permission_rules_source = snapshot.permission_rules_source
+        instance.prompt_format = snapshot.prompt_format
+        instance.prompt_sections = list(snapshot.prompt_sections)
+        instance.active_turn_phase = snapshot.active_turn_phase
         instance.compaction = snapshot.compaction
         instance.rotate_after_bytes = rotate_after_bytes
         instance.max_rotated_files = max_rotated_files

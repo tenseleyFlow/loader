@@ -1068,6 +1068,11 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Session", snapshot.active_session_id or "none")
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
+    table.add_row(
+        "Prompt Sections",
+        ", ".join(snapshot.prompt_sections) if snapshot.prompt_sections else "none",
+    )
     table.add_row(
         "Policy",
         (
@@ -1142,6 +1147,7 @@ def _session_list_main() -> None:
         table.add_row("Messages", str(entry.message_count))
         table.add_row("Workflow", entry.workflow_mode)
         table.add_row("Permissions", entry.permission_mode)
+        table.add_row("Prompt", entry.prompt_format or "unknown")
         table.add_row("Policy", policy_summary)
         table.add_row("DoD", entry.dod_status or "none")
         table.add_row("Task", entry.current_task or "none")
@@ -1174,6 +1180,11 @@ def _session_show_main(session_id: str) -> None:
     table.add_row("Messages", str(len(snapshot.messages)))
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Permissions", snapshot.permission_mode)
+    table.add_row("Prompt Format", snapshot.prompt_format or "unknown")
+    table.add_row(
+        "Prompt Sections",
+        ", ".join(snapshot.prompt_sections) if snapshot.prompt_sections else "none",
+    )
     table.add_row(
         "Prompting",
         "enabled" if snapshot.permission_prompting_enabled else "disabled",

@@ -28,7 +28,7 @@ from .planner import (
     parse_plan,
     should_plan,
 )
-from .prompts import build_system_prompt
+from .prompts import build_system_prompt_result
 from .reasoning import (
     CONFIDENCE_PROMPT,
     DECOMPOSITION_PROMPT,
@@ -139,6 +139,8 @@ class Agent:
         )
         self.workflow_mode = WorkflowMode.EXECUTE.value
         self.messages: list[Message] = []
+        self.prompt_format: str | None = None
+        self.prompt_sections: list[str] = []
         self.session = self._create_session(messages=self.messages)
         self._system_message: Message | None = None
         self._use_react: bool | None = None
@@ -179,6 +181,8 @@ class Agent:
             permission_prompting_enabled=self.permission_policy.prompting_enabled,
             permission_rule_counts=self.permission_policy.rule_counts(),
             permission_rules_source=str(self.permission_config_status.source_path),
+            prompt_format=self.prompt_format,
+            prompt_sections=list(self.prompt_sections),
             workflow_mode=self.workflow_mode,
             rotate_after_bytes=self.config.session_rotate_after_bytes,
             auto_compaction_input_tokens_threshold=(
@@ -200,6 +204,8 @@ class Agent:
         self.permission_policy.active_mode = PermissionMode.from_str(
             session.permission_mode
         )
+        self.prompt_format = session.prompt_format
+        self.prompt_sections = list(session.prompt_sections)
         self.last_turn_summary = None
         if session.active_dod_path:
             dod_path = Path(session.active_dod_path)
@@ -290,17 +296,24 @@ class Agent:
         """Get the system message with current context."""
         if self._system_message is None:
             tool_schemas = self.registry.get_schemas()
-
-            # Pass ProjectContext directly for project-specific tips
-            content = build_system_prompt(
+            prompt_result = build_system_prompt_result(
                 tools=tool_schemas,
                 use_react=self.use_react,
                 project_context=self.project_context,
                 workflow_mode=self.workflow_mode,
+                permission_mode=self.active_permission_mode,
+                cwd=self.project_root,
+                current_task=self._current_task,
+            )
+            self.prompt_format = prompt_result.prompt_format
+            self.prompt_sections = list(prompt_result.dynamic_section_names)
+            self.session.update_runtime_state(
+                prompt_format=prompt_result.prompt_format,
+                prompt_sections=prompt_result.dynamic_section_names,
             )
             self._system_message = Message(
                 role=Role.SYSTEM,
-                content=content,
+                content=prompt_result.content,
             )
         return self._system_message
 
@@ -1083,6 +1096,8 @@ class Agent:
     def clear_history(self) -> None:
         """Clear conversation history."""
         self.messages = []
+        self.prompt_format = None
+        self.prompt_sections = []
         self.session = self._create_session(messages=self.messages)
         self._recovery_context = None
         self._current_task = None
