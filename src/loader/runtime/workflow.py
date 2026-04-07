@@ -10,6 +10,8 @@ from pathlib import Path
 from .clarify_grounding import ClarifyGrounding
 from .dod import slugify
 from .workflow_policy import (
+    ArtifactEvidence,
+    ArtifactEvidenceKind,
     ArtifactFreshness,
     ClarifyReview,
     ModeDecision,
@@ -23,6 +25,8 @@ from .workflow_policy import (
 from .workflow_signals import WorkflowSignalExtractor, WorkflowSignalPacket
 
 __all__ = [
+    "ArtifactEvidence",
+    "ArtifactEvidenceKind",
     "ArtifactFreshness",
     "ClarifyBrief",
     "ClarifyReview",

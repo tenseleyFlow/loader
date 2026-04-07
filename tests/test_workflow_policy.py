@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from loader.runtime.clarify_strategy import ClarifySnapshot
 from loader.runtime.workflow import (
+    ArtifactEvidenceKind,
     WorkflowMode,
     WorkflowPolicy,
     WorkflowTimelineEntry,
@@ -128,6 +129,12 @@ def test_workflow_timeline_entry_round_trips() -> None:
         scheduled_next_mode="execute",
         unresolved_questions=["Scope is still broad."],
         signal_summary=["ambiguity=0.20", "complexity=0.81"],
+        evidence_summary=[
+            (
+                f"{ArtifactEvidenceKind.CONFIRMED_TOUCHPOINT.value.replace('_', ' ')}: "
+                "`conversation.py` was already touched during execution."
+            )
+        ],
         clarify_stage="readiness",
         clarify_pressure_kind="tradeoff",
         pressure_pass_complete=False,

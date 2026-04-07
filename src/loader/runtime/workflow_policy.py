@@ -77,6 +77,7 @@ class ModeDecision:
     unresolved_questions: list[str] = field(default_factory=list)
     pressure_summary: list[str] = field(default_factory=list)
     signal_summary: list[str] = field(default_factory=list)
+    evidence_summary: list[str] = field(default_factory=list)
     clarify_stage: str | None = None
     clarify_pressure_kind: str | None = None
     pressure_pass_complete: bool = False
@@ -103,6 +104,7 @@ class ModeDecision:
         unresolved_questions: list[str] | None = None,
         pressure_summary: list[str] | None = None,
         signal_summary: list[str] | None = None,
+        evidence_summary: list[str] | None = None,
         clarify_stage: str | None = None,
         clarify_pressure_kind: str | None = None,
         pressure_pass_complete: bool = False,
@@ -124,6 +126,7 @@ class ModeDecision:
             unresolved_questions=list(unresolved_questions or []),
             pressure_summary=list(pressure_summary or []),
             signal_summary=list(signal_summary or []),
+            evidence_summary=list(evidence_summary or []),
             clarify_stage=clarify_stage,
             clarify_pressure_kind=clarify_pressure_kind,
             pressure_pass_complete=pressure_pass_complete,
@@ -143,6 +146,7 @@ class ModeDecision:
         unresolved_questions: list[str] | None = None,
         pressure_summary: list[str] | None = None,
         signal_summary: list[str] | None = None,
+        evidence_summary: list[str] | None = None,
         clarify_stage: str | None = None,
         clarify_pressure_kind: str | None = None,
         pressure_pass_complete: bool | None = None,
@@ -179,6 +183,11 @@ class ModeDecision:
             ),
             signal_summary=list(
                 self.signal_summary if signal_summary is None else signal_summary
+            ),
+            evidence_summary=list(
+                self.evidence_summary
+                if evidence_summary is None
+                else evidence_summary
             ),
             clarify_stage=(
                 self.clarify_stage if clarify_stage is None else clarify_stage
@@ -217,6 +226,30 @@ class ClarifyReview:
     missing_readiness_gates: list[str] = field(default_factory=list)
 
 
+class ArtifactEvidenceKind(StrEnum):
+    """Structured evidence categories behind recovery choices."""
+
+    CONFIRMED_TOUCHPOINT = "confirmed_touchpoint"
+    INFERRED_TOUCHPOINT = "inferred_touchpoint"
+    ACCEPTANCE_ANCHOR = "acceptance_anchor"
+    CONTRADICTED_ASSUMPTION = "contradicted_assumption"
+    VERIFICATION_CONTRADICTION = "verification_contradiction"
+    TASK_BOUNDARY_CHANGE = "task_boundary_change"
+
+
+@dataclass(slots=True)
+class ArtifactEvidence:
+    """One typed piece of evidence describing workflow drift."""
+
+    kind: str
+    summary: str
+
+    def render_summary(self) -> str:
+        """Render a concise operator-facing evidence string."""
+
+        return f"{self.kind.replace('_', ' ')}: {self.summary}"
+
+
 @dataclass(slots=True)
 class ArtifactFreshness:
     """Whether persisted workflow artifacts still fit the current task state."""
@@ -226,10 +259,15 @@ class ArtifactFreshness:
     reasons: list[str] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
     recovery_strategy: str = "none"
+    evidence: list[ArtifactEvidence] = field(default_factory=list)
 
     @property
     def requires_refresh(self) -> bool:
         return self.stale_brief or self.stale_plan
+
+    @property
+    def evidence_summary(self) -> list[str]:
+        return [item.render_summary() for item in self.evidence]
 
 
 @dataclass(slots=True)
@@ -248,6 +286,7 @@ class WorkflowTimelineEntry:
     scheduled_next_mode: str | None = None
     unresolved_questions: list[str] = field(default_factory=list)
     signal_summary: list[str] = field(default_factory=list)
+    evidence_summary: list[str] = field(default_factory=list)
     clarify_stage: str | None = None
     clarify_pressure_kind: str | None = None
     pressure_pass_complete: bool = False
@@ -270,6 +309,7 @@ class WorkflowTimelineEntry:
             "scheduled_next_mode": self.scheduled_next_mode,
             "unresolved_questions": list(self.unresolved_questions),
             "signal_summary": list(self.signal_summary),
+            "evidence_summary": list(self.evidence_summary),
             "clarify_stage": self.clarify_stage,
             "clarify_pressure_kind": self.clarify_pressure_kind,
             "pressure_pass_complete": self.pressure_pass_complete,
@@ -294,6 +334,7 @@ class WorkflowTimelineEntry:
             scheduled_next_mode=_optional_text(data.get("scheduled_next_mode")),
             unresolved_questions=_string_list(data.get("unresolved_questions")),
             signal_summary=_string_list(data.get("signal_summary")),
+            evidence_summary=_string_list(data.get("evidence_summary")),
             clarify_stage=_optional_text(data.get("clarify_stage")),
             clarify_pressure_kind=_optional_text(data.get("clarify_pressure_kind")),
             pressure_pass_complete=bool(data.get("pressure_pass_complete", False)),
@@ -335,6 +376,7 @@ class WorkflowTimelineEntry:
             ),
             unresolved_questions=list(decision.unresolved_questions),
             signal_summary=list(decision.signal_summary),
+            evidence_summary=list(decision.evidence_summary),
             clarify_stage=decision.clarify_stage,
             clarify_pressure_kind=decision.clarify_pressure_kind,
             pressure_pass_complete=decision.pressure_pass_complete,

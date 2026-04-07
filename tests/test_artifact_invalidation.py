@@ -6,6 +6,7 @@ from loader.runtime.artifact_invalidation import (
     ArtifactInvalidationAssessor,
     WorkflowRecoveryStrategy,
 )
+from loader.runtime.workflow import ArtifactEvidenceKind
 
 
 def test_artifact_invalidation_requests_plan_refresh_for_plan_only_drift() -> None:
@@ -25,6 +26,16 @@ def test_artifact_invalidation_requests_plan_refresh_for_plan_only_drift() -> No
     assert freshness.stale_brief is False
     assert freshness.recovery_strategy == WorkflowRecoveryStrategy.PLAN_REFRESH.value
     assert "touched_files_outside_plan" in freshness.reason_codes
+    assert any(
+        item.kind == ArtifactEvidenceKind.CONFIRMED_TOUCHPOINT.value
+        and "notes.md" in item.summary
+        for item in freshness.evidence
+    )
+    assert any(
+        item.kind == ArtifactEvidenceKind.ACCEPTANCE_ANCHOR.value
+        and "report.md exists" in item.summary
+        for item in freshness.evidence
+    )
 
 
 def test_artifact_invalidation_can_force_full_replan_when_brief_and_plan_drift() -> None:
@@ -45,4 +56,14 @@ def test_artifact_invalidation_can_force_full_replan_when_brief_and_plan_drift()
     assert freshness.recovery_strategy == WorkflowRecoveryStrategy.FULL_REPLAN.value
     assert "touchpoints_outside_brief" in freshness.reason_codes
     assert "acceptance_criteria_outside_plan" in freshness.reason_codes
-
+    assert any(
+        item.kind == ArtifactEvidenceKind.VERIFICATION_CONTRADICTION.value
+        and "notes.txt exists in the workspace root." in item.summary
+        for item in freshness.evidence
+    )
+    assert any(
+        item.kind == ArtifactEvidenceKind.CONTRADICTED_ASSUMPTION.value
+        and "notes.txt" in item.summary
+        for item in freshness.evidence
+    )
+    assert freshness.evidence_summary

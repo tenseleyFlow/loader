@@ -5,7 +5,11 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 
-from .workflow_policy import ArtifactFreshness
+from .workflow_policy import (
+    ArtifactEvidence,
+    ArtifactEvidenceKind,
+    ArtifactFreshness,
+)
 
 
 class WorkflowRecoveryStrategy(StrEnum):
@@ -40,14 +44,42 @@ class ArtifactInvalidationAssessor:
         brief_text = (clarify_text or "").lower()
         reasons: list[str] = []
         reason_codes: list[str] = []
+        evidence: list[ArtifactEvidence] = []
 
         unexpected_paths = [
             name
             for path in touched_files
             if (name := _path_name(path)) and name.lower() not in plan_text
         ]
+        confirmed_touchpoints = [
+            name
+            for path in touched_files
+            if (name := _path_name(path))
+        ]
+        inferred_touchpoints = [
+            item
+            for item in _extract_path_mentions(
+                clarify_text,
+                implementation_text,
+                verification_text,
+            )
+            if _path_name(item) not in confirmed_touchpoints
+        ]
         stale_plan = False
         stale_brief = False
+
+        for item in dict.fromkeys(confirmed_touchpoints):
+            _append_evidence(
+                evidence,
+                ArtifactEvidenceKind.CONFIRMED_TOUCHPOINT,
+                f"`{item}` was already touched during execution.",
+            )
+        for item in dict.fromkeys(inferred_touchpoints):
+            _append_evidence(
+                evidence,
+                ArtifactEvidenceKind.INFERRED_TOUCHPOINT,
+                f"Persisted artifacts still point at `{item}`.",
+            )
 
         if unexpected_paths:
             stale_plan = True
@@ -57,13 +89,24 @@ class ArtifactInvalidationAssessor:
                 + ", ".join(dict.fromkeys(unexpected_paths))
             )
 
-        uncovered_criteria = [
+        acceptance_anchors = [
             item
             for item in acceptance_criteria
             if item.strip()
             and item.strip().lower() != task_statement.strip().lower()
             and "runtime verification evidence" not in item.strip().lower()
-            and not _text_covers_requirement(plan_text, item)
+        ]
+        for item in acceptance_anchors[:2]:
+            _append_evidence(
+                evidence,
+                ArtifactEvidenceKind.ACCEPTANCE_ANCHOR,
+                f"Current acceptance anchor: `{_short_requirement(item)}`.",
+            )
+
+        uncovered_criteria = [
+            item
+            for item in acceptance_anchors
+            if not _text_covers_requirement(plan_text, item)
         ]
         if uncovered_criteria:
             stale_plan = True
@@ -72,6 +115,12 @@ class ArtifactInvalidationAssessor:
                 "Acceptance criteria are missing from the current plan: "
                 + "; ".join(uncovered_criteria[:2])
             )
+            for item in uncovered_criteria[:2]:
+                _append_evidence(
+                    evidence,
+                    ArtifactEvidenceKind.ACCEPTANCE_ANCHOR,
+                    f"Plan coverage is missing acceptance anchor `{_short_requirement(item)}`.",
+                )
 
         if brief_text:
             brief_gaps = [
@@ -89,6 +138,13 @@ class ArtifactInvalidationAssessor:
                     "The clarify brief no longer captures the active acceptance criteria: "
                     + "; ".join(brief_gaps[:2])
                 )
+                for item in brief_gaps[:2]:
+                    _append_evidence(
+                        evidence,
+                        ArtifactEvidenceKind.VERIFICATION_CONTRADICTION,
+                        "Failed verification exposed missing brief coverage for "
+                        f"`{_short_requirement(item)}`.",
+                    )
 
             out_of_brief_paths = [
                 name for name in unexpected_paths if name.lower() not in brief_text
@@ -100,12 +156,23 @@ class ArtifactInvalidationAssessor:
                     "The clarify brief no longer matches the touched files: "
                     + ", ".join(dict.fromkeys(out_of_brief_paths))
                 )
+                for item in dict.fromkeys(out_of_brief_paths):
+                    _append_evidence(
+                        evidence,
+                        ArtifactEvidenceKind.CONTRADICTED_ASSUMPTION,
+                        f"Clarify scope assumed `{item}` stayed out of scope.",
+                    )
 
             if not _text_covers_requirement(brief_text, task_statement):
                 stale_brief = True
                 reason_codes.append("task_drifted_beyond_brief")
                 reasons.append(
                     "The clarify brief no longer reflects the current task framing."
+                )
+                _append_evidence(
+                    evidence,
+                    ArtifactEvidenceKind.TASK_BOUNDARY_CHANGE,
+                    "The active task framing outgrew the persisted clarify brief.",
                 )
 
         recovery_strategy = WorkflowRecoveryStrategy.NONE
@@ -122,6 +189,7 @@ class ArtifactInvalidationAssessor:
             reasons=list(dict.fromkeys(reasons)),
             reason_codes=list(dict.fromkeys(reason_codes)),
             recovery_strategy=recovery_strategy.value,
+            evidence=evidence,
         )
 
 
@@ -148,6 +216,42 @@ def _text_covers_requirement(text: str, requirement: str) -> bool:
     matches = sum(1 for token in tokens if token in normalized_text)
     threshold = max(1, min(2, len(tokens)))
     return matches >= threshold
+
+
+def _extract_path_mentions(*texts: str | None) -> list[str]:
+    mentions: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        if not text:
+            continue
+        for match in re.findall(r"[\w./-]+\.[a-z0-9]+", text):
+            normalized = match.strip("`'\",.:;()[]{}")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            mentions.append(normalized)
+    return mentions
+
+
+def _short_requirement(requirement: str, *, limit: int = 72) -> str:
+    normalized = " ".join(str(requirement).split()).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _append_evidence(
+    evidence: list[ArtifactEvidence],
+    kind: ArtifactEvidenceKind,
+    summary: str,
+) -> None:
+    item = ArtifactEvidence(kind=kind.value, summary=summary)
+    if any(
+        existing.kind == item.kind and existing.summary == item.summary
+        for existing in evidence
+    ):
+        return
+    evidence.append(item)
 
 
 _STOP_WORDS = {
