@@ -1,5 +1,23 @@
 # Sprint 11: Recovery Deletion and Tool Parsing Unification
 
+## Status on `cleanup-audit-plan`
+
+- repo verification is currently `212 passed`
+- `src/loader/agent/loop.py` is down to `926` lines from the Sprint 09 baseline of `1111`
+- the sprint has already deleted:
+  - the post-action follow-up suffix
+  - the first-turn `[` prefill trick
+  - fake-tool narration repair prompts
+  - deflection repair prompts
+- empty-response handling has been tightened to one honest retry plus explicit failure
+- raw-text parsing has been unified onto `src/loader/agent/parsing.py`
+  - `src/loader/agent/loop.py` no longer carries `_extract_raw_json_tool_calls(...)`
+  - `src/loader/runtime/repair.py` and `src/loader/runtime/explore.py` use the shared parser
+  - `src/loader/llm/ollama.py` now routes both complete-mode and streaming final text parsing through the shared parser
+- the sprint is not complete yet
+  - the hard subtraction target is still missed by `115` lines
+  - self-critique rerouting, text-loop bailout, non-mutating completion nudges, and action-loop bailout still need an explicit keep/delete decision
+
 ## Prerequisites
 
 Sprint 10
@@ -16,6 +34,11 @@ This is the central contract sprint. After Sprint 10 creates a clean runtime bou
 
 Resolve the duplicated parsing split between `agent/parsing.py` and `agent/loop.py`.
 
+Current state:
+
+- complete enough to count as landed for the core runtime path
+- follow-on parser work should only target residual streaming UX shims or backend-specific cleanup, not reintroduce a second extraction path
+
 Implementation targets:
 
 - delete `_extract_raw_json_tool_calls(...)` from `agent/loop.py`, or reduce it to a thin compatibility shim over a shared parser
@@ -28,6 +51,11 @@ The outcome should be one parsing strategy, not two diverging regex stacks.
 ### 2. Remove fake assistant continuation behavior
 
 Delete the assistant-puppeteering paths unless Sprint 09 interactive evidence proves one must survive behind an explicit gate.
+
+Current state:
+
+- largely in progress with real deletions already landed
+- the biggest surviving behavior in this area is the bounded empty-response retry, which is now explicit and much narrower than the original puppet prompts
 
 Primary deletion targets:
 
@@ -67,6 +95,13 @@ This sprint should materially reduce legacy surface area instead of moving it ag
 Set a hard subtraction target:
 
 - `src/loader/agent/loop.py` must shrink by at least 300 lines from the Sprint 09 baseline, or the sprint is not complete
+
+Current score:
+
+- baseline: `1111`
+- current: `926`
+- net: `-185`
+- remaining to target: `115`
 
 If a target is missed, document exactly which remaining behaviors blocked deletion and move them into the next sprint explicitly instead of silently carrying them forward.
 

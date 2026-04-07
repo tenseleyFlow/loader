@@ -43,6 +43,30 @@ This is the migration scoreboard for Sprint 10. The goal is not only to move cod
 
 This is the subtraction scoreboard for Sprint 11 and Sprint 13.
 
+## Sprint 11 Progress Against This Baseline
+
+- `src/loader/agent/loop.py`: `1111` -> `926` (`-185`)
+- `src/loader/runtime/conversation.py`: `881` -> `828` (`-53`)
+- `src/loader/runtime/repair.py`: `208` -> `146` (`-62`)
+- `src/loader/runtime/completion_policy.py`: `187` -> `182` (`-5`)
+- `src/loader/agent/parsing.py`: `182` -> `276`
+  - this file grew because it is now the shared owner of raw-text parsing after Sprint 11 deleted the legacy loop extractor
+- parser-contract status:
+  - `_extract_raw_json_tool_calls(...)` has been deleted from `src/loader/agent/loop.py`
+  - `src/loader/runtime/repair.py`, `src/loader/runtime/explore.py`, and `src/loader/llm/ollama.py` now converge on the shared parser
+- deleted behaviors relative to this inventory:
+  - prefill trick
+  - fake-tool narration repair
+  - deflection repair
+  - post-action follow-up suffix
+- tightened behavior relative to this inventory:
+  - empty-response handling is now one honest retry plus explicit failure instead of five fake assistant continuation prompts
+- still open relative to this inventory:
+  - self-critique reroute
+  - text-loop bailout
+  - non-mutating completion nudge
+  - action-loop bailout
+
 ## Recovery Inventory
 
 | Behavior | Current owner | Trigger | Dependency | Current coverage | Proposed disposition |
