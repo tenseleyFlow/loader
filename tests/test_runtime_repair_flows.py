@@ -185,3 +185,39 @@ async def test_text_loop_bailout_stops_after_repeated_continuation_response(
         event.type == "error" and "Text loop detected" in event.content
         for event in run.events
     )
+
+
+@pytest.mark.asyncio
+async def test_post_action_follow_up_suffix_is_appended_to_final_response(
+    temp_dir: Path,
+) -> None:
+    fixture = temp_dir / "fixture.txt"
+    fixture.write_text("repair baseline\n")
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I'll inspect the file now.",
+                tool_calls=[
+                    ToolCall(
+                        id="read-1",
+                        name="read",
+                        arguments={"file_path": str(fixture)},
+                    )
+                ],
+            ),
+            CompletionResponse(content="Inspected the file successfully."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Read the fixture file.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read"]
+    assert run.response == (
+        "Inspected the file successfully.\n\n"
+        "Would you like me to make any changes or additions?"
+    )
