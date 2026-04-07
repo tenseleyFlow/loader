@@ -21,6 +21,7 @@ from .workflow import (
     WorkflowSignalExtractor,
 )
 from .workflow_lanes import WorkflowLaneRunner
+from .workflow_ledger import apply_freshness_to_workflow_ledger
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
@@ -76,6 +77,14 @@ class WorkflowRecoveryController:
         freshness = self.plan_freshness(dod)
         if not freshness.requires_refresh:
             return False
+
+        self.agent.session.update_workflow_ledger(
+            apply_freshness_to_workflow_ledger(
+                self.agent.session.workflow_ledger,
+                freshness,
+                phase="recovery",
+            )
+        )
 
         strategy = WorkflowRecoveryStrategy(freshness.recovery_strategy)
         if strategy == WorkflowRecoveryStrategy.PLAN_REFRESH:

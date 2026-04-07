@@ -38,6 +38,10 @@ from .workflow import (
     enrich_clarify_brief_with_grounding,
     sync_todos_to_definition_of_done,
 )
+from .workflow_ledger import (
+    seed_workflow_ledger_from_acceptance_criteria,
+    seed_workflow_ledger_from_brief,
+)
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
@@ -132,6 +136,13 @@ class WorkflowLaneRunner:
         dod.clarify_brief = str(brief_path)
         dod.acceptance_criteria = list(dict.fromkeys(latest_brief.acceptance_criteria))
         self.dod_store.save(dod)
+        self.agent.session.update_workflow_ledger(
+            seed_workflow_ledger_from_brief(
+                self.agent.session.workflow_ledger,
+                latest_brief,
+                phase="clarify",
+            )
+        )
         append_timeline(
             ModeDecision.transition(
                 WorkflowMode.CLARIFY,
@@ -202,6 +213,13 @@ class WorkflowLaneRunner:
         if artifacts.verification_commands:
             dod.verification_commands = artifacts.verification_commands
         self.dod_store.save(dod)
+        self.agent.session.update_workflow_ledger(
+            seed_workflow_ledger_from_acceptance_criteria(
+                self.agent.session.workflow_ledger,
+                list(dod.acceptance_criteria),
+                phase="plan",
+            )
+        )
         await self._emit_artifact(
             emit=emit,
             kind="implementation_plan",

@@ -1541,3 +1541,11 @@ async def test_full_replan_can_reenter_clarify_before_rebuilding_plan(
         entry.reason_code == "full_replan_required"
         for entry in run.agent.last_turn_summary.workflow_timeline
     )
+    assert any(
+        item.status == "contradicted"
+        for item in run.agent.session.workflow_ledger.assumptions
+    )
+    assert any(
+        item.status == "changed"
+        for item in run.agent.session.workflow_ledger.acceptance_anchors
+    )
