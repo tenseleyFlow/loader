@@ -5,6 +5,16 @@ from __future__ import annotations
 from ..runtime.events import AgentEvent
 
 
+def format_permission_mode(mode: str) -> str:
+    """Format the active permission mode for Rich CLI surfaces."""
+    color = {
+        "read-only": "green",
+        "workspace-write": "yellow",
+        "danger-full-access": "red",
+    }.get(mode, "white")
+    return f"[{color}]{mode}[/{color}]"
+
+
 def format_dod_status(event: AgentEvent) -> str:
     """Format a definition-of-done status event for CLI output."""
     parts = [f"DoD: {event.dod_status or 'unknown'}"]

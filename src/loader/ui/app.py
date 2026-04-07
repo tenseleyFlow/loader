@@ -65,12 +65,14 @@ class LoaderApp(App):
         agent: Agent,
         model_name: str = "",
         mode: str = "Native",
+        permission_mode: str = "",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.agent = agent
         self.model_name = model_name
         self.mode = mode
+        self.permission_mode = permission_mode
         self.adapter = EventAdapter(self)
         self._start_time: float = 0.0
         self._current_streaming: StreamingText | None = None
@@ -105,6 +107,7 @@ class LoaderApp(App):
         status = self.query_one(StatusLine)
         status.model = self.model_name
         status.mode = self.mode
+        status.permission_mode = self.permission_mode
 
         # Focus input
         self.query_one(InputArea).focus_input()

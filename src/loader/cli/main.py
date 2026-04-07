@@ -11,7 +11,8 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 
-from .rendering import format_dod_status
+from ..runtime.permissions import PermissionMode
+from .rendering import format_dod_status, format_permission_mode
 
 console = Console()
 
@@ -136,6 +137,16 @@ def clean_response(text: str) -> str:
 @click.option("--select-model", "-s", is_flag=True, help="Interactively select model from available")
 @click.option("--backend", "-b", default="ollama", help="LLM backend (ollama)")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(
+        ["read-only", "workspace-write", "danger-full-access"],
+        case_sensitive=False,
+    ),
+    default="workspace-write",
+    show_default=True,
+    help="Runtime permission mode for tool execution",
+)
 @click.option("--react", is_flag=True, help="Force ReAct mode (text-based tool calling)")
 @click.option("--no-context", is_flag=True, help="Skip auto-detecting project context")
 @click.option("--plan", is_flag=True, help="Enable auto-planning for complex tasks (off by default)")
@@ -156,6 +167,7 @@ def main(
     select_model: bool,
     backend: str,
     yes: bool,
+    permission_mode: str,
     react: bool,
     no_context: bool,
     plan: bool,
@@ -173,8 +185,8 @@ def main(
 ) -> None:
     """Loader - Local AI coding assistant."""
     asyncio.run(_main(
-        model, select_model, backend, yes, react, no_context, plan, no_recover, no_tui,
-        ctx, gpu, timeout, decompose, critique, confidence, verify, reason, prompt
+        model, select_model, backend, yes, permission_mode, react, no_context, plan, no_recover,
+        no_tui, ctx, gpu, timeout, decompose, critique, confidence, verify, reason, prompt
     ))
 
 
@@ -183,6 +195,7 @@ async def _main(
     select_model: bool,
     backend: str,
     yes: bool,
+    permission_mode: str,
     react: bool,
     no_context: bool,
     plan: bool,
@@ -261,6 +274,7 @@ async def _main(
         auto_context=not no_context,
         auto_plan=plan,  # Off by default, enable with --plan
         auto_recover=not no_recover,
+        permission_mode=PermissionMode.from_str(permission_mode),
         reasoning=reasoning_config,
     )
     agent = Agent(backend=llm, registry=registry, config=config)
@@ -282,7 +296,11 @@ async def _main(
     if prompt:
         # Build status line for non-TUI mode
         timeout_mins = int(llm.timeout / 60)
-        status_parts = [f"Model: {model}", f"Mode: {mode_str}"]
+        status_parts = [
+            f"Model: {model}",
+            f"Mode: {mode_str}",
+            f"Permissions: {format_permission_mode(permission_mode)}",
+        ]
         if agent.project_context:
             status_parts.append(f"Project: {agent.project_context.project_type}")
         status_parts.append(f"Timeout: {timeout_mins}m")
@@ -300,7 +318,11 @@ async def _main(
     if no_tui:
         # Build status line for non-TUI mode
         timeout_mins = int(llm.timeout / 60)
-        status_parts = [f"Model: {model}", f"Mode: {mode_str}"]
+        status_parts = [
+            f"Model: {model}",
+            f"Mode: {mode_str}",
+            f"Permissions: {format_permission_mode(permission_mode)}",
+        ]
         if agent.project_context:
             status_parts.append(f"Project: {agent.project_context.project_type}")
         status_parts.append(f"Timeout: {timeout_mins}m")
@@ -321,6 +343,7 @@ async def _main(
             agent=agent,
             model_name=model,
             mode=mode_str,
+            permission_mode=permission_mode,
         )
         await app.run_async()
 

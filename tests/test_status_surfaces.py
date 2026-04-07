@@ -1,8 +1,11 @@
 """Tests for user-visible definition-of-done status formatting."""
 
-from loader.cli.rendering import format_dod_status
+from loader.cli.rendering import format_dod_status, format_permission_mode
 from loader.runtime.events import AgentEvent
-from loader.ui.status_helpers import format_definition_of_done_parts
+from loader.ui.status_helpers import (
+    format_definition_of_done_parts,
+    format_permission_mode_part,
+)
 
 
 def test_status_helper_formats_definition_of_done_parts() -> None:
@@ -30,3 +33,8 @@ def test_cli_dod_status_format_includes_pending_and_verification() -> None:
     formatted = format_dod_status(event)
 
     assert formatted == "DoD: fixing | 2 pending | last verify: failed"
+
+
+def test_permission_mode_helpers_use_expected_colors() -> None:
+    assert format_permission_mode_part("read-only") == "[green]perm read-only[/green]"
+    assert format_permission_mode("danger-full-access") == "[red]danger-full-access[/red]"

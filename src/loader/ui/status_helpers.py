@@ -32,3 +32,16 @@ def format_definition_of_done_parts(
         )
 
     return parts
+
+
+def format_permission_mode_part(mode: str) -> str | None:
+    """Format the active permission mode for the status line."""
+    if not mode:
+        return None
+
+    color = {
+        "read-only": "green",
+        "workspace-write": "yellow",
+        "danger-full-access": "red",
+    }.get(mode, "white")
+    return f"[{color}]perm {mode}[/{color}]"

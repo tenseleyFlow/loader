@@ -3,7 +3,7 @@
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from ..status_helpers import format_definition_of_done_parts
+from ..status_helpers import format_definition_of_done_parts, format_permission_mode_part
 
 
 class StatusLine(Static):
@@ -11,6 +11,7 @@ class StatusLine(Static):
 
     model: reactive[str] = reactive("")
     mode: reactive[str] = reactive("Native")
+    permission_mode: reactive[str] = reactive("")
     activity: reactive[str] = reactive("")
     elapsed: reactive[float] = reactive(0.0)
     tokens: reactive[int] = reactive(0)
@@ -49,6 +50,9 @@ class StatusLine(Static):
         # Mode
         if self.mode:
             parts.append(f"[dim]{self.mode}[/dim]")
+        permission_mode = format_permission_mode_part(self.permission_mode)
+        if permission_mode:
+            parts.append(permission_mode)
 
         return " · ".join(parts) if parts else "[dim]Ready[/dim]"
 
@@ -62,6 +66,10 @@ class StatusLine(Static):
 
     def watch_tokens(self, tokens: int) -> None:
         """React to token count changes."""
+        self.refresh()
+
+    def watch_permission_mode(self, permission_mode: str) -> None:
+        """React to permission mode changes."""
         self.refresh()
 
     def watch_dod_status(self, dod_status: str) -> None:
@@ -91,6 +99,10 @@ class StatusLine(Static):
     def update_tokens(self, tokens: int) -> None:
         """Update token count."""
         self.tokens = tokens
+
+    def update_permission_mode(self, permission_mode: str) -> None:
+        """Update the active permission mode."""
+        self.permission_mode = permission_mode
 
     def update_definition_of_done(
         self,
