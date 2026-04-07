@@ -33,10 +33,10 @@ from .executor import ToolExecutionState, ToolExecutor
 from .hooks import build_default_tool_hooks
 from .tracing import RuntimeTracer
 from .workflow import (
+    VERIFICATION_SEPARATOR,
     ClarifyBrief,
     ModeRouter,
     PlanningArtifacts,
-    VERIFICATION_SEPARATOR,
     WorkflowArtifactStore,
     WorkflowMode,
     build_execute_bridge,

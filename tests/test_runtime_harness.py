@@ -35,6 +35,9 @@ SCENARIO_NAMES = [
     "definition_of_done_verify_phase",
     "verify_failure_routes_to_fix_loop",
     "verify_retry_budget_exhaustion",
+    "ambiguous_prompt_routes_to_clarify",
+    "complex_prompt_routes_to_plan",
+    "verify_failure_fix_loop_does_not_reroute_workflow",
     "conversational_task_skips_verify_phase",
     "completion_check_continuation",
     "tool_result_contract_regression",
@@ -116,6 +119,26 @@ def dod_statuses(run) -> list[str]:
         event.dod_status
         for event in run.events
         if event.type == "dod_status" and event.dod_status
+    ]
+
+
+def workflow_modes(run) -> list[str]:
+    """Return emitted workflow modes in order."""
+
+    return [
+        event.workflow_mode
+        for event in run.events
+        if event.type == "workflow_mode" and event.workflow_mode
+    ]
+
+
+def artifact_kinds(run) -> list[str]:
+    """Return emitted artifact kinds in order."""
+
+    return [
+        event.artifact_kind
+        for event in run.events
+        if event.type == "artifact" and event.artifact_kind
     ]
 
 
@@ -872,6 +895,213 @@ async def test_verify_retry_budget_exhaustion(
     assert dod_statuses(run)[-1] == "failed"
     assert run.agent.last_turn_summary is not None
     assert run.agent.last_turn_summary.verification_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_prompt_routes_to_clarify(temp_dir: Path) -> None:
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="ask-1",
+                    name="AskUserQuestion",
+                    arguments={
+                        "question": (
+                            "What outcome matters most, and what should stay out of scope?"
+                        )
+                    },
+                ),
+                content="I need one clarification first.",
+            ),
+            final_response(
+                "\n".join(
+                    [
+                        "## Task Statement",
+                        "Improve Loader so it feels more like claw-code.",
+                        "",
+                        "## Desired Outcome",
+                        "- Make Loader more reliable without broad redesign.",
+                        "",
+                        "## In Scope",
+                        "- Tighten the runtime workflow around the user-facing goal.",
+                        "",
+                        "## Non Goals",
+                        "- Rebuild unrelated subsystems.",
+                        "",
+                        "## Decision Boundaries",
+                        "- Escalate before changing unrelated UX patterns.",
+                        "",
+                        "## Constraints",
+                        "- Stay inside the current repository.",
+                        "",
+                        "## Likely Touchpoints",
+                        "- Runtime entry points and prompt behavior.",
+                        "",
+                        "## Assumptions",
+                        "- The user wants a narrow runtime-quality improvement.",
+                        "",
+                        "## Acceptance Criteria",
+                        "- The improvement stays focused on runtime behavior.",
+                    ]
+                )
+            ),
+            final_response("I have the brief and can move forward."),
+        ]
+    )
+
+    async def answer(question: str, options: list[str] | None) -> str:
+        assert "outcome matters most" in question.lower()
+        assert options is None
+        return "Do not redesign the whole interface."
+
+    run = await run_scenario(
+        "Improve Loader so it feels more like claw-code.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+        on_user_question=answer,
+    )
+
+    dod = run.agent.last_turn_summary.definition_of_done
+    assert dod is not None
+    assert workflow_modes(run)[:2] == ["clarify", "execute"]
+    assert artifact_kinds(run) == ["clarify_brief"]
+    assert dod.clarify_brief is not None
+    assert Path(dod.clarify_brief).exists()
+
+
+@pytest.mark.asyncio
+async def test_complex_prompt_routes_to_plan(temp_dir: Path) -> None:
+    target = temp_dir / "planned.txt"
+    backend = ScriptedBackend(
+        completions=[
+            final_response(
+                "\n".join(
+                    [
+                        "# Implementation Plan",
+                        "",
+                        "## File Changes",
+                        f"- Create {target.name} in the workspace root.",
+                        "",
+                        "## Execution Order",
+                        f"1. Write {target.name}.",
+                        "2. Confirm the file exists.",
+                        "",
+                        "## Risks",
+                        "- Writing the wrong file path.",
+                        "",
+                        "<<<VERIFICATION>>>",
+                        "",
+                        "# Verification Plan",
+                        "",
+                        "## Acceptance Criteria",
+                        f"- {target.name} exists in the workspace root.",
+                        "",
+                        "## Verification Commands",
+                        f"- `test -f {target}`",
+                        "",
+                        "## Notes",
+                        "- Use a deterministic file existence check.",
+                    ]
+                )
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "planned output\n"},
+                ),
+                content="I'll create the file now.",
+            ),
+            final_response("The file is in place."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Implement a persistent workflow mode router with clarify artifacts, "
+        "planning artifacts, and verification-plan wiring in the runtime.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    dod = run.agent.last_turn_summary.definition_of_done
+    assert dod is not None
+    assert workflow_modes(run)[:3] == ["plan", "execute", "verify"]
+    assert artifact_kinds(run) == ["implementation_plan", "verification_plan"]
+    assert dod.verification_commands == [f"test -f {target}"]
+    assert verification_commands(run) == [f"test -f {target}"]
+
+
+@pytest.mark.asyncio
+async def test_verify_failure_fix_loop_does_not_reroute_workflow(temp_dir: Path) -> None:
+    target = temp_dir / "retry.txt"
+    backend = ScriptedBackend(
+        completions=[
+            final_response(
+                "\n".join(
+                    [
+                        "# Implementation Plan",
+                        "",
+                        "## File Changes",
+                        f"- Create {target.name}.",
+                        "",
+                        "## Execution Order",
+                        f"1. Write {target.name}.",
+                        "2. Fix it if verification fails.",
+                        "",
+                        "## Risks",
+                        "- Initial content may be wrong.",
+                        "",
+                        "<<<VERIFICATION>>>",
+                        "",
+                        "# Verification Plan",
+                        "",
+                        "## Acceptance Criteria",
+                        "- The file contains the word fixed.",
+                        "",
+                        "## Verification Commands",
+                        f"- `grep -q fixed {target}`",
+                        "",
+                        "## Notes",
+                        "- Retry if the first write misses the target string.",
+                    ]
+                )
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "draft output\n"},
+                ),
+                content="I'll write the first draft.",
+            ),
+            final_response("First draft is written."),
+            native_tool_response(
+                ToolCall(
+                    id="write-2",
+                    name="write",
+                    arguments={"file_path": str(target), "content": "fixed output\n"},
+                ),
+                content="I'll correct the file.",
+            ),
+            final_response("The file now contains the fixed output."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Implement a persistent workflow mode router with clarify artifacts, "
+        "planning artifacts, and verification-plan wiring in the runtime.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    modes = workflow_modes(run)
+    assert modes.count("plan") == 1
+    assert modes.count("clarify") == 0
+    assert modes.count("execute") >= 2
+    assert modes.count("verify") >= 2
 
 
 @pytest.mark.asyncio

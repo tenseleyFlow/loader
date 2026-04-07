@@ -105,6 +105,21 @@
     "description": "Verification escalates to the user once the fix-loop retry budget is exhausted."
   },
   {
+    "name": "ambiguous_prompt_routes_to_clarify",
+    "category": "workflow",
+    "description": "Ambiguous prompts enter clarify mode, ask one structured question, and persist a brief artifact."
+  },
+  {
+    "name": "complex_prompt_routes_to_plan",
+    "category": "workflow",
+    "description": "Complex prompts enter plan mode, persist implementation and verification artifacts, and use planned verification commands."
+  },
+  {
+    "name": "verify_failure_fix_loop_does_not_reroute_workflow",
+    "category": "workflow",
+    "description": "A verify-fix retry returns to execute mode without re-triggering clarify or plan."
+  },
+  {
     "name": "conversational_task_skips_verify_phase",
     "category": "definition-of-done",
     "description": "Conversational tasks skip the verify phase entirely and avoid DoD overhead."

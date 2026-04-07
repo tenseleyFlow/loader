@@ -19,7 +19,6 @@ from .planner import (
     PLANNING_PROMPT,
     SHOULD_PLAN_PROMPT,
     Plan,
-    format_step_prompt,
     parse_plan,
     should_plan,
 )
