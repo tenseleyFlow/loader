@@ -6,11 +6,6 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from ..agent.reasoning import (
-    RollbackPlan,
-    estimate_complexity,
-    get_token_budget,
-)
 from ..llm.base import Message, Role
 from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
@@ -19,17 +14,15 @@ from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer, merge_usage
-from .hooks import build_default_tool_hooks
 from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
 from .repair import ResponseRepairer
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
+from .turn_preparation import TurnPreparationController
 from .workflow import (
-    ClarifyReview,
     ModeDecision,
     WorkflowArtifactStore,
     WorkflowDecisionKind,
-    WorkflowMode,
     WorkflowPolicy,
     WorkflowSignalExtractor,
     WorkflowTimelineEntry,
@@ -83,6 +76,19 @@ class ConversationRuntime:
             self.dod_store,
             self._set_workflow_mode,
         )
+        self.turn_preparation = TurnPreparationController(
+            agent,
+            tracer=self.tracer,
+            phase_tracker=self.phase_tracker,
+            dod_store=self.dod_store,
+            workflow_policy=self.workflow_policy,
+            workflow_signals=self.workflow_signals,
+            workflow_lanes=self.workflow_lanes,
+            finalizer=self.finalizer,
+            set_workflow_mode=self._set_workflow_mode,
+            append_timeline=self._append_workflow_timeline_from_decision,
+            append_execute_bridge=self._maybe_append_execute_bridge,
+        )
 
     async def run_turn(
         self,
@@ -95,14 +101,6 @@ class ConversationRuntime:
     ) -> TurnSummary:
         """Run one task turn and return a structured summary."""
 
-        await self.phase_tracker.enter(
-            TurnPhase.PREPARE,
-            emit,
-            detail="Preparing runtime state",
-            reason_code="prepare_runtime",
-        )
-        await self._prepare_runtime_capabilities()
-
         iterations = 0
         final_response = ""
         actions_taken: list[str] = []
@@ -113,49 +111,20 @@ class ConversationRuntime:
         max_extracted_iterations = 3
         consecutive_errors = 0
 
-        complexity = estimate_complexity(task)
-        max_tokens, _ = get_token_budget(complexity)
-        effective_max_tokens = min(self.agent.config.max_tokens, max(max_tokens, 512))
-
-        rollback_plan = RollbackPlan() if self.agent.config.reasoning.rollback else None
-        self.executor = ToolExecutor(
-            self.agent.registry,
-            self.tracer,
-            self.agent.permission_policy,
-            hooks=build_default_tool_hooks(
-                action_tracker=self.agent.safeguards.action_tracker,
-                validator=self.agent.safeguards.validator,
-                registry=self.agent.registry,
-                rollback_plan=rollback_plan,
-            ),
-        )
-        summary = TurnSummary(final_response="")
-        summary.session_id = self.agent.session.session_id
-        dod = self.dod_store.create_or_resume(
-            original_task or task,
-            retry_budget=self.agent.config.verification_retry_budget,
-        )
-        summary.definition_of_done = dod
-        self.agent.session.update_runtime_state(
-            active_dod_path=dod.storage_path,
-            current_task=original_task or task,
-            workflow_mode=self.agent.workflow_mode,
-            permission_mode=self.agent.active_permission_mode,
-            permission_prompting_enabled=self.agent.permission_policy.prompting_enabled,
-            permission_rule_counts=self.agent.active_permission_rule_counts,
-            permission_rules_source=str(self.agent.permission_config_status.source_path),
-        )
-        await self.finalizer.emit_dod_status(emit, dod)
-
-        task = await self._prepare_workflow(
+        prepared_turn = await self.turn_preparation.prepare(
             task=task,
-            dod=dod,
             emit=emit,
-            summary=summary,
-            on_confirmation=on_confirmation,
-            on_user_question=on_user_question,
             requested_mode=requested_mode,
+            original_task=original_task,
+            on_user_question=on_user_question,
         )
+        self.executor = prepared_turn.executor
+        summary = prepared_turn.summary
+        dod = prepared_turn.definition_of_done
+        task = prepared_turn.task
+        effective_task = prepared_turn.effective_task
+        effective_max_tokens = prepared_turn.effective_max_tokens
+        rollback_plan = prepared_turn.rollback_plan
 
         while iterations < self.agent.config.max_iterations:
             iterations += 1
@@ -413,7 +382,6 @@ class ConversationRuntime:
                 )
 
             self.agent.safeguards.record_response(content)
-            effective_task = original_task or task
             if (
                 cfg.completion_check
                 and not dod.mutating_actions
@@ -492,96 +460,6 @@ class ConversationRuntime:
         self.phase_tracker.clear()
         return final_summary
 
-    async def _prepare_workflow(
-        self,
-        *,
-        task: str,
-        dod: DefinitionOfDone,
-        emit: EventSink,
-        summary: TurnSummary,
-        on_confirmation: ConfirmationHandler,
-        on_user_question: UserQuestionHandler,
-        requested_mode: str | None,
-    ) -> str:
-        requested = WorkflowMode.from_str(requested_mode)
-        decision = self.workflow_policy.route_from_signals(
-            self.workflow_signals.extract_route_signals(
-                task,
-                requested_mode=requested.value if requested is not None else None,
-                has_brief=self._artifact_exists(dod.clarify_brief),
-                has_plan=self._artifact_exists(dod.implementation_plan)
-                and self._artifact_exists(dod.verification_plan),
-                timeline=self.agent.session.workflow_timeline,
-            )
-        )
-        await self._set_workflow_mode(
-            decision,
-            dod=dod,
-            emit=emit,
-            summary=summary,
-        )
-
-        clarify_review = ClarifyReview(
-            should_continue=False,
-            reason_code="clarify_not_needed",
-            reason_summary="clarify was not needed for this route",
-        )
-
-        if decision.mode == WorkflowMode.CLARIFY:
-            clarify_review = await self.workflow_lanes.run_clarify_mode(
-                task=task,
-                dod=dod,
-                emit=emit,
-                summary=summary,
-                on_user_question=on_user_question,
-                append_timeline=self._append_workflow_timeline_from_decision,
-            )
-            decision = self.workflow_policy.route_from_signals(
-                self.workflow_signals.extract_route_signals(
-                    task,
-                    has_brief=self._artifact_exists(dod.clarify_brief),
-                    has_plan=self._artifact_exists(dod.implementation_plan)
-                    and self._artifact_exists(dod.verification_plan),
-                    allow_clarify=False,
-                    unresolved_questions=clarify_review.unresolved_questions,
-                    timeline=self.agent.session.workflow_timeline,
-                )
-            )
-            await self._set_workflow_mode(
-                decision.with_context(
-                    reason_code=f"post_clarify_{decision.reason_code}",
-                    reason_summary=f"clarify handoff: {decision.reason_summary}",
-                    decision_kind=WorkflowDecisionKind.HANDOFF,
-                    unresolved_questions=clarify_review.unresolved_questions,
-                ),
-                dod=dod,
-                emit=emit,
-                summary=summary,
-            )
-
-        if decision.mode == WorkflowMode.PLAN:
-            await self.workflow_lanes.run_plan_mode(
-                task=task,
-                dod=dod,
-                emit=emit,
-                refresh_reasons=clarify_review.unresolved_questions or None,
-                executor=self.executor,
-            )
-            await self._set_workflow_mode(
-                ModeDecision.transition(
-                    WorkflowMode.EXECUTE,
-                    reason_code="plan_artifacts_created",
-                    reason_summary="plan artifacts created; switching to execute",
-                    decision_kind=WorkflowDecisionKind.HANDOFF,
-                ),
-                dod=dod,
-                emit=emit,
-                summary=summary,
-            )
-
-        self._maybe_append_execute_bridge(dod)
-        return task
-
     async def _set_workflow_mode(
         self,
         decision: ModeDecision,
@@ -640,10 +518,6 @@ class ConversationRuntime:
             )
         )
 
-    @staticmethod
-    def _artifact_exists(path_str: str | None) -> bool:
-        return bool(path_str and Path(path_str).exists())
-
     def _append_workflow_timeline_from_decision(
         self,
         decision: ModeDecision,
@@ -683,23 +557,6 @@ class ConversationRuntime:
                         "Keep TodoWrite current when the work spans multiple steps."
                     ),
                 )
-            )
-
-    async def _prepare_runtime_capabilities(self) -> None:
-        describe_model = getattr(self.agent.backend, "describe_model", None)
-        if callable(describe_model):
-            await describe_model()
-
-        previous_profile = self.agent.capability_profile
-        self.agent.refresh_capability_profile()
-        if self.agent.capability_profile != previous_profile:
-            self.tracer.record(
-                "runtime.capabilities_refreshed",
-                model_name=self.agent.capability_profile.model_name,
-                supports_native_tools=self.agent.capability_profile.supports_native_tools,
-                preferred_tool_call_format=(
-                    self.agent.capability_profile.preferred_tool_call_format
-                ),
             )
 
     @staticmethod
