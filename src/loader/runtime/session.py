@@ -18,9 +18,10 @@ from .compaction import (
     compact_session_messages,
     estimate_message_tokens,
 )
+from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 
-SESSION_VERSION = 5
+SESSION_VERSION = 6
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -114,6 +115,16 @@ def normalize_workflow_timeline(value: Any) -> list[WorkflowTimelineEntry]:
     return entries
 
 
+def normalize_workflow_ledger(value: Any) -> WorkflowLedger:
+    """Coerce persisted workflow-ledger state."""
+
+    if isinstance(value, WorkflowLedger):
+        return value.copy()
+    if isinstance(value, dict):
+        return WorkflowLedger.from_dict(value)
+    return WorkflowLedger()
+
+
 @dataclass(slots=True)
 class SessionCompaction:
     """Metadata describing the latest transcript compaction."""
@@ -175,6 +186,7 @@ class SessionSnapshot:
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
     workflow_timeline: list[WorkflowTimelineEntry] = field(default_factory=list)
+    workflow_ledger: WorkflowLedger = field(default_factory=WorkflowLedger)
     compaction: SessionCompaction | None = None
     version: int = SESSION_VERSION
 
@@ -206,6 +218,7 @@ class SessionSnapshot:
             "last_turn_transition_kind": self.last_turn_transition_kind,
             "last_turn_transition_reason_code": self.last_turn_transition_reason_code,
             "workflow_timeline": [entry.to_dict() for entry in self.workflow_timeline],
+            "workflow_ledger": self.workflow_ledger.to_dict(),
             "compaction": self.compaction.to_dict() if self.compaction else None,
         }
 
@@ -265,6 +278,7 @@ class SessionSnapshot:
             workflow_timeline=normalize_workflow_timeline(
                 data.get("workflow_timeline")
             ),
+            workflow_ledger=normalize_workflow_ledger(data.get("workflow_ledger")),
             compaction=(
                 SessionCompaction.from_dict(data["compaction"])
                 if data.get("compaction")
@@ -407,6 +421,7 @@ class ConversationSession:
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
     workflow_timeline: list[WorkflowTimelineEntry] = field(default_factory=list)
+    workflow_ledger: WorkflowLedger = field(default_factory=WorkflowLedger)
     compaction: SessionCompaction | None = None
     rotate_after_bytes: int = DEFAULT_ROTATE_AFTER_BYTES
     max_rotated_files: int = MAX_ROTATED_FILES
@@ -467,6 +482,7 @@ class ConversationSession:
         self.last_turn_transition_kind = None
         self.last_turn_transition_reason_code = None
         self.workflow_timeline = []
+        self.workflow_ledger = WorkflowLedger()
         self.compaction = None
         self.usage_totals = {}
         self.touch()
@@ -575,6 +591,13 @@ class ConversationSession:
         self.touch()
         self.persist()
 
+    def update_workflow_ledger(self, ledger: WorkflowLedger) -> None:
+        """Replace persisted workflow-ledger state."""
+
+        self.workflow_ledger = normalize_workflow_ledger(ledger)
+        self.touch()
+        self.persist()
+
     def maybe_compact(self) -> SessionCompactionResult | None:
         """Compact the transcript when the current request grows too large."""
 
@@ -655,6 +678,7 @@ class ConversationSession:
             last_turn_transition_kind=self.last_turn_transition_kind,
             last_turn_transition_reason_code=self.last_turn_transition_reason_code,
             workflow_timeline=list(self.workflow_timeline),
+            workflow_ledger=self.workflow_ledger.copy(),
             compaction=self.compaction,
         )
         return self.store.save(snapshot)
@@ -715,6 +739,7 @@ class ConversationSession:
             snapshot.last_turn_transition_reason_code
         )
         instance.workflow_timeline = list(snapshot.workflow_timeline)
+        instance.workflow_ledger = snapshot.workflow_ledger.copy()
         instance.compaction = snapshot.compaction
         instance.rotate_after_bytes = rotate_after_bytes
         instance.max_rotated_files = max_rotated_files

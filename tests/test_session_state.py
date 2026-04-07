@@ -9,6 +9,7 @@ import pytest
 from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, Message, Role, ToolCall
 from loader.runtime.session import ConversationSession
+from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
 from loader.runtime.workflow_policy import WorkflowTimelineEntry
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -216,6 +217,58 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     assert reloaded.workflow_timeline[0].unresolved_questions == [
         "Scope is still broad."
     ]
+
+
+def test_session_persists_workflow_ledger_state(temp_dir: Path) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+    )
+
+    session.update_workflow_ledger(
+        WorkflowLedger(
+            assumptions=[
+                WorkflowLedgerItem(
+                    text="notes.txt stays out of scope unless clarified otherwise.",
+                    status="contradicted",
+                    introduced_phase="clarify",
+                    updated_phase="recovery",
+                    evidence=["Clarify scope assumed `notes.txt` stayed out of scope."],
+                )
+            ],
+            acceptance_anchors=[
+                WorkflowLedgerItem(
+                    text="notes.txt exists in the workspace root.",
+                    status="changed",
+                    introduced_phase="clarify",
+                    updated_phase="recovery",
+                )
+            ],
+            decision_boundaries=[
+                WorkflowLedgerItem(
+                    text="Escalate before broad UX changes.",
+                    status="tracked",
+                    introduced_phase="clarify",
+                )
+            ],
+        )
+    )
+
+    reloaded = ConversationSession.load(
+        project_root=temp_dir,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        session_id=session.session_id,
+    )
+
+    assert reloaded is not None
+    assert reloaded.workflow_ledger.assumptions[0].status == "contradicted"
+    assert reloaded.workflow_ledger.assumptions[0].updated_phase == "recovery"
+    assert reloaded.workflow_ledger.acceptance_anchors[0].status == "changed"
+    assert reloaded.workflow_ledger.decision_boundaries[0].text == (
+        "Escalate before broad UX changes."
+    )
 
 
 @pytest.mark.asyncio
