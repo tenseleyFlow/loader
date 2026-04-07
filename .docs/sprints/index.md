@@ -27,6 +27,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 07](sprint07.md) — Rule-Based Permissions and Runtime Decomposition
 
+## Phase 6: Prompt Contract and Operator Ergonomics
+
+- [Sprint 08](sprint08.md) — Prompt Builder, Runtime Phases, and Permission Operator UX
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
