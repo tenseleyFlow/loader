@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
-from ..llm.base import Message, Role
 from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
 from .completion_policy import CompletionPolicy
-from .dod import DefinitionOfDone, DefinitionOfDoneStore
+from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer
@@ -23,17 +21,13 @@ from .turn_iteration import TurnIterationAction, TurnIterationController
 from .turn_preamble import TurnPreludeController
 from .turn_preparation import TurnPreparationController
 from .workflow import (
-    ModeDecision,
     WorkflowArtifactStore,
-    WorkflowDecisionKind,
     WorkflowPolicy,
     WorkflowSignalExtractor,
-    WorkflowTimelineEntry,
-    WorkflowTimelineEntryKind,
-    build_execute_bridge,
 )
 from .workflow_lanes import WorkflowLaneRunner
 from .workflow_recovery import WorkflowRecoveryController
+from .workflow_state import WorkflowStateController
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
@@ -52,6 +46,10 @@ class ConversationRuntime:
         self.workflow_policy = WorkflowPolicy(self.workflow_signals)
         self.artifact_invalidation = ArtifactInvalidationAssessor()
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
+        self.workflow_state = WorkflowStateController(
+            agent,
+            dod_store=self.dod_store,
+        )
         self.workflow_lanes = WorkflowLaneRunner(
             agent,
             artifact_store=self.artifact_store,
@@ -64,9 +62,9 @@ class ConversationRuntime:
             workflow_policy=self.workflow_policy,
             workflow_signals=self.workflow_signals,
             workflow_lanes=self.workflow_lanes,
-            set_workflow_mode=self._set_workflow_mode,
-            append_timeline=self._append_workflow_timeline_from_decision,
-            append_execute_bridge=self._maybe_append_execute_bridge,
+            set_workflow_mode=self.workflow_state.set_workflow_mode,
+            append_timeline=self.workflow_state.append_timeline_from_decision,
+            append_execute_bridge=self.workflow_state.maybe_append_execute_bridge,
         )
         self.repairer = ResponseRepairer(agent)
         self.completion_policy = CompletionPolicy(agent)
@@ -75,7 +73,7 @@ class ConversationRuntime:
             agent,
             self.tracer,
             self.dod_store,
-            self._set_workflow_mode,
+            self.workflow_state.set_workflow_mode,
         )
         self.turn_completion = TurnCompletionController(
             agent,
@@ -102,9 +100,9 @@ class ConversationRuntime:
             workflow_signals=self.workflow_signals,
             workflow_lanes=self.workflow_lanes,
             finalizer=self.finalizer,
-            set_workflow_mode=self._set_workflow_mode,
-            append_timeline=self._append_workflow_timeline_from_decision,
-            append_execute_bridge=self._maybe_append_execute_bridge,
+            set_workflow_mode=self.workflow_state.set_workflow_mode,
+            append_timeline=self.workflow_state.append_timeline_from_decision,
+            append_execute_bridge=self.workflow_state.maybe_append_execute_bridge,
         )
         self.turn_preamble = TurnPreludeController(
             agent,
@@ -229,105 +227,6 @@ class ConversationRuntime:
         final_summary = self.finalizer.finalize_summary(summary)
         self.phase_tracker.clear()
         return final_summary
-
-    async def _set_workflow_mode(
-        self,
-        decision: ModeDecision,
-        *,
-        dod: DefinitionOfDone,
-        emit: EventSink,
-        summary: TurnSummary,
-    ) -> None:
-        mode = decision.mode
-        self.agent.set_workflow_mode(mode.value)
-        self.agent.session.update_runtime_state(
-            workflow_mode=mode.value,
-            workflow_reason_code=decision.reason_code,
-            workflow_reason_summary=decision.reason_summary,
-            workflow_decision_kind=decision.decision_kind.value,
-            workflow_ambiguity_score=decision.ambiguity_score,
-            workflow_complexity_score=decision.complexity_score,
-            workflow_scheduled_next_mode=(
-                decision.scheduled_next_mode.value
-                if decision.scheduled_next_mode is not None
-                else None
-            ),
-        )
-        dod.current_mode = mode.value
-        if not dod.mode_history or dod.mode_history[-1] != mode.value:
-            dod.mode_history.append(mode.value)
-        summary.workflow_mode = mode.value
-        summary.workflow_reason_code = decision.reason_code
-        summary.workflow_reason_summary = decision.reason_summary
-        summary.workflow_decision_kind = decision.decision_kind.value
-        self._append_workflow_timeline_from_decision(
-            decision,
-            kind={
-                WorkflowDecisionKind.HANDOFF: WorkflowTimelineEntryKind.HANDOFF,
-                WorkflowDecisionKind.REENTRY: WorkflowTimelineEntryKind.REENTRY,
-            }.get(decision.decision_kind, WorkflowTimelineEntryKind.ROUTE),
-            summary=summary,
-            artifact_paths=[
-                path
-                for path in (
-                    dod.clarify_brief,
-                    dod.implementation_plan,
-                    dod.verification_plan,
-                )
-                if path
-            ],
-        )
-        summary.definition_of_done = dod
-        self.dod_store.save(dod)
-        await emit(
-            AgentEvent(
-                type="workflow_mode",
-                content=f"Workflow: {mode.value} ({decision.reason_summary})",
-                workflow_mode=mode.value,
-                definition_of_done=dod,
-            )
-        )
-
-    def _append_workflow_timeline_from_decision(
-        self,
-        decision: ModeDecision,
-        *,
-        kind: WorkflowTimelineEntryKind,
-        summary: TurnSummary | None = None,
-        artifact_paths: list[str] | None = None,
-    ) -> None:
-        entry = WorkflowTimelineEntry.from_decision(
-            decision,
-            kind=kind,
-            prompt_format=self.agent.prompt_format,
-            prompt_sections=self.agent.prompt_sections,
-            artifact_paths=artifact_paths,
-        )
-        self.agent.session.append_workflow_timeline_entry(entry)
-        if summary is not None:
-            summary.workflow_timeline = list(self.agent.session.workflow_timeline)
-
-    def _maybe_append_execute_bridge(self, dod: DefinitionOfDone) -> None:
-        bridge = build_execute_bridge(
-            Path(dod.clarify_brief) if dod.clarify_brief else None,
-            Path(dod.implementation_plan) if dod.implementation_plan else None,
-            Path(dod.verification_plan) if dod.verification_plan else None,
-        )
-        if bridge and not any(
-            message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
-            for message in self.agent.messages[-4:]
-        ):
-            self.agent.session.append(
-                Message(
-                    role=Role.USER,
-                    content=(
-                        "[WORKFLOW BRIDGE]\n"
-                        f"{bridge}\n\n"
-                        "Honor these artifacts while you execute the task. "
-                        "Keep TodoWrite current when the work spans multiple steps."
-                    ),
-                )
-            )
 
     @staticmethod
     def _emit_confirmation(emit: EventSink):
