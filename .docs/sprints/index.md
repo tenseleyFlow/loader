@@ -35,6 +35,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 09](sprint09.md) — Turn State Machine, Workflow Contracts, and Prompt Preview
 
+## Phase 8: Workflow Policy and Traceability
+
+- [Sprint 10](sprint10.md) — Route Pressure, Clarify Depth, and Workflow Timeline
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
