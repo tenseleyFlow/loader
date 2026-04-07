@@ -1,0 +1,99 @@
+# Sprint 11: Recovery Deletion and Tool Parsing Unification
+
+## Prerequisites
+
+Sprint 10
+
+## Goals
+
+Delete or tightly gate the recovery layers that still make Loader puppet the assistant in-stream.
+
+This is the central contract sprint. After Sprint 10 creates a clean runtime boundary, this sprint should remove the behaviors the audit called out instead of simply naming them more cleanly.
+
+## Deliverables
+
+### 1. Unify raw-text tool parsing
+
+Resolve the duplicated parsing split between `agent/parsing.py` and `agent/loop.py`.
+
+Implementation targets:
+
+- delete `_extract_raw_json_tool_calls(...)` from `agent/loop.py`, or reduce it to a thin compatibility shim over a shared parser
+- make raw-text parsing aware of the real registry surface instead of a hardcoded tool list
+- keep native-tool and raw-text paths converging on the same normalized `ToolCall` contract before execution
+- gate raw-text fallback by capability profile rather than assuming every model should get it
+
+The outcome should be one parsing strategy, not two diverging regex stacks.
+
+### 2. Remove fake assistant continuation behavior
+
+Delete the assistant-puppeteering paths unless Sprint 09 interactive evidence proves one must survive behind an explicit gate.
+
+Primary deletion targets:
+
+- the `[` prefill trick in `runtime/conversation.py`
+- the five hardcoded empty-output continuation prompts
+- fake-tool narration scolding that fabricates assistant/user turns to steer the model back on track
+- the unconditional "Would you like me to make any changes or additions?" suffix
+
+Replace these with a simpler contract:
+
+- bounded retries where truly necessary
+- honest failure/escalation when the assistant does not act
+- DoD/verification evidence for mutating tasks
+- user-visible stop conditions instead of hidden assistant puppeteering
+
+### 3. Re-scope critique, loop, and completion nudges
+
+For each remaining heuristic, decide whether it should be:
+
+- deleted
+- moved to a session-level safeguard
+- gated behind a capability/profile condition
+
+This includes:
+
+- self-critique rerouting
+- text-loop bailout
+- non-mutating completion nudges
+- deflection handling
+
+No heuristic survives this sprint without a written reason tied back to Sprint 09 evidence.
+
+### 4. Shrink the legacy loop by subtraction
+
+This sprint should materially reduce legacy surface area instead of moving it again.
+
+Set a hard subtraction target:
+
+- `src/loader/agent/loop.py` must shrink by at least 300 lines from the Sprint 09 baseline, or the sprint is not complete
+
+If a target is missed, document exactly which remaining behaviors blocked deletion and move them into the next sprint explicitly instead of silently carrying them forward.
+
+## Commit slicing
+
+- one commit for raw-parser unification or shim removal
+- one commit per deleted or newly gated recovery behavior
+- one commit for any capability-profile gating additions
+- one commit for the final legacy-loop cleanup after the behavior changes are already green
+
+## Testing strategy
+
+- `uv run pytest -q`
+- targeted parser tests for raw-text recovery across legacy and newer tools
+- deterministic runtime coverage for empty-response handling, fake narration, and completion behavior after deletion
+- parity-harness confirmation that the retained contract still works end-to-end
+- interactive reruns of the Sprint 09 matrix for every capability profile whose behavior changed
+
+## Definition of done
+
+- Loader no longer fabricates assistant turns to keep the model moving in the common case
+- raw-text tool recovery uses one normalized parser path and no stale tool allowlist
+- every surviving recovery heuristic has an explicit owner, gate, and reason
+- `agent/loop.py` shrinks materially by subtraction, not merely by forwarding calls elsewhere
+
+## Explicitly out of scope
+
+- clarify/plan workflow redesign
+- broad safety-hook refactors unrelated to deleted recovery behavior
+- multi-agent or planner/critic expansion
