@@ -245,6 +245,11 @@ class WorkflowTimelineSnapshot:
     is_current: bool
     workflow_mode: str
     current_task: str | None
+    total_entries: int = 0
+    selected_mode: str | None = None
+    selected_kind: str | None = None
+    entry_limit: int | None = None
+    highlights: list[str] = field(default_factory=list)
     entries: list[WorkflowTimelineEntry] = field(default_factory=list)
 
 
@@ -628,6 +633,9 @@ def collect_workflow_timeline(
     session_id: str | None = None,
     *,
     project_root: Path | str | None = None,
+    mode: str | None = None,
+    kind: str | None = None,
+    limit: int | None = None,
 ) -> WorkflowTimelineSnapshot:
     """Load persisted workflow history for the latest or named session."""
 
@@ -642,8 +650,22 @@ def collect_workflow_timeline(
             is_current=False,
             workflow_mode="execute",
             current_task=None,
+            total_entries=0,
+            selected_mode=mode,
+            selected_kind=kind,
+            entry_limit=limit,
+            highlights=[],
             entries=[],
         )
+
+    filtered_entries = list(snapshot.workflow_timeline)
+    if mode:
+        filtered_entries = [entry for entry in filtered_entries if entry.mode == mode]
+    if kind:
+        filtered_entries = [entry for entry in filtered_entries if entry.kind == kind]
+    highlights = _workflow_timeline_highlights(filtered_entries)
+    if limit is not None:
+        filtered_entries = filtered_entries[-limit:]
 
     return WorkflowTimelineSnapshot(
         project_root=resolved_root,
@@ -651,7 +673,12 @@ def collect_workflow_timeline(
         is_current=snapshot.session_id == current_session_id,
         workflow_mode=snapshot.workflow_mode,
         current_task=snapshot.current_task,
-        entries=list(snapshot.workflow_timeline),
+        total_entries=len(snapshot.workflow_timeline),
+        selected_mode=mode,
+        selected_kind=kind,
+        entry_limit=limit,
+        highlights=highlights,
+        entries=filtered_entries,
     )
 
 
@@ -723,6 +750,71 @@ def _coerce_permission_mode(value: PermissionMode | str) -> PermissionMode:
     if isinstance(value, PermissionMode):
         return value
     return PermissionMode.from_str(value)
+
+
+def _workflow_timeline_highlights(entries: list[WorkflowTimelineEntry]) -> list[str]:
+    highlights: list[str] = []
+
+    clarify_entry = _latest_matching_entry(
+        entries,
+        lambda entry: entry.kind
+        in {
+            "clarify_continue",
+            "clarify_exit",
+        },
+    )
+    if clarify_entry is not None:
+        if clarify_entry.kind == "clarify_continue":
+            highlights.append(
+                "Asked again: " + _workflow_entry_explanation(clarify_entry)
+            )
+        else:
+            highlights.append(
+                "Clarify stopped: " + _workflow_entry_explanation(clarify_entry)
+            )
+
+    recovery_entry = _latest_matching_entry(
+        entries,
+        lambda entry: entry.kind in {"reentry", "plan_refresh"}
+        or "replan" in entry.reason_code
+        or "refresh" in entry.reason_code,
+    )
+    if recovery_entry is not None:
+        highlights.append(
+            "Recovered workflow: " + _workflow_entry_explanation(recovery_entry)
+        )
+
+    verify_entry = _latest_matching_entry(
+        entries,
+        lambda entry: entry.kind == "verify_skip" or "verify_skip" in entry.reason_code,
+    )
+    if verify_entry is not None:
+        highlights.append(
+            "Skipped verify: " + _workflow_entry_explanation(verify_entry)
+        )
+
+    return list(dict.fromkeys(highlights))
+
+
+def _latest_matching_entry(
+    entries: list[WorkflowTimelineEntry],
+    predicate,
+) -> WorkflowTimelineEntry | None:
+    for entry in reversed(entries):
+        if predicate(entry):
+            return entry
+    return None
+
+
+def _workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
+    parts = [entry.summary]
+    if entry.reason_code:
+        parts.append(f"code={entry.reason_code}")
+    if entry.unresolved_questions:
+        parts.append(entry.unresolved_questions[0])
+    if entry.signal_summary:
+        parts.append("; ".join(entry.signal_summary[:2]))
+    return " | ".join(part for part in parts if part)
 
 
 async def _backend_health_check(

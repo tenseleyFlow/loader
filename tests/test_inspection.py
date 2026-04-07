@@ -151,6 +151,59 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
     return snapshot.session_id, str(dod_path)
 
 
+def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
+    snapshot = SessionSnapshot(
+        session_id="20260406T150000Z-feedface",
+        created_at="2026-04-06T15:00:00Z",
+        updated_at="2026-04-06T15:04:00Z",
+        messages=[
+            Message(role=Role.USER, content="Tighten Loader workflow behavior"),
+            Message(role=Role.ASSISTANT, content="I refreshed the workflow contract."),
+        ],
+        current_task="Tighten Loader workflow behavior",
+        workflow_mode="execute",
+        permission_mode="prompt",
+        permission_prompting_enabled=True,
+        workflow_reason_code="full_replan_completed",
+        workflow_reason_summary="clarify and plan artifacts refreshed; returning to execute",
+        workflow_decision_kind="handoff",
+        workflow_timeline=[
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T15:01:00Z",
+                kind="clarify_continue",
+                mode="clarify",
+                reason_code="clarify_follow_up_needed",
+                summary="clarify: concrete touchpoints are still unresolved",
+                decision_kind="forced",
+                unresolved_questions=["Concrete files or subsystems are still not pinned down."],
+                signal_summary=["ambiguity=0.82", "open_questions=1"],
+            ),
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T15:02:00Z",
+                kind="reentry",
+                mode="plan",
+                reason_code="full_replan_required",
+                summary="plan: clarify and plan artifacts drifted; rebuilding the plan",
+                decision_kind="reentry",
+                scheduled_next_mode="execute",
+                unresolved_questions=["Touched files outside the current plan: notes.txt"],
+                signal_summary=["recent_reentry=1", "stale_plan=true"],
+            ),
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T15:03:00Z",
+                kind="verify_skip",
+                mode="verify",
+                reason_code="verify_skip_no_commands",
+                summary="verify: no verification commands were available for this turn",
+                decision_kind="forced",
+                signal_summary=["verify_pressure=low"],
+            ),
+        ],
+    )
+    SessionStore(temp_dir).save(snapshot)
+    return snapshot.session_id
+
+
 @pytest.mark.asyncio
 async def test_collect_doctor_report_passes_for_healthy_workspace(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
@@ -321,8 +374,32 @@ def test_collect_workflow_timeline_reflects_persisted_history(temp_dir: Path) ->
     assert snapshot.is_current is True
     assert snapshot.workflow_mode == "execute"
     assert snapshot.current_task == "Fix the failing tests"
+    assert snapshot.total_entries == 2
     assert [entry.kind for entry in snapshot.entries] == ["handoff", "reentry"]
     assert snapshot.entries[-1].reason_code == "verification_failed_reentry"
+
+
+def test_collect_workflow_timeline_supports_filters_and_highlights(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_rich_workflow(temp_dir)
+
+    snapshot = collect_workflow_timeline(
+        project_root=temp_dir,
+        mode="clarify",
+        limit=1,
+    )
+
+    assert snapshot.session_id == session_id
+    assert snapshot.total_entries == 3
+    assert snapshot.selected_mode == "clarify"
+    assert snapshot.selected_kind is None
+    assert snapshot.entry_limit == 1
+    assert len(snapshot.entries) == 1
+    assert snapshot.entries[0].kind == "clarify_continue"
+    assert any(item.startswith("Asked again:") for item in snapshot.highlights)
 
 
 def test_status_and_session_commands_render_persisted_state(
@@ -381,6 +458,31 @@ def test_status_and_session_commands_render_persisted_state(
     assert session_id in workflow_result.output
     assert "handoff" in workflow_result.output
     assert "next=verify" in workflow_result.output
+
+
+def test_workflow_show_command_supports_filters_and_highlights(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_rich_workflow(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(
+        cli_main_module.workflow_cli,
+        ["show", "--kind", "reentry", "--limit", "1", session_id],
+    )
+
+    assert result.exit_code == 0
+    assert "Loader Workflow" in result.output
+    assert "1 shown / 3 total" in result.output
+    assert "kind=reentry, limit=1" in result.output
+    assert "Workflow Answers" in result.output
+    assert "Recovered workflow:" in result.output
+    assert "full_replan_required" in result.output
 
 
 def test_collect_prompt_preview_uses_persisted_runtime_state(temp_dir: Path) -> None:

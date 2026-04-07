@@ -954,11 +954,51 @@ def prompt_show_cli(
 
 
 @workflow_cli.command("show")
+@click.option(
+    "--mode",
+    type=click.Choice(["clarify", "plan", "execute", "verify"], case_sensitive=False),
+    default=None,
+    help="Filter timeline entries to one workflow mode",
+)
+@click.option(
+    "--kind",
+    type=click.Choice(
+        [
+            "route",
+            "handoff",
+            "reentry",
+            "clarify_continue",
+            "clarify_exit",
+            "plan_refresh",
+            "verify_skip",
+        ],
+        case_sensitive=False,
+    ),
+    default=None,
+    help="Filter timeline entries to one event kind",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=8,
+    show_default=True,
+    help="Show only the most recent matching entries",
+)
 @click.argument("session_id", required=False)
-def workflow_show_cli(session_id: str | None) -> None:
+def workflow_show_cli(
+    mode: str | None,
+    kind: str | None,
+    limit: int,
+    session_id: str | None,
+) -> None:
     """Show the persisted workflow timeline for the latest or named session."""
 
-    _workflow_show_main(session_id=session_id)
+    _workflow_show_main(
+        session_id=session_id,
+        mode=mode,
+        kind=kind,
+        limit=limit,
+    )
 
 
 def _run_special_command(argv: list[str]) -> None:
@@ -1049,7 +1089,7 @@ def _workflow_help_text() -> str:
             "Usage: loader workflow [COMMAND]",
             "",
             "Commands:",
-            "  show [id]  Show the persisted workflow timeline for the latest or named session",
+            "  show [id]  Show the persisted workflow timeline with optional filters",
         ]
     )
 
@@ -1472,10 +1512,19 @@ def _session_show_main(session_id: str) -> None:
         )
 
 
-def _workflow_show_main(*, session_id: str | None) -> None:
+def _workflow_show_main(
+    *,
+    session_id: str | None,
+    mode: str | None,
+    kind: str | None,
+    limit: int | None,
+) -> None:
     try:
         snapshot: WorkflowTimelineSnapshot = collect_workflow_timeline(
-            session_id=session_id
+            session_id=session_id,
+            mode=mode,
+            kind=kind,
+            limit=limit,
         )
     except FileNotFoundError:
         console.print(f"[red]Session not found:[/red] {session_id}")
@@ -1493,7 +1542,15 @@ def _workflow_show_main(*, session_id: str | None) -> None:
     table.add_row("Current", "yes" if snapshot.is_current else "no")
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Task", snapshot.current_task or "none")
-    table.add_row("Entries", str(len(snapshot.entries)))
+    table.add_row("Entries", f"{len(snapshot.entries)} shown / {snapshot.total_entries} total")
+    table.add_row(
+        "Filters",
+        _format_workflow_filters(
+            mode=snapshot.selected_mode,
+            kind=snapshot.selected_kind,
+            limit=snapshot.entry_limit,
+        ),
+    )
     console.print(
         Panel.fit(
             table,
@@ -1501,6 +1558,12 @@ def _workflow_show_main(*, session_id: str | None) -> None:
             border_style="blue",
         )
     )
+    if snapshot.highlights:
+        console.print()
+        _print_workflow_highlights(
+            snapshot.highlights,
+            title="[bold blue]Workflow Answers[/bold blue]",
+        )
     console.print()
     _print_workflow_timeline_entries(
         snapshot.entries,
@@ -1764,9 +1827,43 @@ def _format_workflow_timeline_context(entry) -> str:
         parts.append(f"sections={len(entry.prompt_sections)}")
     if entry.unresolved_questions:
         parts.append(f"open={len(entry.unresolved_questions)}")
+        parts.append(f"next-question={entry.unresolved_questions[0]}")
+    if entry.signal_summary:
+        parts.append(f"signals={'; '.join(entry.signal_summary[:2])}")
     if entry.artifact_paths:
         parts.append(f"artifacts={len(entry.artifact_paths)}")
     return ", ".join(parts) or "-"
+
+
+def _print_workflow_highlights(
+    highlights: list[str],
+    *,
+    title: str,
+) -> None:
+    lines = [f"- {item}" for item in highlights]
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=title,
+            border_style="blue",
+        )
+    )
+
+
+def _format_workflow_filters(
+    *,
+    mode: str | None,
+    kind: str | None,
+    limit: int | None,
+) -> str:
+    parts: list[str] = []
+    if mode:
+        parts.append(f"mode={mode}")
+    if kind:
+        parts.append(f"kind={kind}")
+    if limit is not None:
+        parts.append(f"limit={limit}")
+    return ", ".join(parts) or "none"
 
 
 def _format_workflow_reason(*, summary: str | None, code: str | None) -> str:
