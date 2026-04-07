@@ -276,24 +276,6 @@ class ConversationRuntime:
 
                 continue
 
-            deflection_message = self.repairer.deflection_message(
-                content=content,
-                actions_taken=actions_taken,
-                iterations=iterations,
-                max_iterations=self.context.config.max_iterations,
-            )
-            if deflection_message is not None:
-                await self.phase_tracker.enter(
-                    TurnPhase.REPAIR,
-                    emit,
-                    detail="Repairing execution deflection",
-                )
-                self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
-                self.context.session.append(
-                    Message(role=Role.USER, content=deflection_message)
-                )
-                continue
-
             cfg = self.context.config.reasoning
             if cfg.self_critique and len(content) > 100:
                 await self.phase_tracker.enter(

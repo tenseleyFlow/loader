@@ -155,28 +155,3 @@ class ResponseRepairer:
             clear_stream=clear_stream,
             extracted_iterations=next_extracted_iterations,
         )
-
-    def deflection_message(
-        self,
-        *,
-        content: str,
-        actions_taken: list[str],
-        iterations: int,
-        max_iterations: int,
-    ) -> str | None:
-        """Return a repair message when the assistant deflects instead of acting."""
-
-        if self.context.use_react:
-            return None
-        if actions_taken:
-            return None
-        if iterations >= max_iterations - 2:
-            return None
-
-        deflection_phrases = ["you can", "you should", "you could", "try running"]
-        if any(phrase in content.lower() for phrase in deflection_phrases):
-            return (
-                "Please use your tools to execute the task rather than telling me "
-                "what to do."
-            )
-        return None

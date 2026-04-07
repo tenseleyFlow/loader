@@ -129,27 +129,12 @@ async def test_fake_tool_narration_no_longer_injects_scolding_prompt(
 
 
 @pytest.mark.asyncio
-async def test_deflection_repair_injects_use_your_tools_prompt(
+async def test_deflection_response_no_longer_injects_use_your_tools_prompt(
     temp_dir: Path,
 ) -> None:
-    fixture = temp_dir / "fixture.txt"
-    fixture.write_text("repair baseline\n")
     backend = ScriptedBackend(
         completions=[
-            CompletionResponse(
-                content="You can read the file to inspect its contents."
-            ),
-            CompletionResponse(
-                content="I'll inspect the real tool result now.",
-                tool_calls=[
-                    ToolCall(
-                        id="read-1",
-                        name="read",
-                        arguments={"file_path": str(fixture)},
-                    )
-                ],
-            ),
-            CompletionResponse(content="Recovered after deflection."),
+            CompletionResponse(content="You can read the file to inspect its contents."),
         ]
     )
 
@@ -160,13 +145,9 @@ async def test_deflection_repair_injects_use_your_tools_prompt(
         project_root=temp_dir,
     )
 
-    assert tool_event_names(run) == ["read"]
-    assert "Recovered after deflection." in run.response
-    assert any(
-        message.role == Role.USER
-        and "Please use your tools to execute the task" in message.content
-        for message in backend.invocations[1].messages
-    )
+    assert tool_event_names(run) == []
+    assert run.response == "You can read the file to inspect its contents."
+    assert len(backend.invocations) == 1
 
 
 @pytest.mark.asyncio
