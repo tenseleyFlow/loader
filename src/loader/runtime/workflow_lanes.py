@@ -35,6 +35,7 @@ from .workflow import (
     WorkflowMode,
     WorkflowPolicy,
     WorkflowTimelineEntryKind,
+    enrich_clarify_brief_with_grounding,
     sync_todos_to_definition_of_done,
 )
 
@@ -422,16 +423,17 @@ class WorkflowLaneRunner:
         )
         summary.assistant_messages.append(assistant_message)
         summary.tool_result_messages.append(tool_result_message)
+        brief_grounding = self.clarify_grounding.collect(
+            task=task,
+            rounds=[*rounds, (question, answer)],
+        )
         brief_response = await self._complete_in_mode(
             prompt=self._clarify_brief_prompt(
                 task,
                 question,
                 answer,
                 rounds,
-                self.clarify_grounding.collect(
-                    task=task,
-                    rounds=[*rounds, (question, answer)],
-                ),
+                brief_grounding,
             ),
             tools=None,
             max_tokens=700,
@@ -449,6 +451,7 @@ class WorkflowLaneRunner:
                 answer=answer,
             )
         )
+        brief = enrich_clarify_brief_with_grounding(brief, brief_grounding)
         return brief, question, answer
 
     def _clarify_prompt(
@@ -533,8 +536,11 @@ class WorkflowLaneRunner:
             "## Likely Touchpoints\n"
             "## Acceptance Criteria\n\n"
             f"Task: {task}\n\n"
-            "Observed workspace evidence:\n"
-            f"{grounding.prompt_block()}\n\n"
+            "Grounded brief hints:\n"
+            f"{grounding.brief_prompt_block()}\n\n"
+            "Use the grounded hints to make likely touchpoints, constraints, "
+            "assumptions, and acceptance criteria more specific when they fit "
+            "the clarified scope.\n\n"
             "Clarify history:\n"
             + "\n".join(history_lines)
         )

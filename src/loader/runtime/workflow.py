@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .clarify_grounding import ClarifyGrounding
 from .dod import slugify
 from .workflow_policy import (
     ArtifactFreshness,
@@ -38,6 +39,7 @@ __all__ = [
     "WorkflowTimelineEntry",
     "WorkflowTimelineEntryKind",
     "build_execute_bridge",
+    "enrich_clarify_brief_with_grounding",
     "extract_verification_commands_from_markdown",
     "load_brief",
     "load_planning_artifacts",
@@ -45,6 +47,17 @@ __all__ = [
 ]
 
 VERIFICATION_SEPARATOR = "<<<VERIFICATION>>>"
+_GENERIC_TOUCHPOINTS = {
+    "Determine the concrete files during execution.",
+    "Identify exact files during planning or execution.",
+}
+_GENERIC_CONSTRAINTS = {
+    "Honor the clarified answer and existing repository conventions.",
+    "Preserve the existing codebase conventions and tests.",
+}
+_GENERIC_ASSUMPTIONS = {
+    "Unspecified details stay unchanged unless evidence says otherwise.",
+}
 
 _SECTION_ALIASES = {
     "task statement": "task_statement",
@@ -181,6 +194,50 @@ class ClarifyBrief:
         if self.answer:
             lines.extend(_render_section("Clarify Answer", [self.answer]))
         return "\n".join(lines).rstrip() + "\n"
+
+
+def enrich_clarify_brief_with_grounding(
+    brief: ClarifyBrief,
+    grounding: ClarifyGrounding,
+) -> ClarifyBrief:
+    """Strengthen a clarify brief with grounded workspace hints."""
+
+    hints = grounding.brief_hints()
+    if not hints.has_content():
+        return brief
+
+    brief.likely_touchpoints, touchpoints_added = _merge_grounded_items(
+        brief.likely_touchpoints,
+        hints.likely_touchpoints,
+        generic_markers=_GENERIC_TOUCHPOINTS,
+    )
+    brief.constraints, constraints_added = _merge_grounded_items(
+        brief.constraints,
+        hints.constraints,
+        generic_markers=_GENERIC_CONSTRAINTS,
+    )
+    brief.assumptions, assumptions_added = _merge_grounded_items(
+        brief.assumptions,
+        hints.assumptions,
+        generic_markers=_GENERIC_ASSUMPTIONS,
+    )
+    brief.acceptance_criteria, acceptance_added = _merge_grounded_items(
+        brief.acceptance_criteria,
+        hints.acceptance_criteria,
+        generic_markers=set(),
+    )
+
+    if touchpoints_added:
+        _mark_explicit_section(brief, "likely_touchpoints")
+    if constraints_added:
+        _mark_explicit_section(brief, "constraints")
+    if assumptions_added:
+        _mark_explicit_section(brief, "assumptions")
+    if acceptance_added:
+        _mark_explicit_section(brief, "acceptance_criteria")
+
+    brief.fill_defaults()
+    return brief
 
 
 @dataclass(slots=True)
@@ -496,6 +553,27 @@ def _first_item(items: list[str] | None) -> str | None:
     if not items:
         return None
     return items[0]
+
+
+def _merge_grounded_items(
+    existing: list[str],
+    grounded: list[str],
+    *,
+    generic_markers: set[str],
+) -> tuple[list[str], bool]:
+    current = [item.strip() for item in existing if item.strip()]
+    if not grounded:
+        return current, False
+
+    meaningful = [item for item in current if item not in generic_markers]
+    merged = list(dict.fromkeys([*meaningful, *grounded]))
+    return merged, merged != current
+
+
+def _mark_explicit_section(brief: ClarifyBrief, section: str) -> None:
+    if section in brief.explicit_sections:
+        return
+    brief.explicit_sections = sorted([*brief.explicit_sections, section])
 
 
 def _extract_commands(items: list[str]) -> list[str]:

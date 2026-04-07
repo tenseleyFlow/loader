@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from loader.runtime.clarify_grounding import ClarifyGrounding, ClarifyRepoFact
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.workflow import (
     ClarifyBrief,
@@ -12,6 +13,7 @@ from loader.runtime.workflow import (
     WorkflowArtifactStore,
     WorkflowMode,
     build_execute_bridge,
+    enrich_clarify_brief_with_grounding,
     extract_verification_commands_from_markdown,
     sync_todos_to_definition_of_done,
 )
@@ -64,6 +66,39 @@ def test_clarify_brief_round_trips_and_seeds_acceptance_criteria() -> None:
     assert loaded.task_statement == brief.task_statement
     assert "Add login" in loaded.acceptance_criteria[0]
     assert loaded.non_goals
+
+
+def test_enrich_clarify_brief_with_grounding_replaces_generic_sections() -> None:
+    brief = ClarifyBrief.fallback(
+        task_statement="Tighten Loader runtime clarify behavior.",
+        question="What part should change most?",
+        answer="Keep the work narrow.",
+    )
+    grounding = ClarifyGrounding(
+        existing_references=["src/loader/runtime/workflow_lanes.py"],
+        candidate_touchpoints=["src/loader/runtime/clarify_strategy.py"],
+        repo_facts=[
+            ClarifyRepoFact(
+                path="src/loader/runtime/workflow_lanes.py",
+                summary="class WorkflowLaneRunner:",
+            ),
+            ClarifyRepoFact(
+                path="src/loader/runtime/clarify_strategy.py",
+                summary="Intent-aware clarify strategy for runtime follow-up.",
+            ),
+        ],
+    )
+
+    enriched = enrich_clarify_brief_with_grounding(brief, grounding)
+
+    assert enriched.likely_touchpoints[:2] == [
+        "src/loader/runtime/workflow_lanes.py",
+        "src/loader/runtime/clarify_strategy.py",
+    ]
+    assert any("clarify_strategy.py" in item for item in enriched.constraints)
+    assert any("WorkflowLaneRunner" in item for item in enriched.assumptions)
+    assert any("Primary work stays scoped" in item for item in enriched.acceptance_criteria)
+    assert "likely_touchpoints" in enriched.explicit_sections
 
 
 def test_planning_artifacts_round_trip_and_extract_commands() -> None:
