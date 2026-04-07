@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from ..llm.base import Message, Role, ToolCall
+from .clarify_grounding import (
+    ClarifyGrounding,
+    ClarifyGroundingProbe,
+    build_grounded_clarify_question,
+)
 from .clarify_strategy import (
     ClarifySnapshot,
     build_clarify_question,
@@ -51,6 +56,7 @@ class WorkflowLaneRunner:
     ) -> None:
         self.agent = agent
         self.artifact_store = artifact_store
+        self.clarify_grounding = ClarifyGroundingProbe(agent.project_root)
         self.dod_store = dod_store
         self.workflow_policy = workflow_policy
 
@@ -327,6 +333,7 @@ class WorkflowLaneRunner:
     ) -> tuple[ClarifyBrief, str, str]:
         ask_tool = self.agent.registry.get("AskUserQuestion")
         assert ask_tool is not None
+        grounding = self.clarify_grounding.collect(task=task, rounds=rounds)
         response = await self._complete_in_mode(
             prompt=self._clarify_prompt(
                 task=task,
@@ -336,6 +343,7 @@ class WorkflowLaneRunner:
                 unresolved_slots=unresolved_slots,
                 stage=stage,
                 pressure_kind=pressure_kind,
+                grounding=grounding,
             ),
             tools=[ask_tool.to_schema()],
             max_tokens=500,
@@ -354,6 +362,12 @@ class WorkflowLaneRunner:
                 response.content,
                 unresolved_slots,
                 pressure_kind,
+                grounding,
+            )
+            tool_call = ToolCall(
+                id=f"clarify-fallback-{round_index}",
+                name="AskUserQuestion",
+                arguments={"question": question},
             )
             title = None
             options = None
@@ -409,7 +423,16 @@ class WorkflowLaneRunner:
         summary.assistant_messages.append(assistant_message)
         summary.tool_result_messages.append(tool_result_message)
         brief_response = await self._complete_in_mode(
-            prompt=self._clarify_brief_prompt(task, question, answer, rounds),
+            prompt=self._clarify_brief_prompt(
+                task,
+                question,
+                answer,
+                rounds,
+                self.clarify_grounding.collect(
+                    task=task,
+                    rounds=[*rounds, (question, answer)],
+                ),
+            ),
             tools=None,
             max_tokens=700,
             temperature=0.2,
@@ -438,6 +461,7 @@ class WorkflowLaneRunner:
         unresolved_slots: list[str],
         stage: str | None,
         pressure_kind: str | None,
+        grounding: ClarifyGrounding,
     ) -> str:
         history_lines = []
         for index, (question, answer) in enumerate(rounds, start=1):
@@ -452,6 +476,7 @@ class WorkflowLaneRunner:
         focus_label = describe_clarify_slot(focus_slot)
         stage_label = describe_clarify_stage(stage)
         pressure_label = describe_clarify_pressure_kind(pressure_kind)
+        evidence_block = grounding.prompt_block()
         return (
             "Clarify the task before planning or implementation.\n\n"
             f"Task: {task}\n"
@@ -463,6 +488,10 @@ class WorkflowLaneRunner:
             "Use the unresolved questions and prior answers to tighten scope.\n"
             "If a pressure pass is active, prefer examples, tradeoffs, or "
             "challenged assumptions over generic restatement.\n\n"
+            "Workspace evidence:\n"
+            f"{evidence_block}\n\n"
+            "Do not ask the user to restate repo facts Loader can already inspect "
+            "locally; use the workspace evidence to anchor the question.\n\n"
             "Unresolved questions:\n"
             f"{unresolved}\n\n"
             "Prior clarify history:\n"
@@ -475,6 +504,7 @@ class WorkflowLaneRunner:
         question: str,
         answer: str,
         rounds: list[tuple[str, str]],
+        grounding: ClarifyGrounding,
     ) -> str:
         history_lines = []
         for index, (previous_question, previous_answer) in enumerate(rounds, start=1):
@@ -500,6 +530,8 @@ class WorkflowLaneRunner:
             "## Likely Touchpoints\n"
             "## Acceptance Criteria\n\n"
             f"Task: {task}\n\n"
+            "Observed workspace evidence:\n"
+            f"{grounding.prompt_block()}\n\n"
             "Clarify history:\n"
             + "\n".join(history_lines)
         )
@@ -551,11 +583,20 @@ class WorkflowLaneRunner:
         response_content: str,
         unresolved_slots: list[str],
         pressure_kind: str | None,
+        grounding: ClarifyGrounding,
     ) -> str:
         match = re.search(r"([A-Z][^?]+\?)", response_content)
         if match:
             return match.group(1).strip()
         focus_slot = unresolved_slots[0] if unresolved_slots else None
+        grounded = build_grounded_clarify_question(
+            task=task,
+            focus_slot=focus_slot,
+            grounding=grounding,
+            pressure_kind=pressure_kind,
+        )
+        if grounded:
+            return grounded
         return build_clarify_question(task, focus_slot, pressure_kind)
 
     @staticmethod
