@@ -23,8 +23,11 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - `loader --resume` and `loader --resume <session-id>` restore persisted session state
 - durable project memory in `.loader/project-memory.json` and working notes in `.loader/notepad.md`
 - native memory tools for `project_memory_*` and `notepad_*`
-- heuristic workflow routing across `clarify` → `plan` → `execute` → `verify`
+- scored workflow routing across `clarify` → `plan` → `execute` → `verify`, with route scores, runner-up pressure, unresolved-question carry-forward, and scheduled-next-mode hints
 - mode-specific system prompts for clarify, plan, execute, and verify
+- bounded multi-round clarify follow-through with persisted unresolved-question carry-forward
+- file-drift plan freshness checks plus targeted plan-refresh reentry before execution continues
+- persisted workflow timeline entries for routes, handoffs, reentries, clarify outcomes, plan refreshes, and verify skips
 - explicit verify/fix loops for mutating tasks, with a bounded retry budget
 - verify/fix retries return to execute mode without re-triggering clarify or plan
 - task-size-aware verification command derivation based on actual tool history
@@ -41,6 +44,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - `loader doctor` for backend, capability, workspace, command, state, and permission health checks outside the main runtime loop
 - `loader status` plus `loader session list/show/resume` for inspecting persisted runtime state without invoking the LLM
 - `loader prompt show [task]` for previewing the current prompt contract, workflow mode, permission mode, dynamic sections, and prompt body without a live model request
+- `loader workflow show [session-id]` plus recent timeline snippets in `loader session show` for inspecting persisted workflow history without a live turn
 - `loader explore <prompt>` as a one-shot read-only lookup lane with its own prompt, constrained registry, and no DoD or workflow routing
 - CLI and TUI status surfaces for model, capability profile, mode, workflow mode, workflow reason, last transition summary, permission mode, explicit turn phase, prompt format/sections, DoD phase, pending items, last verification result, and active session id
 - CLI and TUI workflow-mode visibility plus artifact notifications
@@ -54,8 +58,9 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 
 - the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it still owns workflow routing, prompt repair, self-critique/completion heuristics, and other coordination logic that remains more heuristic-heavy than the reference runtime in `refs/claw-code`
 - planning, decomposition, and several helper behaviors still live in [`src/loader/agent/loop.py`](../src/loader/agent/loop.py), so ownership is cleaner than Sprint 00 but not fully simplified yet
-- the mode router is still heuristic-only; Loader does not yet implement OMX's deeper ambiguity scoring, pressure-pass discipline, or branch-specific routing policy
-- clarify mode currently stops after one structured question and one brief artifact; it does not yet run a deeper Socratic loop
+- the workflow policy is now scored, but it is still text-heuristic and hand-tuned; Loader does not yet implement OMX's deeper ambiguity analysis, pressure-pass discipline, or branch-specific policy depth
+- clarify can now continue through a bounded follow-up round and persist unresolved questions, but it is still much shallower than OMX's deep-interview behavior and does not adapt its budget dynamically
+- plan freshness is currently file-drift oriented; Loader does not yet detect semantic acceptance-criteria drift, broader task-meaning changes, or richer replanning triggers
 - plan mode is still a single-pass artifact generator, not a Planner/Architect/Critic consensus loop
 - DoD acceptance criteria and pending items are stronger than Sprint 02, but todo progress is still lightly structured compared with claw-code's richer workflow state
 - evidence summaries are deterministic runtime summaries of captured output, not model-written verification narratives
@@ -64,7 +69,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - rule syntax is intentionally narrow and workspace-local; Loader still does not have claw-code's richer rule model or broader prompt/allow operator surface
 - policy state is inspectable in doctor/status/session surfaces and dry-runnable through `loader permissions show/check`, but there is not yet a richer UX for editing, previewing multiple candidate rule sets, or temporarily overriding rules from the product surface
 - prompt assembly is now typed and previewable, but Loader still does not expose prompt diffs, prompt snapshots over multiple candidate configurations, or a richer prompt-contract parity harness beyond the current unit coverage
-- Loader now has a validated turn state machine, but workflow routing is still heuristic-only and does not yet match OMX's deeper route pressure, ambiguity analysis, or branch-specific routing policy
+- workflow history is now inspectable through `loader workflow show`, but the product still does not offer timeline filtering, diffing, richer artifact previews, or a visual workflow trace
 - shell safety is still heuristic and command-based; Loader does not yet have a richer shell sandbox or argument-aware mutability model
 - explore mode is a one-shot read-only lane, not yet a richer interactive inspection workflow with deeper repo navigation affordances
 - the read-only `git` helper is intentionally narrow compared with claw-code and OMX's broader repo/product surfaces, and the `patch` tool still stops short of AST/LSP-aware editing
@@ -76,7 +81,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 
 ## Deterministic parity scenarios
 
-The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](../tests/fixtures/runtime_parity_manifest.json) and is exercised by [`tests/test_runtime_harness.py`](../tests/test_runtime_harness.py). Sprint 04 also adds focused workflow integration coverage in [`tests/test_workflow_runtime.py`](../tests/test_workflow_runtime.py) and artifact/router unit coverage in [`tests/test_workflow.py`](../tests/test_workflow.py). Sprint 06 adds inspection/explore coverage in [`tests/test_inspection.py`](../tests/test_inspection.py), [`tests/test_explore_runtime.py`](../tests/test_explore_runtime.py), and [`tests/test_expanded_tools.py`](../tests/test_expanded_tools.py).
+The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](../tests/fixtures/runtime_parity_manifest.json) and is exercised by [`tests/test_runtime_harness.py`](../tests/test_runtime_harness.py). Sprint 04 adds focused workflow integration coverage in [`tests/test_workflow_runtime.py`](../tests/test_workflow_runtime.py) and artifact/router unit coverage in [`tests/test_workflow.py`](../tests/test_workflow.py). Sprint 06 adds inspection/explore coverage in [`tests/test_inspection.py`](../tests/test_inspection.py), [`tests/test_explore_runtime.py`](../tests/test_explore_runtime.py), and [`tests/test_expanded_tools.py`](../tests/test_expanded_tools.py). Sprint 10 extends that workflow coverage in [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py), [`tests/test_workflow_runtime.py`](../tests/test_workflow_runtime.py), and [`tests/test_inspection.py`](../tests/test_inspection.py) for scored routing, clarify-budget behavior, plan refresh, and workflow timeline inspection.
 
 - `streaming_text`: green
 - `read_file_roundtrip`: green
@@ -117,20 +122,21 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-07:
 
-- `uv run pytest -q`: 180 passed
+- `uv run pytest -q`: 188 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_prompt_builder.py` covers section rendering, native-vs-ReAct formatting, and prompt metadata persistence
 - `tests/test_turn_state_machine.py` covers allowed/disallowed turn transitions and terminal transition metadata
 - `tests/test_runtime_phases.py` covers repair/completion phase transitions plus persisted transition metadata in runtime events and session state
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
-- `tests/test_workflow.py` covers router heuristics, clarify/plan artifact round trips, DoD workflow links, and todo-to-DoD syncing
-- `tests/test_workflow_runtime.py` covers clarify routing, plan routing, verify-fix workflow handoff, and persisted workflow-decision metadata
+- `tests/test_workflow.py` covers workflow artifact round trips, scored-router expectations, DoD workflow links, and todo-to-DoD syncing
+- `tests/test_workflow_policy.py` covers score breakdowns, clarify follow-up reviews, artifact-freshness detection, and workflow timeline serialization
+- `tests/test_workflow_runtime.py` covers clarify routing, bounded clarify continuation, plan routing, targeted plan refresh, verify-fix workflow handoff, and persisted workflow-decision metadata
 - `tests/test_workflow_tools.py` and `tests/test_workflow_runtime_tools.py` cover `TodoWrite`, `AskUserQuestion`, and runtime callback plumbing
 - `tests/test_session_state.py` covers session persistence, resume, rotation, compaction persistence, cumulative usage rollups, and persisted permission-policy metadata
 - `tests/test_compaction.py` covers claw-style line compression and compacted continuation-message behavior
 - `tests/test_memory_tools.py` covers project-memory writes, notepad writes, lifecycle-hook mirroring, and DoD-summary capture into project memory
 - `tests/test_cli_resume.py` covers `--resume` argument rewriting for latest and named-session restore
-- `tests/test_inspection.py` covers `loader doctor`, `loader status`, `loader session list/show`, `loader permissions show/check`, `loader prompt show`, and workflow-reason/transition inspection surfaces
+- `tests/test_inspection.py` covers `loader doctor`, `loader status`, `loader session list/show`, `loader permissions show/check`, `loader prompt show`, `loader workflow show`, and workflow timeline inspection surfaces
 - `tests/test_explore_runtime.py` covers the direct explore lane contract and forced read-only behavior outside the parity harness
 - `tests/test_expanded_tools.py` covers structured patch application, read-only git helpers, `notepad_append`, and richer structured user questions
 - `tests/test_permissions.py` covers prompt/allow mode parsing, rule precedence, policy-backed prompting behavior, and hook lifecycle ordering
@@ -152,3 +158,4 @@ As of 2026-04-07:
 - Sprint 07 is complete: Loader now has prompt/allow modes, rule-based permission policy, policy-backed prompting, persisted policy inspection state, and smaller assistant-turn/tool-batch/finalization runtime seams, but it still stops short of a richer rule UX, deeper policy sandboxing, and the more opinionated workflow/runtime contracts in the refs.
 - Sprint 08 is complete: Loader now has a typed prompt builder, explicit runtime turn phases, first-class `loader permissions show/check` operator surfaces, and more coherent prompt/policy observability in doctor/status/session output, but it still stops short of a richer rule editor, formal state-machine routing, prompt-preview tooling, or the deeper workflow rigor in the refs.
 - Sprint 09 is complete: Loader now has a validated turn state machine, typed persisted workflow decisions, `loader prompt show`, and richer workflow-reason/transition inspection surfaces, but it still stops short of deeper workflow routing policy, prompt diffing/versioning, and the more opinionated planning discipline used by the refs.
+- Sprint 10 is complete: Loader now has a scored workflow policy, bounded clarify follow-through, targeted plan-refresh discipline, persisted workflow timeline inspection, and a greener workflow test contract, but it still stops short of deeper semantic routing/replanning, adaptive clarify depth, prompt-history diffing, or the fuller workflow rigor used by the refs.

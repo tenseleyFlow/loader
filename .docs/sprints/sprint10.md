@@ -166,3 +166,33 @@ A good outcome is that `conversation.py` keeps shrinking because policy is becom
 - a first-class permission rule editor
 - AST-aware, LSP-aware, or symbol-aware editing
 - multi-agent or team orchestration
+
+## Audit
+
+### Landed
+
+- Loader now routes through a scored workflow policy in `src/loader/runtime/workflow_policy.py` instead of the old threshold-only router contract; route decisions now carry winner score, runner-up mode/score, unresolved questions, and a human-readable pressure summary
+- initial route, artifact reuse, stale-plan reentry, and handoff metadata now sit on the same typed `ModeDecision` surface, which makes workflow choices easier to persist, inspect, and tune deliberately
+- clarify is no longer a single-pass prelude: `src/loader/runtime/conversation.py` now supports a bounded multi-round clarify lane, re-evaluates ambiguity after each answer, and persists unresolved questions when the clarify budget is exhausted
+- plan freshness is now an explicit runtime concern: Loader can detect file-drift against persisted plan artifacts, route back through a targeted plan refresh, regenerate implementation/verification artifacts, and hand back to execute without restarting the whole workflow
+- non-mutating turns now record verify-skip as an explicit workflow timeline event instead of disappearing through an implicit branch
+- workflow history is now persisted as `workflow_timeline` session state via `src/loader/runtime/session.py`, with timeline entries for routes, handoffs, reentries, clarify continuation/exit, plan refresh behavior, and verify skips
+- operators now have `loader workflow show [session-id]` plus recent workflow timeline snippets inside `loader session show`, implemented through `src/loader/runtime/inspection.py` and `src/loader/cli/main.py`
+- `conversation.py` is slimmer than before Sprint 10 because scoring, clarify review, artifact freshness, and timeline contracts now live in dedicated runtime modules instead of accumulating as coordinator-only heuristics
+
+### Verification
+
+- `uv run pytest -q` is green: `188 passed`
+- `tests/test_workflow_policy.py` covers scored-route breakdowns, clarify follow-up reviews, artifact-freshness detection, and workflow timeline serialization
+- `tests/test_workflow_runtime.py` covers bounded clarify continuation, targeted plan refresh on stale artifacts, verify/fix reentry, and persisted workflow timeline behavior
+- `tests/test_inspection.py` covers `loader workflow show`, recent timeline rendering in `loader session show`, and persisted workflow timeline inspection without a live model call
+- `tests/test_workflow.py` now aligns legacy router expectations with Sprint 10's scored policy contract instead of the older raw-threshold assumption
+- targeted `ruff` checks are green for `src/loader/runtime/inspection.py`, `tests/test_inspection.py`, and `tests/test_workflow.py`; `src/loader/cli/main.py` was also checked for new unused-import regressions
+
+### Residual debt
+
+- the new workflow policy is scored, but it is still hand-tuned and text-heuristic; Loader still does not match OMX's deeper ambiguity analysis, route-pressure passes, or richer branch-specific workflow policies
+- clarify now has bounded follow-through, but it is still intentionally shallow compared with OMX's deep-interview behavior and does not yet adapt its budget or questioning style by task class
+- plan freshness is currently driven by touched-file drift; Loader still does not reason well about semantic task changes, changed acceptance criteria, or broader artifact invalidation
+- `loader workflow show` makes workflow evolution inspectable, but the operator UX still stops short of timeline filtering, artifact diffs, or richer prompt/history comparison
+- `src/loader/runtime/conversation.py` is smaller and more policy-driven than before Sprint 10, but it still coordinates more workflow behavior than the claw-code references, especially around completion and downstream execution orchestration
