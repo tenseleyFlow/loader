@@ -17,6 +17,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - persisted clarify briefs under `.loader/briefs/`
 - persisted implementation and verification plans under `.loader/plans/`
 - persisted conversation sessions under `.loader/sessions/` plus active session state under `.loader/state/`
+- persisted permission policy metadata alongside session state, so `loader status` / `loader session list` / `loader session show` can explain the effective policy that ran
 - `loader --resume` and `loader --resume <session-id>` restore persisted session state
 - durable project memory in `.loader/project-memory.json` and working notes in `.loader/notepad.md`
 - native memory tools for `project_memory_*` and `notepad_*`
@@ -41,11 +42,11 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - workspace-bound file operations with canonicalized boundary checks, binary detection, size limits, and structured patch metadata
 - shell mutability classification plus structured truncation and stderr/exit-code metadata
 - richer structured `AskUserQuestion` prompts with titles, context, options, and optional freeform responses
-- assistant-turn request handling now lives in `runtime.assistant_turns`, and DoD/finalization logic now lives in `runtime.finalization` instead of accumulating further inside `conversation.py`
+- assistant-turn request handling now lives in `runtime.assistant_turns`, tool-batch execution/recovery now lives in `runtime.tool_batches`, and DoD/finalization logic now lives in `runtime.finalization` instead of accumulating further inside `conversation.py`
 
 ## Known weak spots
 
-- the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it is still much larger and more heuristic-heavy than the reference runtime in `refs/claw-code`
+- the core turn loop moved into [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py), but it still owns workflow routing, prompt repair, self-critique/completion heuristics, and other coordination logic that remains more heuristic-heavy than the reference runtime in `refs/claw-code`
 - planning, decomposition, and several helper behaviors still live in [`src/loader/agent/loop.py`](../src/loader/agent/loop.py), so ownership is cleaner than Sprint 00 but not fully simplified yet
 - the mode router is still heuristic-only; Loader does not yet implement OMX's deeper ambiguity scoring, pressure-pass discipline, or branch-specific routing policy
 - clarify mode currently stops after one structured question and one brief artifact; it does not yet run a deeper Socratic loop
@@ -55,14 +56,14 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - session compaction summaries are heuristic runtime summaries, not model-assisted continuity artifacts
 - project-memory capture on finalized DoD evidence is still lightweight and command-summary oriented, not semantically curated memory extraction
 - rule syntax is intentionally narrow and workspace-local; Loader still does not have claw-code's richer rule model or broader prompt/allow operator surface
-- policy state is inspectable in doctor/status, but there is not yet a richer UX for editing, previewing, or temporarily overriding rules from the product surface
+- policy state is inspectable in doctor/status/session surfaces, but there is not yet a richer UX for editing, previewing, or temporarily overriding rules from the product surface
 - shell safety is still heuristic and command-based; Loader does not yet have a richer shell sandbox or argument-aware mutability model
 - explore mode is a one-shot read-only lane, not yet a richer interactive inspection workflow with deeper repo navigation affordances
 - the read-only `git` helper is intentionally narrow compared with claw-code and OMX's broader repo/product surfaces, and the `patch` tool still stops short of AST/LSP-aware editing
 
 ## Out of scope in the current baseline
 
-- richer permission rules / prompt mode / per-command allowlists
+- richer permission-rule UX / per-command allowlists
 - multi-agent / team orchestration
 
 ## Deterministic parity scenarios
@@ -108,13 +109,13 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-07:
 
-- `uv run pytest -q`: 166 passed
+- `uv run pytest -q`: 167 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers router heuristics, clarify/plan artifact round trips, DoD workflow links, and todo-to-DoD syncing
 - `tests/test_workflow_runtime.py` covers clarify routing, plan routing, and verify-fix workflow handoff
 - `tests/test_workflow_tools.py` and `tests/test_workflow_runtime_tools.py` cover `TodoWrite`, `AskUserQuestion`, and runtime callback plumbing
-- `tests/test_session_state.py` covers session persistence, resume, rotation, compaction persistence, and cumulative usage rollups
+- `tests/test_session_state.py` covers session persistence, resume, rotation, compaction persistence, cumulative usage rollups, and persisted permission-policy metadata
 - `tests/test_compaction.py` covers claw-style line compression and compacted continuation-message behavior
 - `tests/test_memory_tools.py` covers project-memory writes, notepad writes, lifecycle-hook mirroring, and DoD-summary capture into project memory
 - `tests/test_cli_resume.py` covers `--resume` argument rewriting for latest and named-session restore
@@ -125,7 +126,7 @@ As of 2026-04-07:
 - `tests/test_tool_safety.py` covers workspace boundaries, binary/oversize guards, patch metadata, and shell truncation/classification
 - `tests/test_status_surfaces.py` covers the CLI/TUI DoD, workflow-mode, permission-mode, capability-profile, and session-id formatting helpers
 - native and extracted tool calls now record the same executor trace events, with source-specific metadata
-- turn startup can refine backend capability profiles before the first request, `run_streaming()` delegates into the main runtime path, mutating tasks route through persisted evidence-backed completion, workflow artifacts survive across turns, sessions compact safely, explore queries bypass DoD/router overhead safely, policy rules are enforced deterministically, and assistant-turn/finalization concerns now hang off smaller runtime modules instead of growing the conversation monolith further
+- turn startup can refine backend capability profiles before the first request, `run_streaming()` delegates into the main runtime path, mutating tasks route through persisted evidence-backed completion, workflow artifacts survive across turns, sessions compact safely, explore queries bypass DoD/router overhead safely, policy rules are enforced deterministically, session inspection preserves effective policy state, and assistant-turn/tool-batch/finalization concerns now hang off smaller runtime modules instead of growing the conversation monolith further
 
 ## Definition of honesty
 
@@ -137,4 +138,4 @@ As of 2026-04-07:
 - Sprint 04 adds routing, artifacts, and structured user questions, but it is still a first-pass workflow layer rather than full OMX consensus planning or deep interview rigor.
 - Sprint 05 adds durable sessions, resume, compaction, and native memory/notepad tools, but it stops short of Sprint 06's inspectable session/status product surfaces and still uses heuristic continuity summaries rather than richer semantic memory extraction.
 - Sprint 06 adds inspectable product surfaces, a constrained explore lane, and a broader tool registry, but it still stops short of interactive explore workflows, richer git ergonomics, AST/LSP-aware editing, or any multi-agent/team runtime.
-- Sprint 07 is underway: Loader now has prompt/allow modes, rule-based permission policy, policy-backed prompting, and smaller assistant-turn/finalization runtime seams, but the broader Sprint 07 audit and remaining policy/product ergonomics work are not done yet.
+- Sprint 07 is complete: Loader now has prompt/allow modes, rule-based permission policy, policy-backed prompting, persisted policy inspection state, and smaller assistant-turn/tool-batch/finalization runtime seams, but it still stops short of a richer rule UX, deeper policy sandboxing, and the more opinionated workflow/runtime contracts in the refs.

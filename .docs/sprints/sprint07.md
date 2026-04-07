@@ -130,3 +130,37 @@ This keeps the policy layer inspectable and reduces surprise when a tool is prom
 - AST-aware, LSP-aware, or symbol-aware editing
 - multi-agent or team orchestration
 - broad plugin or MCP expansion
+
+## Audit
+
+### Landed
+
+- Loader now supports the full Sprint 07 permission-mode surface: `read-only`, `workspace-write`, `danger-full-access`, `prompt`, and `allow`
+- workspace-local `.loader/permission-rules.json` files now load into typed `allow` / `deny` / `ask` rule sets with conservative matching over tool name, normalized input summaries, and optional path hints
+- policy precedence is now deterministic: deny rules win first, hook-level overrides can still deny/ask/allow, ask rules drive interactive approval, allow rules and `allow` mode can elevate, and the required-mode gate still applies otherwise
+- `ToolExecutor` is now the primary owner of interactive approval decisions, and destructive write/bash/edit/patch paths run through policy outcomes instead of relying mainly on tool-specific confirmation logic
+- policy prompt payloads now include the active mode, required mode, normalized input summary, and matched rule or hook reason where available
+- explore mode preserves the Sprint 06 read-only guarantee by copying deny/ask rules but intentionally ignoring broader allow rules
+- `loader doctor` and `loader status` now expose prompting state, allow/deny/ask rule counts, and invalid rule configuration clearly, while `loader session list/show` now persist and surface the effective policy metadata that a session actually ran with
+- invalid permission configuration now fails closed both when starting an `Agent` and when inspecting a workspace through doctor/status surfaces
+- runtime decomposition continued inside `src/loader/runtime/`: assistant requests now live in `assistant_turns.py`, tool-batch execution/recovery/post-tool verification now live in `tool_batches.py`, and DoD/finalization logic now live in `finalization.py`
+- `ConversationRuntime.run_turn(...)` is now more coordinator-like: it prepares the workflow, requests an assistant turn, delegates tool execution to the batch runner, delegates DoD gating/finalization, and keeps orchestration in one place instead of owning every behavior directly
+- the deterministic parity harness now includes prompt/allow/rule-policy scenarios and remains green after the runtime split
+
+### Verification
+
+- `uv run pytest -q` is green: `167 passed`
+- `tests/test_permissions.py` covers `prompt` / `allow` parsing, rule parsing, deny/ask/allow precedence, hook overrides, and policy-backed prompting behavior
+- `tests/test_runtime_harness.py` keeps the full Sprint 00-06 baseline green and now covers prompt-mode prompting, allow-mode skipping, deny-rule blocking, ask-rule prompting, and explore-mode isolation from global allow policy
+- `tests/test_inspection.py` covers invalid rule reporting plus rule-aware `doctor`, `status`, `session list`, and `session show` surfaces
+- `tests/test_session_state.py` now covers persisted permission-policy metadata alongside the earlier session persistence/resume/compaction coverage
+- targeted `ruff` checks are green for the new runtime modules and the touched inspection/session test files
+
+### Residual debt
+
+- rule syntax is intentionally narrow and workspace-local; Loader still does not have claw-code's richer rule model, preview UX, or temporary allow/deny override ergonomics
+- policy-backed prompting is now primary, but the older tool-confirmation compatibility layer still exists and should continue shrinking rather than becoming a second policy path again
+- `conversation.py` is materially slimmer than before Sprint 07, but it still owns workflow routing, prompt repair, self-critique/completion heuristics, and several other coordinator behaviors that remain more heuristic-heavy than the refs
+- shell mutability classification and rule matching are still conservative string/command heuristics rather than a richer semantic sandbox or argument-aware policy model
+- session inspection now preserves effective policy state, but Loader still does not offer a first-class product surface for authoring, validating, or dry-running permission rules
+- explore mode remains intentionally one-shot and read-only; Sprint 07 does not add a richer interactive inspection workflow
