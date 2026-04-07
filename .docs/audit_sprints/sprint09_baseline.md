@@ -9,7 +9,7 @@
   - `uv run pytest -q tests/test_parsing.py`
   - `uv run pytest -q tests/test_runtime_harness.py -k 'raw_json or native_and_raw_tool_paths_share_executor_trace or runtime_parity_manifest_matches_implemented_cases'`
 - Repo-wide verification after the latest Sprint 09 characterization update:
-  - `uv run pytest -q` → `185 passed`
+  - `uv run pytest -q` → `186 passed`
 - New Sprint 09 guardrails now cover raw-text recovery for:
   - `read`
   - `TodoWrite`
@@ -51,7 +51,7 @@ This is the subtraction scoreboard for Sprint 11 and Sprint 13.
 | Fake-tool narration repair | `src/loader/runtime/repair.py:156-182` plus `src/loader/agent/loop.py:770-860` | `_contains_unexecuted_code(...)` matches narration or code-block heuristics | Legacy regex wall plus injected scolding prompt | `tests/test_runtime_repair_flows.py::test_fake_tool_narration_repair_injects_scolding_prompt` | Delete |
 | Deflection repair | `src/loader/runtime/repair.py:184-201` | Non-ReAct response deflects with "you can/should/could/try running" and no actions taken | Phrase heuristic plus injected user repair turn | `tests/test_runtime_repair_flows.py::test_deflection_repair_injects_use_your_tools_prompt` | Delete unless interactive evidence shows it is load-bearing |
 | Self-critique reroute | `src/loader/runtime/completion_policy.py:49-90` | Long response and `should_self_critique(...)` says revise | `agent._self_critique`, reasoning prompt, session reinjection | No dedicated deterministic test | Gate tightly or delete |
-| Text-loop bailout | `src/loader/runtime/completion_policy.py:92-125` | `self.agent.safeguards.detect_text_loop(...)` reports repetition | `agent/safeguards.py` action tracker | No dedicated deterministic test | Keep only if moved toward a session-level safeguard |
+| Text-loop bailout | `src/loader/runtime/completion_policy.py:92-125` | `self.agent.safeguards.detect_text_loop(...)` reports repetition | `agent/safeguards.py` action tracker | `tests/test_runtime_repair_flows.py::test_text_loop_bailout_stops_after_repeated_continuation_response` | Keep only if moved toward a session-level safeguard |
 | Non-mutating completion nudge | `src/loader/runtime/completion_policy.py:127-170` | `completion_check` enabled, no mutating actions, `detect_premature_completion(...)` hits | `agent/reasoning.py` continuation heuristics plus session reinjection | `tests/test_runtime_harness.py::test_completion_check_continuation` | Likely narrow sharply or delete |
 | Post-action follow-up suffix | `src/loader/runtime/completion_policy.py:173-186` | Actions were taken and final text does not already end in `?` | Pure string heuristic | No dedicated deterministic test | Delete |
 | Action-loop bailout | `src/loader/runtime/tool_batches.py:228-250` | `self.agent.safeguards.detect_loop()` reports repeated tool behavior | `agent/safeguards.py` action tracker | No dedicated deterministic test | Keep candidate, but move behind a clearer runtime/service seam |
@@ -71,6 +71,6 @@ These runs are still pending. They require at least one configured real native-t
 
 ## Immediate Sprint 09 Follow-on
 
-- Use the `185 passed` repo-wide baseline as the regression floor for the next Sprint 09 slices.
+- Use the `186 passed` repo-wide baseline as the regression floor for the next Sprint 09 slices.
 - Perform the interactive validation matrix once a real backend/profile pair is selected for the cleanup branch.
 - Use this inventory as the checklist for Sprint 10 service seams and Sprint 11 deletions.

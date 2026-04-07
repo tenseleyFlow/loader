@@ -19,6 +19,14 @@ def non_streaming_config() -> AgentConfig:
     return config
 
 
+def completion_check_config() -> AgentConfig:
+    """Shared config for continuation-driven repair tests."""
+
+    config = AgentConfig(auto_context=False, stream=False, max_iterations=8)
+    config.reasoning.completion_check = True
+    return config
+
+
 def tool_event_names(run) -> list[str]:
     """Return non-verification tool events in order."""
 
@@ -147,4 +155,33 @@ async def test_deflection_repair_injects_use_your_tools_prompt(
         message.role == Role.USER
         and "Please use your tools to execute the task" in message.content
         for message in backend.invocations[1].messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_text_loop_bailout_stops_after_repeated_continuation_response(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content="Done."),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create a hello.py file and run it.",
+        backend,
+        config=completion_check_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == []
+    assert run.response == (
+        "I seem to be repeating myself. "
+        "Let me know if you'd like me to try a different approach."
+    )
+    assert any(
+        event.type == "error" and "Text loop detected" in event.content
+        for event in run.events
     )
