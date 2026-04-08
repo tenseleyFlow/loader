@@ -6,7 +6,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ..agent.reasoning import RollbackPlan
 from ..llm.base import Message, Role
 from .completion_policy import CompletionPolicy
 from .dod import DefinitionOfDone
@@ -15,6 +14,7 @@ from .executor import ToolExecutor
 from .finalization import TurnFinalizer
 from .phases import TurnPhase, TurnPhaseTracker
 from .repair import ResponseRepairer
+from .rollback import RollbackPlan
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 

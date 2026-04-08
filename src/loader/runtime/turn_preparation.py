@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..agent.reasoning import RollbackPlan, estimate_complexity, get_token_budget
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer
 from .hooks import build_default_tool_hooks
 from .phases import TurnPhase, TurnPhaseTracker
+from .rollback import RollbackPlan
+from .task_classification import estimate_complexity, get_token_budget
 from .tracing import RuntimeTracer
 from .workflow import (
     ClarifyReview,

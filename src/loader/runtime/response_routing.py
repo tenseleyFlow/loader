@@ -6,13 +6,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from ..agent.reasoning import RollbackPlan
 from ..llm.base import Message, Role
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .phases import TurnPhase, TurnPhaseTracker
 from .repair import ToolCallAnalysis
+from .rollback import RollbackPlan
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .turn_completion import TurnCompletionAction, TurnCompletionController

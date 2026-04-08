@@ -6,7 +6,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from ..agent.reasoning import RollbackPlan
 from ..llm.base import Message, Role
 from .assistant_turns import AssistantTurnRequester
 from .dod import DefinitionOfDone
@@ -20,6 +19,7 @@ from .response_routing import (
     ResponseRouteAction,
     ResponseRouteContext,
 )
+from .rollback import RollbackPlan
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None

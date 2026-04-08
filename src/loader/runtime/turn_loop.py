@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from ..agent.reasoning import RollbackPlan
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
+from .rollback import RollbackPlan
 from .turn_iteration import TurnIterationAction, TurnIterationController
 from .turn_preamble import TurnPreludeController
 

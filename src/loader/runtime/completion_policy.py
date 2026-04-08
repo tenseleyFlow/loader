@@ -5,13 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from ..agent.reasoning import (
-    TaskCompletionCheck,
-    detect_premature_completion,
-    get_continuation_prompt,
-)
 from ..llm.base import Message, Role
 from .events import AgentEvent, TurnSummary
+from .reasoning_types import TaskCompletionCheck
+from .task_completion import detect_premature_completion, get_continuation_prompt
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..agent.parsing import parse_tool_calls
 from ..llm.base import ToolCall
-from .parsing import parse_tool_calls as parse_runtime_tool_calls
+from .parsing import parse_tool_calls
 
 
 @dataclass(slots=True)
@@ -146,7 +145,7 @@ class ResponseRepairer:
         allowed_tool_names = None
         if registry is not None:
             allowed_tool_names = [tool.name for tool in registry.list_tools()]
-        parsed = parse_runtime_tool_calls(
+        parsed = parse_tool_calls(
             response_content,
             allowed_tool_names=allowed_tool_names,
         )
