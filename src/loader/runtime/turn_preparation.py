@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
+from .context import RuntimeContext
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
@@ -51,7 +51,7 @@ class TurnPreparationController:
 
     def __init__(
         self,
-        agent: Any,
+        context: RuntimeContext,
         *,
         tracer: RuntimeTracer,
         phase_tracker: TurnPhaseTracker,
@@ -64,7 +64,7 @@ class TurnPreparationController:
         append_timeline: TimelineAppender,
         append_execute_bridge: BridgeAppender,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.tracer = tracer
         self.phase_tracker = phase_tracker
         self.dod_store = dod_store
@@ -99,22 +99,22 @@ class TurnPreparationController:
         executor, rollback_plan = self._build_executor()
 
         summary = TurnSummary(final_response="")
-        summary.session_id = self.agent.session.session_id
+        summary.session_id = self.context.session.session_id
         effective_task = original_task or task
         dod = self.dod_store.create_or_resume(
             effective_task,
-            retry_budget=self.agent.config.verification_retry_budget,
+            retry_budget=self.context.config.verification_retry_budget,
         )
         summary.definition_of_done = dod
 
-        self.agent.session.update_runtime_state(
+        self.context.session.update_runtime_state(
             active_dod_path=dod.storage_path,
             current_task=effective_task,
-            workflow_mode=self.agent.workflow_mode,
-            permission_mode=self.agent.active_permission_mode,
-            permission_prompting_enabled=self.agent.permission_policy.prompting_enabled,
-            permission_rule_counts=self.agent.active_permission_rule_counts,
-            permission_rules_source=str(self.agent.permission_config_status.source_path),
+            workflow_mode=self.context.workflow_mode,
+            permission_mode=self.context.active_permission_mode,
+            permission_prompting_enabled=self.context.permission_policy.prompting_enabled,
+            permission_rule_counts=self.context.active_permission_rule_counts,
+            permission_rules_source=str(self.context.permission_config_status.source_path),
         )
         await self.finalizer.emit_dod_status(emit, dod)
 
@@ -140,20 +140,20 @@ class TurnPreparationController:
     def _effective_max_tokens(self, task: str) -> int:
         complexity = estimate_complexity(task)
         max_tokens, _ = get_token_budget(complexity)
-        return min(self.agent.config.max_tokens, max(max_tokens, 512))
+        return min(self.context.config.max_tokens, max(max_tokens, 512))
 
     def _build_executor(self) -> tuple[ToolExecutor, RollbackPlan | None]:
         rollback_plan = (
-            RollbackPlan() if self.agent.config.reasoning.rollback else None
+            RollbackPlan() if self.context.config.reasoning.rollback else None
         )
         executor = ToolExecutor(
-            self.agent.registry,
+            self.context.registry,
             self.tracer,
-            self.agent.permission_policy,
+            self.context.permission_policy,
             hooks=build_default_tool_hooks(
-                action_tracker=self.agent.safeguards.action_tracker,
-                validator=self.agent.safeguards.validator,
-                registry=self.agent.registry,
+                action_tracker=self.context.safeguards.action_tracker,
+                validator=self.context.safeguards.validator,
+                registry=self.context.registry,
                 rollback_plan=rollback_plan,
             ),
         )
@@ -178,7 +178,7 @@ class TurnPreparationController:
                 has_brief=self._artifact_exists(dod.clarify_brief),
                 has_plan=self._artifact_exists(dod.implementation_plan)
                 and self._artifact_exists(dod.verification_plan),
-                timeline=self.agent.session.workflow_timeline,
+                timeline=self.context.session.workflow_timeline,
             )
         )
         await self.set_workflow_mode(
@@ -211,7 +211,7 @@ class TurnPreparationController:
                     and self._artifact_exists(dod.verification_plan),
                     allow_clarify=False,
                     unresolved_questions=clarify_review.unresolved_questions,
-                    timeline=self.agent.session.workflow_timeline,
+                    timeline=self.context.session.workflow_timeline,
                 )
             )
             await self.set_workflow_mode(
@@ -250,19 +250,19 @@ class TurnPreparationController:
         return task
 
     async def _prepare_runtime_capabilities(self) -> None:
-        describe_model = getattr(self.agent.backend, "describe_model", None)
+        describe_model = getattr(self.context.backend, "describe_model", None)
         if callable(describe_model):
             await describe_model()
 
-        previous_profile = self.agent.capability_profile
-        self.agent.refresh_capability_profile()
-        if self.agent.capability_profile != previous_profile:
+        previous_profile = self.context.capability_profile
+        self.context.refresh_capability_profile()
+        if self.context.capability_profile != previous_profile:
             self.tracer.record(
                 "runtime.capabilities_refreshed",
-                model_name=self.agent.capability_profile.model_name,
-                supports_native_tools=self.agent.capability_profile.supports_native_tools,
+                model_name=self.context.capability_profile.model_name,
+                supports_native_tools=self.context.capability_profile.supports_native_tools,
                 preferred_tool_call_format=(
-                    self.agent.capability_profile.preferred_tool_call_format
+                    self.context.capability_profile.preferred_tool_call_format
                 ),
             )
 

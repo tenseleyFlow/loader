@@ -115,10 +115,7 @@ def build_context(
         safeguards=FakeSafeguards(),
         legacy=RuntimeLegacyServices(
             message_history=lambda: messages,
-            drain_steering_queue=lambda: [],
-            queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,
-            refresh_capability_profile=lambda: None,
         ),
         reasoning=SimpleNamespace(
             assess_confidence=assess_confidence,

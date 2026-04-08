@@ -100,7 +100,7 @@ class ConversationRuntime:
             response_router=self.response_router,
         )
         self.turn_preparation = TurnPreparationController(
-            agent,
+            self.context,
             tracer=self.tracer,
             phase_tracker=self.phase_tracker,
             dod_store=self.dod_store,
@@ -113,7 +113,7 @@ class ConversationRuntime:
             append_execute_bridge=self.workflow_state.maybe_append_execute_bridge,
         )
         self.turn_preamble = TurnPreludeController(
-            agent,
+            self.context,
             tracer=self.tracer,
             workflow_recovery=self.workflow_recovery,
         )

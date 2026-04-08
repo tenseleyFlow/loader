@@ -93,7 +93,7 @@ class AssistantTurnRequester:
                 if self.context.safeguards.should_steer():
                     steering_message = self.context.safeguards.get_steering_message()
                     if steering_message:
-                        self.context.legacy.queue_steering_message(steering_message)
+                        self.context.queue_steering_message(steering_message)
 
                 if (
                     chunk.pending_tool_call
@@ -142,7 +142,7 @@ class AssistantTurnRequester:
         if self.context.safeguards.should_steer():
             steering_message = self.context.safeguards.get_steering_message()
             if steering_message:
-                self.context.legacy.queue_steering_message(steering_message)
+                self.context.queue_steering_message(steering_message)
         self.tracer.record(
             "assistant.responded",
             stream=False,

@@ -48,9 +48,9 @@ def test_runtime_context_legacy_services_stay_in_sync(temp_dir: Path) -> None:
     )
 
     context = agent._build_runtime_context()
-    context.legacy.queue_steering_message("Re-check the current task.")
+    context.queue_steering_message("Re-check the current task.")
 
-    assert context.legacy.drain_steering_queue() == ["Re-check the current task."]
+    assert context.drain_steering_messages() == ["Re-check the current task."]
 
     context.legacy.set_workflow_mode("clarify")
     assert agent.workflow_mode == "clarify"
@@ -60,5 +60,8 @@ def test_runtime_context_legacy_services_stay_in_sync(temp_dir: Path) -> None:
     context.recovery_context = recovery
     assert context.recovery_context is recovery
 
-    context.legacy.refresh_capability_profile()
+    backend = agent.backend
+    backend._supports_native_tools = False  # type: ignore[attr-defined]
+    context.refresh_capability_profile()
     assert context.capability_profile == agent.capability_profile
+    assert context.capability_profile.supports_native_tools is False

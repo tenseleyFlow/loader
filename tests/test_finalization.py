@@ -118,10 +118,7 @@ def build_context(temp_dir: Path, session: FakeSession) -> RuntimeContext:
         safeguards=FakeSafeguards(),
         legacy=RuntimeLegacyServices(
             message_history=lambda: session.messages,
-            drain_steering_queue=lambda: [],
-            queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,
-            refresh_capability_profile=lambda: None,
         ),
     )
 

@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..llm.base import Message, Role
+from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .tracing import RuntimeTracer
@@ -27,12 +28,12 @@ class TurnPreludeController:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         *,
         tracer: RuntimeTracer,
         workflow_recovery: WorkflowRecoveryController,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.tracer = tracer
         self.workflow_recovery = workflow_recovery
 
@@ -53,10 +54,10 @@ class TurnPreludeController:
         summary.iterations = iterations
         self.tracer.record("turn.iteration_started", iteration=iterations)
 
-        steering_messages = self.agent._drain_steering_queue()
+        steering_messages = self.context.drain_steering_messages()
         for steering_message in steering_messages:
             await emit(AgentEvent(type="steering", content=steering_message))
-            self.agent.session.append(
+            self.context.session.append(
                 Message(
                     role=Role.USER,
                     content=f"[USER INTERRUPTION]: {steering_message}",

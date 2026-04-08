@@ -378,14 +378,14 @@ class Agent:
             safeguards=self.safeguards,
             legacy=RuntimeLegacyServices(
                 message_history=lambda: self.messages,
-                drain_steering_queue=self._drain_steering_queue,
-                queue_steering_message=_queue_steering_message,
                 set_workflow_mode=_set_workflow_mode,
-                refresh_capability_profile=_refresh_capability_profile,
             ),
             reasoning=RuntimeReasoningService(self.backend, self.config),
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
+            drain_steering_messages_callback=self._drain_steering_queue,
+            queue_steering_message_callback=_queue_steering_message,
+            refresh_capability_profile_callback=_refresh_capability_profile,
         )
         return context
 

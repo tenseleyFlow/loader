@@ -206,7 +206,7 @@ class ExploreRuntime:
         describe_model = getattr(self.context.backend, "describe_model", None)
         if callable(describe_model):
             await describe_model()
-        self.context.legacy.refresh_capability_profile()
+        self.context.refresh_capability_profile()
 
     def _build_system_prompt(self) -> str:
         tool_descriptions = format_tool_descriptions(self.registry.get_schemas())

@@ -101,10 +101,7 @@ class RuntimeLegacyServices:
     """Explicit migration seams for legacy agent-owned behavior."""
 
     message_history: Callable[[], list[Message]]
-    drain_steering_queue: Callable[[], list[str]]
-    queue_steering_message: Callable[[str], None]
     set_workflow_mode: Callable[[str], None]
-    refresh_capability_profile: Callable[[], None]
 
 
 @dataclass(slots=True)
@@ -127,6 +124,9 @@ class RuntimeContext:
     recovery_context: RecoveryContext | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
+    drain_steering_messages_callback: Callable[[], list[str]] | None = None
+    queue_steering_message_callback: Callable[[str], None] | None = None
+    refresh_capability_profile_callback: Callable[[], None] | None = None
 
     @property
     def use_react(self) -> bool:
@@ -151,6 +151,27 @@ class RuntimeContext:
         """Return rule counts for the active permission policy."""
 
         return self.permission_policy.rule_counts()
+
+    def drain_steering_messages(self) -> list[str]:
+        """Drain pending steering messages through the runtime control seam."""
+
+        if self.drain_steering_messages_callback is None:
+            return []
+        return self.drain_steering_messages_callback()
+
+    def queue_steering_message(self, message: str) -> None:
+        """Queue a steering message through the runtime control seam."""
+
+        if self.queue_steering_message_callback is None:
+            return
+        self.queue_steering_message_callback(message)
+
+    def refresh_capability_profile(self) -> None:
+        """Refresh the resolved capability profile through the runtime control seam."""
+
+        if self.refresh_capability_profile_callback is None:
+            return
+        self.refresh_capability_profile_callback()
 
     async def assess_confidence(
         self,
