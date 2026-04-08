@@ -35,6 +35,7 @@ class RuntimeConfigProtocol(Protocol):
     """Typed view of top-level agent config used by the runtime."""
 
     max_iterations: int
+    clarify_max_rounds: int
     temperature: float
     max_tokens: int
     force_react: bool

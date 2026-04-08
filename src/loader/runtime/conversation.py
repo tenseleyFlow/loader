@@ -54,13 +54,13 @@ class ConversationRuntime:
             dod_store=self.dod_store,
         )
         self.workflow_lanes = WorkflowLaneRunner(
-            agent,
+            self.context,
             artifact_store=self.artifact_store,
             dod_store=self.dod_store,
             workflow_policy=self.workflow_policy,
         )
         self.workflow_recovery = WorkflowRecoveryController(
-            agent,
+            self.context,
             artifact_invalidation=self.artifact_invalidation,
             workflow_policy=self.workflow_policy,
             workflow_signals=self.workflow_signals,

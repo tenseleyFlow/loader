@@ -21,6 +21,7 @@ from .clarify_strategy import (
     describe_clarify_slot,
     describe_clarify_stage,
 )
+from .context import RuntimeContext
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
@@ -53,15 +54,15 @@ class WorkflowLaneRunner:
 
     def __init__(
         self,
-        agent: Any,
+        context: RuntimeContext,
         *,
         artifact_store: WorkflowArtifactStore,
         dod_store: DefinitionOfDoneStore,
         workflow_policy: WorkflowPolicy,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.artifact_store = artifact_store
-        self.clarify_grounding = ClarifyGroundingProbe(agent.project_root)
+        self.clarify_grounding = ClarifyGroundingProbe(context.project_root)
         self.dod_store = dod_store
         self.workflow_policy = workflow_policy
 
@@ -75,7 +76,7 @@ class WorkflowLaneRunner:
         on_user_question: UserQuestionHandler,
         append_timeline: TimelineAppender,
     ) -> ClarifyReview:
-        max_rounds = max(1, self.agent.config.clarify_max_rounds)
+        max_rounds = max(1, self.context.config.clarify_max_rounds)
         rounds: list[tuple[str, str]] = []
         latest_brief: ClarifyBrief | None = None
         review = ClarifyReview(
@@ -136,9 +137,9 @@ class WorkflowLaneRunner:
         dod.clarify_brief = str(brief_path)
         dod.acceptance_criteria = list(dict.fromkeys(latest_brief.acceptance_criteria))
         self.dod_store.save(dod)
-        self.agent.session.update_workflow_ledger(
+        self.context.session.update_workflow_ledger(
             seed_workflow_ledger_from_brief(
-                self.agent.session.workflow_ledger,
+                self.context.session.workflow_ledger,
                 latest_brief,
                 phase="clarify",
             )
@@ -213,9 +214,9 @@ class WorkflowLaneRunner:
         if artifacts.verification_commands:
             dod.verification_commands = artifacts.verification_commands
         self.dod_store.save(dod)
-        self.agent.session.update_workflow_ledger(
+        self.context.session.update_workflow_ledger(
             seed_workflow_ledger_from_acceptance_criteria(
-                self.agent.session.workflow_ledger,
+                self.context.session.workflow_ledger,
                 list(dod.acceptance_criteria),
                 phase="plan",
             )
@@ -270,8 +271,8 @@ class WorkflowLaneRunner:
         max_tokens: int,
         temperature: float = 0.2,
     ):
-        return await self.agent.backend.complete(
-            messages=self.agent.session.build_request_messages()
+        return await self.context.backend.complete(
+            messages=self.context.session.build_request_messages()
             + [Message(role=Role.USER, content=prompt)],
             tools=tools,
             temperature=temperature,
@@ -350,7 +351,7 @@ class WorkflowLaneRunner:
         stage: str | None,
         pressure_kind: str | None,
     ) -> tuple[ClarifyBrief, str, str]:
-        ask_tool = self.agent.registry.get("AskUserQuestion")
+        ask_tool = self.context.registry.get("AskUserQuestion")
         assert ask_tool is not None
         grounding = self.clarify_grounding.collect(task=task, rounds=rounds)
         response = await self._complete_in_mode(
@@ -430,13 +431,13 @@ class WorkflowLaneRunner:
             content=response.content,
             tool_calls=[tool_call],
         )
-        self.agent.session.append(assistant_message)
+        self.context.session.append(assistant_message)
         tool_result_message = Message.tool_result_message(
             tool_call_id=tool_call.id,
             display_content=rendered_result,
             result_content=rendered_result,
         )
-        self.agent.session.append(
+        self.context.session.append(
             tool_result_message
         )
         summary.assistant_messages.append(assistant_message)

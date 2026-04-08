@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
 
 from .artifact_invalidation import (
     ArtifactInvalidationAssessor,
     WorkflowRecoveryStrategy,
 )
+from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
+from .executor import ToolExecutor
 from .workflow import (
     ArtifactFreshness,
     ModeDecision,
@@ -35,7 +36,7 @@ class WorkflowRecoveryController:
 
     def __init__(
         self,
-        agent: Any,
+        context: RuntimeContext,
         *,
         artifact_invalidation: ArtifactInvalidationAssessor,
         workflow_policy: WorkflowPolicy,
@@ -45,7 +46,7 @@ class WorkflowRecoveryController:
         append_timeline: TimelineAppender,
         append_execute_bridge: BridgeAppender,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.artifact_invalidation = artifact_invalidation
         self.workflow_policy = workflow_policy
         self.workflow_signals = workflow_signals
@@ -62,11 +63,11 @@ class WorkflowRecoveryController:
         emit: EventSink,
         summary: TurnSummary,
         on_user_question: UserQuestionHandler,
-        executor: Any,
+        executor: ToolExecutor,
     ) -> bool:
         """Refresh or reenter workflow when persisted artifacts drift."""
 
-        if self.agent.workflow_mode != WorkflowMode.EXECUTE.value:
+        if self.context.workflow_mode != WorkflowMode.EXECUTE.value:
             return False
         if not (
             self._artifact_exists(dod.implementation_plan)
@@ -78,9 +79,9 @@ class WorkflowRecoveryController:
         if not freshness.requires_refresh:
             return False
 
-        self.agent.session.update_workflow_ledger(
+        self.context.session.update_workflow_ledger(
             apply_freshness_to_workflow_ledger(
-                self.agent.session.workflow_ledger,
+                self.context.session.workflow_ledger,
                 freshness,
                 phase="recovery",
             )
@@ -141,7 +142,7 @@ class WorkflowRecoveryController:
         freshness: ArtifactFreshness,
         emit: EventSink,
         summary: TurnSummary,
-        executor: Any,
+        executor: ToolExecutor,
     ) -> bool:
         decision = self.workflow_policy.route_from_signals(
             self.workflow_signals.extract_route_signals(
@@ -154,7 +155,7 @@ class WorkflowRecoveryController:
                     dod.retry_count or dod.last_verification_result == "failed"
                 ),
                 unresolved_questions=freshness.reasons,
-                timeline=self.agent.session.workflow_timeline,
+                timeline=self.context.session.workflow_timeline,
             )
         )
         recovery_evidence = self._recovery_evidence_summary(freshness)
@@ -196,7 +197,7 @@ class WorkflowRecoveryController:
         emit: EventSink,
         summary: TurnSummary,
         on_user_question: UserQuestionHandler,
-        executor: Any,
+        executor: ToolExecutor,
         force_plan_after_clarify: bool,
     ) -> bool:
         clarify_reason_code = (
@@ -278,7 +279,7 @@ class WorkflowRecoveryController:
                 and self._artifact_exists(dod.verification_plan),
                 allow_clarify=False,
                 unresolved_questions=recovery_reasons,
-                timeline=self.agent.session.workflow_timeline,
+                timeline=self.context.session.workflow_timeline,
             )
         )
         await self.set_workflow_mode(
