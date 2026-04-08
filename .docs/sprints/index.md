@@ -59,6 +59,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 15](sprint15.md) — Bootstrap Ownership, Service Burn-Down, and Explore Independence
 
+## Phase 14: Entrypoint Shell and Explore Continuity
+
+- [Sprint 16](sprint16.md) — Entrypoint Shell, Launcher Contract, and Explore Continuity
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
