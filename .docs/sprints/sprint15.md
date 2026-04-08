@@ -148,3 +148,35 @@ Implementation targets:
 - a richer permission rule editor
 - visual workflow tooling
 - multi-agent or team orchestration
+
+## Audit
+
+### Status
+
+- Sprint 15 is complete, and the audit is green. Bootstrap ownership is now explicit under `src/loader/runtime/bootstrap.py`, runtime-owned safeguards and reasoning helpers have canonical homes under `src/loader/runtime/`, and the remaining `agent/*` surface is much closer to entrypoint/session orchestration than runtime-service ownership.
+
+### Landed
+
+- runtime bootstrap is now a first-class shared seam: `src/loader/runtime/bootstrap.py` defines the typed `RuntimeBootstrapSource` contract plus `build_runtime_context(...)` / `sync_runtime_context(...)`, and both `src/loader/runtime/conversation.py` and `src/loader/runtime/explore.py` construct runtime state through that shared path instead of a hidden `Agent._build_runtime_context()` helper
+- the old bootstrap helper is gone from `src/loader/agent/loop.py`, and `tests/test_runtime_context.py` now exercises the shared bootstrap contract directly, which makes runtime construction visibly runtime-owned from the first line of setup
+- safeguard ownership is now honest: `src/loader/runtime/safeguards.py` is the canonical implementation, `src/loader/agent/safeguards.py` is a compatibility export only, and `src/loader/agent/loop.py` now imports `RuntimeSafeguards` from the runtime package rather than its own shim
+- reasoning ownership is materially cleaner: decomposition/self-critique helpers now live in `src/loader/runtime/deliberation.py`, completion-check parsing now lives in `src/loader/runtime/task_completion.py`, and `src/loader/agent/reasoning.py` has been reduced to a compatibility-export layer over runtime-owned modules instead of a second live implementation
+- `src/loader/agent/loop.py` is substantially smaller and less misleading than the Sprint 14 baseline: dead planner hooks, dead self-critique hooks, dead raw extraction helpers, and the unused `src/loader/agent/planner.py` module have been deleted, bringing the loop shell down to `668` lines from the earlier four-figure baseline
+- the direct proof contract is stronger and more intentional: `tests/test_runtime_bootstrap.py`, `tests/test_safeguard_services.py`, `tests/test_reasoning_compat.py`, and `tests/test_runtime_context.py` now pin the shared bootstrap seam plus the compatibility-export story for safeguards/reasoning directly, rather than relying only on larger runtime integration tests
+
+### Verification
+
+- `uv run pytest -q` is green: `312 passed`
+- `tests/test_runtime_bootstrap.py` covers the shared bootstrap contract, prompt/capability synchronization, and both conversation/explore construction through the runtime bootstrap seam
+- `tests/test_runtime_context.py` now proves typed context construction without an `Agent._build_runtime_context()` escape hatch
+- `tests/test_safeguard_services.py` proves `src/loader/runtime/safeguards.py` is the canonical implementation and `loader.agent.safeguards` is compatibility-only
+- `tests/test_reasoning_compat.py` proves the runtime-owned deliberation/completion helpers are canonical and `loader.agent.reasoning` re-exports those runtime implementations rather than carrying a second live copy
+- the full parity suite remained green after the service migration and deletion work, so Sprint 15 reduced ownership ambiguity without trading away deterministic runtime coverage
+
+### Residual debt
+
+- `src/loader/runtime/conversation.py` and `src/loader/runtime/explore.py` no longer depend on a hidden bootstrap helper, but their constructors still start from an `Agent`-shaped bootstrap source at the entrypoint boundary; the remaining coupling is now public bootstrap orchestration rather than hidden runtime behavior
+- `src/loader/agent/loop.py` is much smaller and cleaner, but it still owns the conversational fast path, decomposition orchestration, public run/explore entrypoints, and session/UI-facing glue; it is closer to the right shell, not yet minimal
+- `src/loader/agent/reasoning.py` and `src/loader/agent/safeguards.py` are now compatibility shims instead of primary implementations, but those compatibility exports still exist until we decide whether the external import surface can be reduced further
+- explore mode now shares the bootstrap discipline, but it is still a one-shot read-only lane rather than a richer interactive inspection workflow
+- Loader’s workflow/runtime architecture is much cleaner after Sprint 15, but it still stops short of claw-code’s tighter policy seams, OMX’s deeper planning/interview rigor, and a richer operator UX around policy/rule authoring
