@@ -8,6 +8,7 @@ from loader.agent.loop import Agent, AgentConfig
 from loader.runtime.bootstrap import build_runtime_context, sync_runtime_context
 from loader.runtime.conversation import ConversationRuntime
 from loader.runtime.explore import ExploreRuntime
+from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -113,3 +114,18 @@ def test_explore_runtime_uses_shared_bootstrap_factory(
 
     assert calls == ["explore"]
     assert runtime.context.project_root == temp_dir.resolve()
+
+
+def test_build_runtime_launcher_wraps_shared_bootstrap_source(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+
+    launcher = build_runtime_launcher(agent)
+
+    assert isinstance(launcher, RuntimeLauncher)
+    assert launcher.source is agent
