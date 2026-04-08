@@ -51,6 +51,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 13](sprint13.md) — Turn Policy Narrowing, Assumption Ledger, and Artifact Diffs
 
+## Phase 12: Runtime Consolidation After Audit Merge
+
+- [Sprint 14](sprint14.md) — Runtime Context Adoption, Legacy Burn-Down, and Policy Narrowing
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
