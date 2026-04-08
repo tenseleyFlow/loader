@@ -2,6 +2,36 @@
 
 from __future__ import annotations
 
+import re
+
+from .reasoning_types import TaskCompletionCheck
+
+COMPLETION_CHECK_PROMPT = """Evaluate if this task has been FULLY completed.
+
+Original task: {task}
+
+Actions taken so far:
+{actions}
+
+Current response: {response}
+
+IMPORTANT: Be strict about completion. A task is NOT complete if:
+- Files were created but not tested/verified
+- A project was scaffolded but not initialized (npm install, pip install, etc.)
+- Code was written but not run/tested
+- Setup was done but the result wasn't demonstrated
+
+Respond in this exact JSON format:
+{{
+  "is_complete": true/false,
+  "accomplished": ["What was done 1", "What was done 2"],
+  "remaining": ["What still needs to be done 1", "What still needs to be done 2"],
+  "next_steps": ["Immediate next action 1", "Immediate next action 2"],
+  "reasoning": "Why the task is/isn't complete"
+}}
+
+Only output the JSON, no other text."""
+
 
 def detect_premature_completion(
     task: str,
@@ -150,3 +180,36 @@ def get_continuation_prompt(task: str, actions_taken: list[str], response: str) 
         f"You took {len(actions_taken)} action(s). "
         "If there's more to do, continue. Otherwise, confirm completion."
     )
+
+
+def parse_completion_check(response: str, original_task: str) -> TaskCompletionCheck:
+    """Parse an LLM completion-check response."""
+
+    import json
+
+    json_match = re.search(r"\{.*\}", response, re.DOTALL)
+    if not json_match:
+        return TaskCompletionCheck(original_task=original_task)
+
+    try:
+        data = json.loads(json_match.group())
+        next_steps = data.get("next_steps", [])
+
+        continuation = ""
+        if not data.get("is_complete", True) and next_steps:
+            steps = "\n".join(f"- {step}" for step in next_steps[:3])
+            continuation = (
+                f"Task not complete. Next steps:\n{steps}\n\n"
+                "Continue executing these steps now."
+            )
+
+        return TaskCompletionCheck(
+            original_task=original_task,
+            is_complete=data.get("is_complete", False),
+            accomplished=data.get("accomplished", []),
+            remaining=data.get("remaining", []),
+            suggested_next_steps=next_steps,
+            continuation_prompt=continuation,
+        )
+    except json.JSONDecodeError:
+        return TaskCompletionCheck(original_task=original_task)

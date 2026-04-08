@@ -12,6 +12,13 @@ from ..runtime.bootstrap import build_runtime_context
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.context import RuntimeContext
 from ..runtime.conversation import ConversationRuntime
+from ..runtime.deliberation import (
+    DECOMPOSITION_PROMPT,
+    SELF_CRITIQUE_PROMPT,
+    parse_decomposition,
+    parse_self_critique,
+    should_decompose,
+)
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.explore import ExploreRuntime
@@ -21,7 +28,9 @@ from ..runtime.permissions import (
     load_permission_rules,
 )
 from ..runtime.prompt_history import PromptSnapshot
+from ..runtime.reasoning_types import SelfCritique, TaskDecomposition
 from ..runtime.session import ConversationSession
+from ..runtime.task_classification import is_conversational
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
 from .parsing import parse_tool_calls
@@ -33,16 +42,6 @@ from .planner import (
     should_plan,
 )
 from .prompts import build_system_prompt_result
-from .reasoning import (
-    DECOMPOSITION_PROMPT,
-    SELF_CRITIQUE_PROMPT,
-    SelfCritique,
-    TaskDecomposition,
-    is_conversational,
-    parse_decomposition,
-    parse_self_critique,
-    should_decompose,
-)
 from .safeguards import RuntimeSafeguards
 
 
