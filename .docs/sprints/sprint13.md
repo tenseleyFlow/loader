@@ -173,20 +173,22 @@ Implementation targets:
 
 ### Status
 
-- Sprint 13 is in progress. The semantic ledger, prompt/artifact diff surfaces, and deletion-oriented runtime cleanup landed, but the narrower `turn_iteration` response-policy split is still only partially complete.
+- Sprint 13 is complete. The semantic ledger, prompt/artifact diff surfaces, deletion-oriented runtime cleanup, and narrower assistant-response routing seams are now all landed and covered.
 
 ### Landed
 
 - the runtime is less accidental and less puppet-like even before a deeper iteration split: `src/loader/runtime/turn_preamble.py`, `src/loader/runtime/repair.py`, `src/loader/runtime/turn_iteration.py`, `src/loader/runtime/turn_completion.py`, and `src/loader/runtime/completion_policy.py` no longer inject synthetic prefill, no longer puppet repeated empty responses, no longer scold fake-tool narration or deflection through injected reroutes, and no longer bounce long no-tool answers through the self-critique reroute
+- `turn_iteration.py` is now routing through a dedicated response-policy seam instead of owning final-answer, tool-batch, and no-tool dispatch inline: `src/loader/runtime/response_routing.py` now owns classified assistant-response routing, and `src/loader/runtime/turn_iteration.py` is correspondingly smaller and closer to a request/repair/loop-state controller
 - assumptions, contradictions, acceptance anchors, and decision-boundary state are now persisted as an explicit workflow ledger instead of one-off summaries: `src/loader/runtime/workflow_ledger.py` and `src/loader/runtime/session.py` define and persist the ledger, `src/loader/runtime/workflow_lanes.py` seeds it from clarify/plan artifacts, and `src/loader/runtime/workflow_recovery.py` updates it from contradiction and freshness evidence
 - workflow/operator surfaces now explain semantic change more directly: `src/loader/runtime/inspection.py` and `src/loader/cli/main.py` expose the workflow ledger, contradiction highlights, and richer workflow history so operators can see which assumptions remain open, which were contradicted, and which acceptance anchors changed
 - prompt and artifact change visibility is now a product surface instead of an inferred debugging exercise: `src/loader/runtime/prompt_history.py`, `src/loader/runtime/session.py`, `src/loader/runtime/inspection.py`, `src/loader/agent/loop.py`, and `src/loader/cli/main.py` persist prompt snapshots, add `loader prompt diff`, and add `loader workflow show --diff` with concise summaries by default and fuller unified diffs on demand
-- the parity baseline stayed green while the semantic contract expanded: the new coverage lives in `tests/test_runtime_repair_flows.py`, `tests/test_workflow_ledger.py`, `tests/test_session_state.py`, `tests/test_inspection.py`, `tests/test_turn_completion.py`, and the existing runtime/workflow inspection tests
+- the parity baseline stayed green while the semantic contract expanded and `turn_iteration` narrowed: the new coverage lives in `tests/test_runtime_repair_flows.py`, `tests/test_response_routing.py`, `tests/test_workflow_ledger.py`, `tests/test_session_state.py`, `tests/test_inspection.py`, `tests/test_turn_completion.py`, and the existing runtime/workflow inspection tests
 
 ### Verification
 
-- `uv run pytest -q` is green: `245 passed`
+- `uv run pytest -q` is green: `247 passed`
 - `tests/test_runtime_repair_flows.py` covers the honest empty-response retry path, no synthetic prefill on first turns, and the absence of the older no-tool puppeting/scolding behavior
+- `tests/test_response_routing.py` covers direct final-answer routing and halted tool-batch routing without relying only on the larger iteration loop tests
 - `tests/test_workflow_ledger.py` covers ledger seeding, contradiction tracking, acceptance-anchor updates, and operator-facing highlight summaries
 - `tests/test_session_state.py` covers persistence of the workflow ledger and prompt snapshot history across saved/resumed sessions
 - `tests/test_inspection.py` covers workflow-ledger inspection, `loader prompt diff`, and `loader workflow show --diff` against persisted prompt and artifact history
@@ -194,8 +196,8 @@ Implementation targets:
 
 ### Residual debt
 
-- `src/loader/runtime/turn_iteration.py` is still heavier than the references and still mixes response classification with routing policy; Sprint 13's structural narrowing goal is only partially met
+- `src/loader/runtime/turn_iteration.py` is no longer the main policy knot, but `src/loader/runtime/response_routing.py` and `src/loader/runtime/tool_batches.py` still carry more heuristic response/tool policy than the narrower reference seams in claw-code
 - the workflow ledger is intentionally pragmatic and text-first; Loader still does not have deeper symbolic reasoning, model-authored contradiction analysis, or richer provenance for every semantic state change
 - prompt and artifact diffs are based on persisted snapshots and versioned text artifacts; Loader still does not offer pre-run candidate prompt comparison, semantic/AST-aware artifact diffs, or richer visual timeline tooling
 - older sessions may not have prompt-history or artifact-history depth comparable to new sessions, so the newest diff surfaces are strongest on sessions created after the Sprint 13 persistence changes
-- Loader is more inspectable than it was at the end of Sprint 12, but it still does not match claw-code or OMX on deeper response-policy factoring, planning rigor, or broader day-two operator ergonomics
+- Loader is more inspectable and less accidental than it was at the end of Sprint 12, but it still does not match claw-code or OMX on deeper planning rigor, semantic artifact discipline, or broader day-two operator ergonomics
