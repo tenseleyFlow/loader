@@ -55,6 +55,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 14](sprint14.md) — Runtime Context Adoption, Legacy Burn-Down, and Policy Narrowing
 
+## Phase 13: Runtime Bootstrap and Service Ownership
+
+- [Sprint 15](sprint15.md) — Bootstrap Ownership, Service Burn-Down, and Explore Independence
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
