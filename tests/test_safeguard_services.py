@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from loader.agent.safeguards import RuntimeSafeguards
+from loader.agent.safeguards import RuntimeSafeguards as AgentRuntimeSafeguards
 from loader.runtime.safeguard_services import (
     ActionTracker,
     PreActionValidator,
     ValidationResult,
 )
+from loader.runtime.safeguards import RuntimeSafeguards
 
 
 def test_action_tracker_detects_duplicate_write_after_recording(tmp_path) -> None:
@@ -60,3 +61,7 @@ def test_runtime_safeguards_wrap_runtime_owned_services() -> None:
 
     assert isinstance(safeguards.action_tracker, ActionTracker)
     assert isinstance(safeguards.validator, PreActionValidator)
+
+
+def test_agent_safeguards_reexport_runtime_safeguards() -> None:
+    assert AgentRuntimeSafeguards is RuntimeSafeguards
