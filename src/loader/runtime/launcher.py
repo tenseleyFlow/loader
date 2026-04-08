@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .bootstrap import RuntimeBootstrapSource
+from .chat_lane import ConversationalTurnRunner
 from .conversation import ConfirmationHandler, ConversationRuntime, EventSink, UserQuestionHandler
 from .events import TurnSummary
 from .explore import ExploreRuntime
@@ -13,6 +14,16 @@ class RuntimeLauncher:
 
     def __init__(self, source: RuntimeBootstrapSource) -> None:
         self.source = source
+
+    async def run_conversational(
+        self,
+        user_message: str,
+        emit: EventSink,
+    ) -> str:
+        """Run the runtime-owned conversational fast path."""
+
+        runner = ConversationalTurnRunner(self.source)
+        return await runner.run(user_message, emit)
 
     async def run_turn(
         self,

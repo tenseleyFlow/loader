@@ -375,53 +375,6 @@ class Agent:
         )
         return parse_decomposition(response.content, task)
 
-    async def _handle_conversational(
-        self,
-        user_message: str,
-        emit: Callable[[AgentEvent], Awaitable[None]],
-    ) -> str:
-        """Fast path for conversational messages - no tools, quick response."""
-        await emit(AgentEvent(type="thinking"))
-
-        # Add to history
-        self.session.append(Message(role=Role.USER, content=user_message))
-
-        # Simple system prompt for chat (no tools)
-        chat_system = Message(
-            role=Role.SYSTEM,
-            content=(
-                "You are Loader, a friendly local coding assistant. "
-                "Respond naturally and briefly to conversational messages. "
-                "If the user wants to do a coding task, tell them to describe it. "
-                "Keep responses short (1-3 sentences)."
-            ),
-        )
-
-        # Use only recent context for speed
-        recent_messages = self.messages[-4:] if len(self.messages) > 4 else self.messages
-
-        # Stream the response
-        full_content = ""
-        async for chunk in self.backend.stream(
-            messages=[chat_system] + recent_messages,
-            tools=None,  # No tools for chat
-            temperature=0.7,  # More natural
-            max_tokens=256,  # Short response
-        ):
-            if chunk.content:
-                await emit(AgentEvent(
-                    type="stream",
-                    content=chunk.content,
-                    is_stream_end=chunk.is_done,
-                ))
-                full_content += chunk.content
-
-        # Add to history
-        self.session.append(Message(role=Role.ASSISTANT, content=full_content))
-
-        await emit(AgentEvent(type="response", content=full_content))
-        return full_content
-
     async def run(
         self,
         user_message: str,
@@ -474,10 +427,11 @@ class Agent:
     ) -> str:
         """Internal run method that supports steering."""
         cfg = self.config.reasoning
+        launcher = build_runtime_launcher(self)
 
         # Fast path: conversational messages don't need tools
         if is_conversational(user_message):
-            return await self._handle_conversational(user_message, emit)
+            return await launcher.run_conversational(user_message, emit)
 
         # Track original task for multi-turn conversations
         # Only set on first non-conversational message
