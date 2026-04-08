@@ -156,3 +156,35 @@ Implementation targets:
 - AST-aware or LSP-aware semantic artifact diffs
 - visual workflow or timeline UIs
 - multi-agent or team orchestration
+
+## Audit
+
+### Status
+
+- Sprint 14 is complete, and the audit is green. `RuntimeContext` is now the normal runtime seam for the main turn path rather than a selective bridge layered over legacy callbacks.
+
+### Landed
+
+- `src/loader/runtime/context.py` is now a real primary contract instead of a partial adapter: the old `RuntimeLegacyServices` shim is gone, workflow-mode mutation lives on the typed context, and the runtime can refresh capability state, steering state, and workflow state without routing back through a legacy wrapper
+- runtime-owned service adoption is materially deeper than the merged-audit baseline: `src/loader/runtime/workflow_state.py`, `src/loader/runtime/phases.py`, `src/loader/runtime/repair.py`, `src/loader/runtime/completion_policy.py`, `src/loader/runtime/turn_completion.py`, `src/loader/runtime/response_route_handlers.py`, `src/loader/runtime/response_routing.py`, `src/loader/runtime/turn_loop.py`, `src/loader/runtime/turn_iteration.py`, `src/loader/runtime/finalization.py`, `src/loader/runtime/workflow_lanes.py`, and `src/loader/runtime/workflow_recovery.py` now consume typed runtime state instead of reaching into `Agent` for session, backend, registry, or workflow state
+- raw-text tool recovery no longer depends on a hidden `Agent._extract_raw_json_tool_calls(...)` escape hatch: `src/loader/runtime/repair.py` now routes fallback parsing through the runtime parser plus the active registry, which closes an old audit concern around newer tools such as `TodoWrite`
+- the response/tool path is narrower and more directly testable: the earlier extraction of `src/loader/runtime/tool_batch_checks.py`, `src/loader/runtime/tool_batch_recovery.py`, `src/loader/runtime/response_route_handlers.py`, and `src/loader/runtime/response_route_types.py` is now paired with typed-context adoption across the hot path, so response routing, tool-batch gating, no-tool completion, and finalization no longer behave like disguised `agent/loop.py` helpers
+- the merged audit line is now reflected as one architectural baseline instead of a second hidden runtime: the active `trunk` runtime owns reasoning callbacks, raw-text recovery, response policy, workflow state, turn state, and finalization directly, and the remaining `agent/*` ownership is much smaller and easier to inventory
+- the test contract around this migration is stronger and more intentional: `tests/test_runtime_context.py`, `tests/test_runtime_state_controllers.py`, `tests/test_completion_policy.py`, `tests/test_repair.py`, `tests/test_response_route_handlers.py`, `tests/test_turn_loop.py`, `tests/test_turn_iteration.py`, and `tests/test_explore_runtime.py` now pin the typed-context contract directly instead of relying only on large integration tests
+
+### Verification
+
+- `uv run pytest -q` is green: `303 passed`
+- `tests/test_runtime_context.py` and `tests/test_runtime_state_controllers.py` cover typed context construction plus direct workflow-state and phase-tracker behavior without an `Agent` object on the other side
+- `tests/test_repair.py` covers raw-text fallback through the runtime parser/registry, including modern workflow-tool recovery such as `TodoWrite`
+- `tests/test_completion_policy.py`, `tests/test_turn_completion.py`, `tests/test_response_route_handlers.py`, `tests/test_response_routing.py`, `tests/test_turn_iteration.py`, and `tests/test_turn_loop.py` cover the main response-policy and assistant-cycle path after the deeper context adoption
+- `tests/test_explore_runtime.py` still proves explore refreshes capabilities before the first request, so the typed runtime context is also now load-bearing outside the main task loop
+- the larger workflow/runtime suites remained green after the migration, so Sprint 14 did not trade architectural cleanup for parity regressions
+
+### Residual debt
+
+- `src/loader/runtime/conversation.py` and `src/loader/runtime/explore.py` still bootstrap from `agent._build_runtime_context()`, and `conversation.py` still performs a post-prepare sync of capability/prompt state from the agent wrapper; the remaining runtime/agent coupling is now mostly bootstrap ownership rather than policy ownership
+- `src/loader/agent/loop.py` still owns meaningful planning/prompt/session orchestration outside the hot runtime path, so Loader is much cleaner than the merged-audit baseline but has not fully collapsed to a minimal public entrypoint shell yet
+- `src/loader/agent/reasoning.py` and `src/loader/agent/safeguards.py` are now behind typed runtime protocols, but they still own meaningful behavior and remain future burn-down candidates if Sprint 15 wants to keep reducing agent-owned runtime services
+- `src/loader/runtime/tool_batches.py` and parts of `src/loader/runtime/workflow_lanes.py` are narrower than before, but they still carry more heuristic policy than the tighter claw-code reference seams
+- the workflow policy is stronger and the runtime contract is cleaner, but Loader still stops short of claw-code's fuller policy engine, OMX's deeper planning/interview rigor, and a richer operator UX for editing or simulating policy/rule state
