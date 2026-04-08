@@ -1,6 +1,6 @@
 # Loader Runtime Parity Checkpoint
 
-Date: 2026-04-07
+Date: 2026-04-08
 
 This file tracks the current deterministic runtime baseline for Loader. It stays intentionally narrow and operational: what the runtime can do today, what remains weak, and what scenarios we measure with repeatable tests.
 
@@ -15,6 +15,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - `loader permissions show` for normalized rule inspection, source-path visibility, and prompt-state inspection without opening JSON files by hand
 - `loader permissions check` for dry-running one hypothetical tool request against the active policy, including required mode, normalized input summary, and matched-rule reasoning
 - raw JSON fallback when the model emits tool syntax in plain text
+- raw JSON fallback now routes through the runtime parser plus the active registry, including modern workflow tools such as `TodoWrite` and `AskUserQuestion`
 - persisted definition-of-done state under `.loader/dod/`
 - persisted clarify briefs under `.loader/briefs/`
 - persisted implementation and verification plans under `.loader/plans/`
@@ -53,6 +54,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - `loader prompt diff [session-id]` for comparing persisted prompt contracts, with concise summaries by default and unified diffs on demand
 - `loader workflow show [session-id]` with `--mode`, `--kind`, and `--limit` filters plus operator-focused workflow highlights, recent timeline snippets in `loader session show`, and `--diff` / `--full-diff` artifact comparison for persisted workflow artifacts
 - `loader explore <prompt>` as a one-shot read-only lookup lane with its own prompt, constrained registry, and no DoD or workflow routing
+- `RuntimeContext` is now the primary runtime seam for workflow state, turn phases, response repair, no-tool completion, response routing, turn looping, finalization, workflow lanes, and workflow recovery; the older `RuntimeLegacyServices` shim has been removed
 - CLI and TUI status surfaces for model, capability profile, mode, workflow mode, workflow reason, last transition summary, permission mode, explicit turn phase, prompt format/sections, DoD phase, pending items, last verification result, and active session id
 - CLI and TUI workflow-mode visibility plus artifact notifications
 - CLI and TUI permission-mode visibility with color-coded status
@@ -66,8 +68,9 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 
 ## Known weak spots
 
-- [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py) is now much smaller and controller-based, and [`src/loader/runtime/turn_iteration.py`](../src/loader/runtime/turn_iteration.py) is mostly orchestration glue, but [`src/loader/runtime/response_routing.py`](../src/loader/runtime/response_routing.py) and [`src/loader/runtime/tool_batches.py`](../src/loader/runtime/tool_batches.py) still carry more heuristic response/tool policy than the narrower reference seams in `refs/claw-code`
+- the hot runtime path is now substantially context-owned, but [`src/loader/runtime/conversation.py`](../src/loader/runtime/conversation.py) and [`src/loader/runtime/explore.py`](../src/loader/runtime/explore.py) still bootstrap from `Agent._build_runtime_context()` and keep a thin wrapper-level dependency for initial prompt/capability synchronization
 - planning, decomposition, and several helper behaviors still live in [`src/loader/agent/loop.py`](../src/loader/agent/loop.py), so ownership is cleaner than Sprint 00 but not fully simplified yet
+- [`src/loader/runtime/tool_batches.py`](../src/loader/runtime/tool_batches.py) and parts of [`src/loader/runtime/workflow_lanes.py`](../src/loader/runtime/workflow_lanes.py) are narrower and more directly tested than before, but they still carry more heuristic policy than the tightest reference seams in `refs/claw-code`
 - the workflow policy now consumes typed signals, but signal extraction is still heuristic and hand-tuned; Loader does not yet implement OMX's deeper ambiguity analysis, richer pressure-pass discipline, or branch-specific policy depth
 - clarify is now intent-aware, pressure-aware, and codebase-grounded, but it is still much shallower than OMX's deep-interview behavior and does not adapt its budget or questioning style by task class
 - plan freshness now handles broader semantic invalidation with typed evidence, but it is still lightweight and runtime-authored; Loader does not yet reason deeply over richer artifact metadata, contradicting verification evidence, or larger task reframes
@@ -131,14 +134,17 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 ## Verification snapshot
 
-As of 2026-04-07:
+As of 2026-04-08:
 
-- `uv run pytest -q`: 247 passed
+- `uv run pytest -q`: 303 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_prompt_builder.py` covers section rendering, native-vs-ReAct formatting, and prompt metadata persistence
 - `tests/test_turn_state_machine.py` covers allowed/disallowed turn transitions and terminal transition metadata
 - `tests/test_runtime_phases.py` covers repair/completion phase transitions plus persisted transition metadata in runtime events and session state
 - `tests/test_runtime_repair_flows.py` covers honest empty-response retries, no synthetic prefill on first turns, and the removal of the older no-tool puppeting/scolding reroutes
+- `tests/test_runtime_context.py` and `tests/test_runtime_state_controllers.py` cover typed runtime-context construction plus direct workflow-state and phase-tracker behavior without relying on a full `Agent`
+- `tests/test_repair.py` covers raw-text fallback through the runtime parser and active registry, including `TodoWrite` recovery
+- `tests/test_completion_policy.py` covers direct text-loop bailout and continuation-prompt behavior on the typed runtime context
 - `tests/test_response_routing.py` covers direct final-answer routing and halted tool-batch routing at the new response-policy seam
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers workflow artifact round trips, scored-router expectations, DoD workflow links, and todo-to-DoD syncing
@@ -181,3 +187,4 @@ As of 2026-04-07:
 - Sprint 11 is complete: Loader now has typed workflow signals, intent-aware clarify slots, semantic invalidation with targeted recovery vs full re-plan, filtered workflow inspection, and dedicated clarify/plan lane execution in `runtime.workflow_lanes`, but it still stops short of OMX-style pressure-pass interviewing, richer semantic artifact reasoning, and the deeper end-to-end orchestration discipline in the refs.
 - Sprint 12 is complete: Loader now has pressure-pass clarify behavior, codebase-backed clarify grounding, structured recovery evidence, controllerized turn-runtime seams, and a genuinely coordinator-shaped `runtime.conversation`, but it still stops short of OMX-style deep interview depth, richer semantic artifact reasoning, artifact/prompt diff ergonomics, and the broader operator/runtime sophistication in the refs.
 - Sprint 13 is complete: Loader now avoids synthetic prefill and no-tool puppeting, persists a semantic workflow ledger, exposes prompt/artifact diff surfaces, and routes assistant responses through a dedicated response-policy seam, but it still stops short of claw-code's narrower response/tool policy factoring, deeper planning rigor, and broader operator ergonomics.
+- Sprint 14 is complete: Loader now treats `RuntimeContext` as the primary seam across workflow state, turn phases, response policy, turn looping, workflow recovery, and finalization; the old runtime legacy shim is gone, raw-text tool recovery no longer depends on hidden agent extractors, and the hot path is substantially more runtime-owned, but bootstrap ownership still begins at the agent wrapper and Loader still stops short of claw-code's fuller policy engine, OMX's deeper workflow rigor, and richer operator/runtime surfaces.
