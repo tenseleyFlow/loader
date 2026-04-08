@@ -86,7 +86,7 @@ class ConversationRuntime:
             phase_tracker=self.phase_tracker,
         )
         self.response_router = AssistantResponseRouter(
-            agent,
+            self.context,
             tracer=self.tracer,
             phase_tracker=self.phase_tracker,
             tool_batches=ToolBatchRunner(self.context, self.dod_store),
@@ -118,7 +118,7 @@ class ConversationRuntime:
             workflow_recovery=self.workflow_recovery,
         )
         self.turn_loop = TurnLoopController(
-            agent,
+            self.context,
             turn_preamble=self.turn_preamble,
             turn_iteration=self.turn_iteration,
         )

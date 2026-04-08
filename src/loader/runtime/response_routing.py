@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .context import RuntimeContext
 from .phases import TurnPhaseTracker
 from .repair import ToolCallAnalysis
 from .response_route_handlers import (
@@ -34,17 +35,16 @@ class AssistantResponseRouter:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         *,
         tracer: RuntimeTracer,
         phase_tracker: TurnPhaseTracker,
         tool_batches: ToolBatchRunner,
         turn_completion: TurnCompletionController,
     ) -> None:
-        self.agent = agent
-        self.final_answer_handler = FinalAnswerRouteHandler(agent, tracer)
+        self.final_answer_handler = FinalAnswerRouteHandler(context, tracer)
         self.tool_batch_handler = ToolBatchRouteHandler(
-            agent,
+            context,
             tracer=tracer,
             phase_tracker=phase_tracker,
             tool_batches=tool_batches,

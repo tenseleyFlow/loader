@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..llm.base import Message, Role
+from .context import RuntimeContext
 from .events import AgentEvent
 from .phases import TurnPhase, TurnPhaseTracker
 from .repair import ToolCallAnalysis
@@ -22,8 +23,8 @@ from .turn_completion import TurnCompletionAction, TurnCompletionController
 class FinalAnswerRouteHandler:
     """Own final-answer completion behavior."""
 
-    def __init__(self, agent, tracer: RuntimeTracer) -> None:
-        self.agent = agent
+    def __init__(self, context: RuntimeContext, tracer: RuntimeTracer) -> None:
+        self.context = context
         self.tracer = tracer
 
     async def handle(
@@ -37,7 +38,7 @@ class FinalAnswerRouteHandler:
             role=Role.ASSISTANT,
             content=analysis.response_content,
         )
-        self.agent.session.append(assistant_message)
+        self.context.session.append(assistant_message)
         context.summary.assistant_messages.append(assistant_message)
         final_response = analysis.final_response or analysis.content
         context.summary.final_response = final_response
@@ -55,13 +56,13 @@ class ToolBatchRouteHandler:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         *,
         tracer: RuntimeTracer,
         phase_tracker: TurnPhaseTracker,
         tool_batches: ToolBatchRunner,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.tracer = tracer
         self.phase_tracker = phase_tracker
         self.tool_batches = tool_batches
@@ -82,7 +83,7 @@ class ToolBatchRouteHandler:
                 role=Role.ASSISTANT,
                 content=analysis.response_content,
             )
-            self.agent.session.append(assistant_message)
+            self.context.session.append(assistant_message)
             context.summary.assistant_messages.append(assistant_message)
             final_response = analysis.final_response or analysis.content
             context.summary.final_response = final_response
@@ -106,7 +107,7 @@ class ToolBatchRouteHandler:
             content=analysis.response_content,
             tool_calls=list(analysis.tool_calls),
         )
-        self.agent.session.append(assistant_message)
+        self.context.session.append(assistant_message)
         context.summary.assistant_messages.append(assistant_message)
         self.tracer.record(
             "assistant.tool_batch",

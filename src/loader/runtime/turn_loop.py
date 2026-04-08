@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
@@ -44,12 +45,12 @@ class TurnLoopController:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         *,
         turn_preamble: TurnPreludeController,
         turn_iteration: TurnIterationController,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.turn_preamble = turn_preamble
         self.turn_iteration = turn_iteration
 
@@ -72,7 +73,7 @@ class TurnLoopController:
         """Run the bounded main turn loop and report how it finished."""
 
         state = TurnLoopState()
-        while state.iterations < self.agent.config.max_iterations:
+        while state.iterations < self.context.config.max_iterations:
             state.iterations += 1
             prelude_decision = await self.turn_preamble.prepare_iteration(
                 task=task,
@@ -93,7 +94,7 @@ class TurnLoopController:
                 original_task=original_task,
                 effective_max_tokens=effective_max_tokens,
                 iterations=state.iterations,
-                max_iterations=self.agent.config.max_iterations,
+                max_iterations=self.context.config.max_iterations,
                 actions_taken=state.actions_taken,
                 continuation_count=state.continuation_count,
                 empty_retry_count=state.empty_retry_count,
