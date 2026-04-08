@@ -9,7 +9,7 @@ from pathlib import Path
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role, ToolCall
 from ..runtime.capabilities import resolve_backend_capability_profile
-from ..runtime.context import RuntimeContext, RuntimeLegacyServices
+from ..runtime.context import RuntimeContext
 from ..runtime.conversation import ConversationRuntime
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
@@ -376,13 +376,10 @@ class Agent:
             permission_config_status=self.permission_config_status,
             workflow_mode=self.workflow_mode,
             safeguards=self.safeguards,
-            legacy=RuntimeLegacyServices(
-                message_history=lambda: self.messages,
-                set_workflow_mode=_set_workflow_mode,
-            ),
             reasoning=RuntimeReasoningService(self.backend, self.config),
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
+            set_workflow_mode_callback=_set_workflow_mode,
             drain_steering_messages_callback=self._drain_steering_queue,
             queue_steering_message_callback=_queue_steering_message,
             refresh_capability_profile_callback=_refresh_capability_profile,

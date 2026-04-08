@@ -37,10 +37,10 @@ def test_agent_builds_typed_runtime_context(temp_dir: Path) -> None:
     assert context.active_permission_mode == agent.active_permission_mode
     assert context.active_permission_rule_counts == agent.active_permission_rule_counts
     assert context.reasoning is not None
-    assert context.legacy.message_history() is agent.messages
+    assert context.messages is agent.session.messages
 
 
-def test_runtime_context_legacy_services_stay_in_sync(temp_dir: Path) -> None:
+def test_runtime_context_control_callbacks_stay_in_sync(temp_dir: Path) -> None:
     agent = Agent(
         backend=ScriptedBackend(),
         config=AgentConfig(auto_context=False),
@@ -52,7 +52,7 @@ def test_runtime_context_legacy_services_stay_in_sync(temp_dir: Path) -> None:
 
     assert context.drain_steering_messages() == ["Re-check the current task."]
 
-    context.legacy.set_workflow_mode("clarify")
+    context.set_workflow_mode("clarify")
     assert agent.workflow_mode == "clarify"
     assert context.workflow_mode == "clarify"
 

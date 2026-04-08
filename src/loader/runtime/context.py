@@ -97,14 +97,6 @@ class RuntimeReasoningServiceProtocol(Protocol):
 
 
 @dataclass(slots=True)
-class RuntimeLegacyServices:
-    """Explicit migration seams for legacy agent-owned behavior."""
-
-    message_history: Callable[[], list[Message]]
-    set_workflow_mode: Callable[[str], None]
-
-
-@dataclass(slots=True)
 class RuntimeContext:
     """Typed state and services shared across runtime helpers."""
 
@@ -119,11 +111,11 @@ class RuntimeContext:
     permission_config_status: PermissionConfigStatus
     workflow_mode: str
     safeguards: RuntimeSafeguardsProtocol
-    legacy: RuntimeLegacyServices
     reasoning: RuntimeReasoningServiceProtocol | None = None
     recovery_context: RecoveryContext | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
+    set_workflow_mode_callback: Callable[[str], None] | None = None
     drain_steering_messages_callback: Callable[[], list[str]] | None = None
     queue_steering_message_callback: Callable[[str], None] | None = None
     refresh_capability_profile_callback: Callable[[], None] | None = None
@@ -151,6 +143,15 @@ class RuntimeContext:
         """Return rule counts for the active permission policy."""
 
         return self.permission_policy.rule_counts()
+
+    def set_workflow_mode(self, workflow_mode: str) -> None:
+        """Update the active workflow mode through the runtime control seam."""
+
+        if self.set_workflow_mode_callback is None:
+            self.workflow_mode = workflow_mode
+            return
+        self.set_workflow_mode_callback(workflow_mode)
+        self.workflow_mode = workflow_mode
 
     def drain_steering_messages(self) -> list[str]:
         """Drain pending steering messages through the runtime control seam."""

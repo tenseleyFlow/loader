@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from loader.llm.base import Message, Role
-from loader.runtime.context import RuntimeContext, RuntimeLegacyServices
+from loader.runtime.context import RuntimeContext
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.events import TurnSummary
 from loader.runtime.finalization import TurnFinalizer
@@ -116,10 +116,6 @@ def build_context(temp_dir: Path, session: FakeSession) -> RuntimeContext:
         permission_config_status=rule_status,
         workflow_mode="execute",
         safeguards=FakeSafeguards(),
-        legacy=RuntimeLegacyServices(
-            message_history=lambda: session.messages,
-            set_workflow_mode=lambda mode: None,
-        ),
     )
 
 

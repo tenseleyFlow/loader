@@ -50,7 +50,7 @@ class ConversationRuntime:
         self.artifact_invalidation = ArtifactInvalidationAssessor()
         self.artifact_store = WorkflowArtifactStore(agent.project_root)
         self.workflow_state = WorkflowStateController(
-            agent,
+            self.context,
             dod_store=self.dod_store,
         )
         self.workflow_lanes = WorkflowLaneRunner(
@@ -71,7 +71,7 @@ class ConversationRuntime:
         )
         self.repairer = ResponseRepairer(agent)
         self.completion_policy = CompletionPolicy(agent)
-        self.phase_tracker = TurnPhaseTracker(agent, self.tracer)
+        self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
         self.finalizer = TurnFinalizer(
             agent,
             self.tracer,

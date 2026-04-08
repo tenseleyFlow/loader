@@ -11,7 +11,7 @@ import pytest
 from loader.llm.base import CompletionResponse, Message, Role, StreamChunk, ToolCall
 from loader.runtime.assistant_turns import AssistantTurnRequester
 from loader.runtime.capabilities import resolve_backend_capability_profile
-from loader.runtime.context import RuntimeContext, RuntimeLegacyServices
+from loader.runtime.context import RuntimeContext
 from loader.runtime.events import AgentEvent
 from loader.runtime.permissions import (
     PermissionMode,
@@ -131,10 +131,6 @@ def build_runtime_context(
         permission_config_status=rule_status,
         workflow_mode="execute",
         safeguards=safeguards,
-        legacy=RuntimeLegacyServices(
-            message_history=lambda: session.messages,  # type: ignore[attr-defined]
-            set_workflow_mode=lambda mode: None,
-        ),
         queue_steering_message_callback=queued_messages.append,
     )
     return context, queued_messages

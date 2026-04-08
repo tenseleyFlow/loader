@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from loader.llm.base import Message, Role, ToolCall
-from loader.runtime.context import RuntimeContext, RuntimeLegacyServices
+from loader.runtime.context import RuntimeContext
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.events import AgentEvent, TurnSummary
 from loader.runtime.executor import ToolExecutionOutcome, ToolExecutionState
@@ -131,10 +131,6 @@ def build_context(
         permission_config_status=rule_status,
         workflow_mode="execute",
         safeguards=safeguards,
-        legacy=RuntimeLegacyServices(
-            message_history=lambda: messages,
-            set_workflow_mode=lambda mode: None,
-        ),
         reasoning=SimpleNamespace(
             assess_confidence=assess_confidence,
             verify_action=verify_action,

@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from loader.llm.base import ToolCall
-from loader.runtime.context import RuntimeContext, RuntimeLegacyServices
+from loader.runtime.context import RuntimeContext
 from loader.runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -85,10 +85,6 @@ def build_context(
         permission_config_status=rule_status,
         workflow_mode="execute",
         safeguards=FakeSafeguards(),
-        legacy=RuntimeLegacyServices(
-            message_history=lambda: session.messages,
-            set_workflow_mode=lambda mode: None,
-        ),
     )
 
 

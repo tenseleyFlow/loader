@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from ..llm.base import Message, Role
+from .context import RuntimeContext
 from .dod import DefinitionOfDone, DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .workflow import (
@@ -24,11 +25,11 @@ class WorkflowStateController:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         *,
         dod_store: DefinitionOfDoneStore,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.dod_store = dod_store
 
     async def set_workflow_mode(
@@ -42,8 +43,8 @@ class WorkflowStateController:
         """Apply one workflow-mode decision across session, DoD, and summary state."""
 
         mode = decision.mode
-        self.agent.set_workflow_mode(mode.value)
-        self.agent.session.update_runtime_state(
+        self.context.set_workflow_mode(mode.value)
+        self.context.session.update_runtime_state(
             workflow_mode=mode.value,
             workflow_reason_code=decision.reason_code,
             workflow_reason_summary=decision.reason_summary,
@@ -96,13 +97,13 @@ class WorkflowStateController:
         entry = WorkflowTimelineEntry.from_decision(
             decision,
             kind=kind,
-            prompt_format=self.agent.prompt_format,
-            prompt_sections=self.agent.prompt_sections,
+            prompt_format=self.context.prompt_format,
+            prompt_sections=self.context.prompt_sections,
             artifact_paths=artifact_paths,
         )
-        self.agent.session.append_workflow_timeline_entry(entry)
+        self.context.session.append_workflow_timeline_entry(entry)
         if summary is not None:
-            summary.workflow_timeline = list(self.agent.session.workflow_timeline)
+            summary.workflow_timeline = list(self.context.session.workflow_timeline)
 
     def maybe_append_execute_bridge(self, dod: DefinitionOfDone) -> None:
         """Append one workflow bridge prompt before execute mode, if needed."""
@@ -114,9 +115,9 @@ class WorkflowStateController:
         )
         if bridge and not any(
             message.role == Role.USER and "[WORKFLOW BRIDGE]" in message.content
-            for message in self.agent.session.messages[-4:]
+            for message in self.context.session.messages[-4:]
         ):
-            self.agent.session.append(
+            self.context.session.append(
                 Message(
                     role=Role.USER,
                     content=(
