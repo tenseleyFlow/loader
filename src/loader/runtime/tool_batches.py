@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from ..llm.base import Message, Role, ToolCall
+from ..llm.base import ToolCall
 from .context import RuntimeContext
 from .dod import DefinitionOfDone, DefinitionOfDoneStore, record_successful_tool_call
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutionState, ToolExecutor
-from .recovery import RecoveryContext, format_failure_message, format_recovery_prompt
+from .tool_batch_checks import ToolBatchConfidenceGate, ToolBatchVerificationGate
+from .tool_batch_recovery import ToolBatchRecoveryController
 from .workflow import sync_todos_to_definition_of_done
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -35,9 +36,16 @@ class ToolBatchRunner:
         self,
         context: RuntimeContext,
         dod_store: DefinitionOfDoneStore,
+        *,
+        confidence_gate: ToolBatchConfidenceGate | None = None,
+        recovery_controller: ToolBatchRecoveryController | None = None,
+        verification_gate: ToolBatchVerificationGate | None = None,
     ) -> None:
         self.context = context
         self.dod_store = dod_store
+        self.confidence_gate = confidence_gate or ToolBatchConfidenceGate(context)
+        self.recovery_controller = recovery_controller or ToolBatchRecoveryController(context)
+        self.verification_gate = verification_gate or ToolBatchVerificationGate(context)
 
     async def execute_batch(
         self,
@@ -62,7 +70,7 @@ class ToolBatchRunner:
             cfg = self.context.config.reasoning
 
             if cfg.confidence_scoring:
-                should_skip = await self._handle_confidence_gate(
+                should_skip = await self.confidence_gate.should_skip(
                     tool_call=tool_call,
                     emit=emit,
                 )
@@ -109,7 +117,11 @@ class ToolBatchRunner:
                 and outcome.is_error
                 and self.context.config.auto_recover
             ):
-                recovery_result = await self._handle_recovery(tool_call, outcome, emit)
+                recovery_result = await self.recovery_controller.build_follow_up(
+                    tool_call=tool_call,
+                    outcome=outcome,
+                    emit=emit,
+                )
                 if recovery_result is not None:
                     summary.tool_result_messages.append(recovery_result)
                     self.context.session.append(recovery_result)
@@ -143,7 +155,7 @@ class ToolBatchRunner:
                 )
             )
 
-            should_continue = await self._run_post_tool_verification(
+            should_continue = await self.verification_gate.should_continue(
                 tool_call=tool_call,
                 outcome=outcome,
                 emit=emit,
@@ -167,46 +179,6 @@ class ToolBatchRunner:
 
         return result
 
-    async def _handle_confidence_gate(
-        self,
-        *,
-        tool_call: ToolCall,
-        emit: EventSink,
-    ) -> bool:
-        """Emit confidence scoring and optionally skip low-confidence actions."""
-
-        cfg = self.context.config.reasoning
-        context = "\n".join(
-            message.content[:500]
-            for message in self.context.messages[-5:]
-            if message.content
-        )
-        confidence = await self.context.assess_confidence(
-            tool_call.name,
-            tool_call.arguments,
-            context,
-        )
-        await emit(
-            AgentEvent(
-                type="confidence",
-                content=f"Confidence: {confidence.level.name} ({confidence.score}/5)",
-                confidence=confidence,
-                tool_name=tool_call.name,
-            )
-        )
-        if confidence.score >= cfg.min_confidence_for_action:
-            return False
-
-        low_confidence_message = (
-            "[LOW CONFIDENCE WARNING] The planned action has low confidence "
-            f"({confidence.level.name}).\n"
-            f"Reasoning: {confidence.reasoning}\n"
-            f"Risks: {', '.join(confidence.risks)}\n"
-            "Consider an alternative approach or gather more information first."
-        )
-        self.context.session.append(Message(role=Role.USER, content=low_confidence_message))
-        return True
-
     async def _record_successful_execution(
         self,
         *,
@@ -226,125 +198,3 @@ class ToolBatchRunner:
         self.dod_store.save(dod)
         self.context.recovery_context = None
         return None
-
-    async def _run_post_tool_verification(
-        self,
-        *,
-        tool_call: ToolCall,
-        outcome,
-        emit: EventSink,
-    ) -> bool:
-        """Run optional post-tool verification and return whether to continue."""
-
-        cfg = self.context.config.reasoning
-        if not (
-            cfg.verification
-            and outcome.state == ToolExecutionState.EXECUTED
-            and not outcome.is_error
-        ):
-            return False
-
-        verification = await self.context.verify_action(
-            tool_call.name,
-            tool_call.arguments,
-            outcome.result_output,
-        )
-        await emit(
-            AgentEvent(
-                type="verification",
-                content=f"Verified: {verification.verified}",
-                verification=verification,
-                tool_name=tool_call.name,
-            )
-        )
-        if not verification.verified or not verification.needs_correction:
-            return False
-
-        correction_message = (
-            "[VERIFICATION FAILED] The action did not "
-            "produce expected results.\n"
-            f"Discrepancies: {', '.join(verification.discrepancies)}\n"
-            f"Suggestion: {verification.correction_suggestion}"
-        )
-        self.context.session.append(Message(role=Role.USER, content=correction_message))
-        return True
-
-    async def _handle_recovery(
-        self,
-        tool_call: ToolCall,
-        outcome,
-        emit: EventSink,
-    ) -> Message | None:
-        """Generate a recovery follow-up after an executed tool failure."""
-
-        recovery_context = self.context.recovery_context
-        if recovery_context is None:
-            recovery_context = RecoveryContext(
-                original_tool=tool_call.name,
-                original_args=tool_call.arguments,
-                max_retries=self.context.config.max_recovery_attempts,
-            )
-            self.context.recovery_context = recovery_context
-
-        if recovery_context.is_similar_attempt(
-            tool_call.name,
-            tool_call.arguments,
-        ):
-            await emit(
-                AgentEvent(
-                    type="error",
-                    content=(
-                        "Loop detected: already tried a similar command. "
-                        "Try a DIFFERENT approach (e.g., read a config file first)."
-                    ),
-                    tool_name=tool_call.name,
-                )
-            )
-        else:
-            recovery_context.add_attempt(
-                tool_call.name,
-                tool_call.arguments,
-                outcome.result_output,
-            )
-
-        if recovery_context.can_retry():
-            attempt_number = len(recovery_context.attempts)
-            await emit(
-                AgentEvent(
-                    type="recovery",
-                    content=(
-                        "Tool failed, attempting recovery "
-                        f"({attempt_number}/{recovery_context.max_retries})"
-                    ),
-                    tool_name=tool_call.name,
-                    recovery_attempt=attempt_number,
-                )
-            )
-            recovery_prompt = format_recovery_prompt(
-                recovery_context,
-                tool_call.name,
-                tool_call.arguments,
-                outcome.result_output,
-            )
-            return Message.tool_result_message(
-                tool_call_id=tool_call.id,
-                display_content=recovery_prompt,
-                result_content=recovery_prompt,
-                is_error=True,
-            )
-
-        failure_message = format_failure_message(recovery_context)
-        await emit(
-            AgentEvent(
-                type="error",
-                content=failure_message,
-                tool_name=tool_call.name,
-            )
-        )
-        self.context.recovery_context = None
-        return Message.tool_result_message(
-            tool_call_id=tool_call.id,
-            display_content=(f"Observation [{tool_call.name}]: Error: {failure_message}"),
-            result_content=failure_message,
-            is_error=True,
-        )
