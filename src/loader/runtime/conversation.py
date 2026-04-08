@@ -7,6 +7,7 @@ from typing import Any
 
 from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
+from .bootstrap import build_runtime_context, sync_runtime_context
 from .completion_policy import CompletionPolicy
 from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
@@ -41,7 +42,7 @@ class ConversationRuntime:
 
     def __init__(self, agent: Any) -> None:
         self.agent = agent
-        self.context = agent._build_runtime_context()
+        self.context = build_runtime_context(agent)
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
         self.dod_store = DefinitionOfDoneStore(self.context.project_root)
@@ -141,10 +142,7 @@ class ConversationRuntime:
             original_task=original_task,
             on_user_question=on_user_question,
         )
-        self.context.capability_profile = self.agent.capability_profile
-        self.context.workflow_mode = self.agent.workflow_mode
-        self.context.prompt_format = self.agent.prompt_format
-        self.context.prompt_sections = list(self.agent.prompt_sections)
+        sync_runtime_context(self.context, self.agent)
         self.executor = prepared_turn.executor
         summary = prepared_turn.summary
         dod = prepared_turn.definition_of_done

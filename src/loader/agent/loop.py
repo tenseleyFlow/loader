@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role, ToolCall
+from ..runtime.bootstrap import build_runtime_context
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.context import RuntimeContext
 from ..runtime.conversation import ConversationRuntime
@@ -20,7 +21,6 @@ from ..runtime.permissions import (
     load_permission_rules,
 )
 from ..runtime.prompt_history import PromptSnapshot
-from ..runtime.reasoning_service import RuntimeReasoningService
 from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
@@ -344,47 +344,20 @@ class Agent:
             self._system_message = None
         self._use_react = None
 
+    def queue_steering_message(self, message: str) -> None:
+        """Queue one runtime steering message."""
+
+        self._steering_queue.put_nowait(message)
+
+    def drain_steering_messages(self) -> list[str]:
+        """Drain queued runtime steering messages."""
+
+        return self._drain_steering_queue()
+
     def _build_runtime_context(self) -> RuntimeContext:
         """Build a typed runtime context over the current agent state."""
 
-        context: RuntimeContext | None = None
-
-        def _queue_steering_message(message: str) -> None:
-            self._steering_queue.put_nowait(message)
-
-        def _set_workflow_mode(mode: str) -> None:
-            self.set_workflow_mode(mode)
-            if context is not None:
-                context.workflow_mode = self.workflow_mode
-                context.prompt_format = self.prompt_format
-                context.prompt_sections = list(self.prompt_sections)
-
-        def _refresh_capability_profile() -> None:
-            self.refresh_capability_profile()
-            if context is not None:
-                context.capability_profile = self.capability_profile
-
-        context = RuntimeContext(
-            project_root=self.project_root,
-            backend=self.backend,
-            registry=self.registry,
-            session=self.session,
-            config=self.config,
-            capability_profile=self.capability_profile,
-            project_context=self.project_context,
-            permission_policy=self.permission_policy,
-            permission_config_status=self.permission_config_status,
-            workflow_mode=self.workflow_mode,
-            safeguards=self.safeguards,
-            reasoning=RuntimeReasoningService(self.backend, self.config),
-            prompt_format=self.prompt_format,
-            prompt_sections=list(self.prompt_sections),
-            set_workflow_mode_callback=_set_workflow_mode,
-            drain_steering_messages_callback=self._drain_steering_queue,
-            queue_steering_message_callback=_queue_steering_message,
-            refresh_capability_profile_callback=_refresh_capability_profile,
-        )
-        return context
+        return build_runtime_context(self)
 
     def _get_few_shot_examples(self) -> list[Message]:
         """Get few-shot examples demonstrating proper tool use."""
