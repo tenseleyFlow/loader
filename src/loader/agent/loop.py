@@ -9,7 +9,6 @@ from pathlib import Path
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role
 from ..runtime.capabilities import resolve_backend_capability_profile
-from ..runtime.conversation import ConversationRuntime
 from ..runtime.deliberation import (
     DECOMPOSITION_PROMPT,
     parse_decomposition,
@@ -17,7 +16,7 @@ from ..runtime.deliberation import (
 )
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
-from ..runtime.explore import ExploreRuntime
+from ..runtime.launcher import build_runtime_launcher
 from ..runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -577,8 +576,8 @@ class Agent:
     ) -> str:
         """Inner execution loop without planning."""
 
-        runtime = ConversationRuntime(self)
-        self.last_turn_summary = await runtime.run_turn(
+        launcher = build_runtime_launcher(self)
+        self.last_turn_summary = await launcher.run_turn(
             task,
             emit,
             on_confirmation=on_confirmation,
@@ -651,8 +650,8 @@ class Agent:
                 if inspect.iscoroutine(result):
                     await result
 
-        runtime = ExploreRuntime(self)
-        self.last_turn_summary = await runtime.run_query(user_message, emit)
+        launcher = build_runtime_launcher(self)
+        self.last_turn_summary = await launcher.run_explore(user_message, emit)
         return self.last_turn_summary.final_response
 
     def clear_history(self) -> None:
