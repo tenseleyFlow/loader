@@ -95,6 +95,26 @@
     "description": "Raw JSON tool syntax is recovered when native tool calls are absent."
   },
   {
+    "name": "raw_json_todowrite_tool_call_fallback",
+    "category": "fallback",
+    "description": "Raw JSON fallback can recover TodoWrite calls with nested todo items."
+  },
+  {
+    "name": "raw_json_patch_tool_call_fallback",
+    "category": "fallback",
+    "description": "Raw JSON fallback can recover patch calls with nested structured hunks."
+  },
+  {
+    "name": "raw_json_ask_user_question_tool_call_fallback",
+    "category": "fallback",
+    "description": "Raw JSON fallback can recover AskUserQuestion calls with structured option objects."
+  },
+  {
+    "name": "raw_bracket_ask_user_question_tool_call_fallback",
+    "category": "fallback",
+    "description": "Bracket-format fallback canonicalizes mixed-case workflow tool names against the registry."
+  },
+  {
     "name": "native_and_raw_tool_paths_share_executor_trace",
     "category": "executor",
     "description": "Native and extracted tool calls emit the same executor trace events, annotated by source."
@@ -127,12 +147,12 @@
   {
     "name": "ambiguous_prompt_routes_to_clarify",
     "category": "workflow",
-    "description": "Ambiguous prompts enter clarify mode, ask one structured question, and persist a brief artifact."
+    "description": "Ambiguous prompts enter clarify mode, ask one structured question, persist a single-question brief artifact, and hand off to execute."
   },
   {
     "name": "complex_prompt_routes_to_plan",
     "category": "workflow",
-    "description": "Complex prompts enter plan mode, persist implementation and verification artifacts, and use planned verification commands."
+    "description": "Complex prompts enter plan mode, persist single-pass implementation and verification artifacts, and use planned verification commands without legacy decomposition."
   },
   {
     "name": "verify_failure_fix_loop_does_not_reroute_workflow",
@@ -160,9 +180,9 @@
     "description": "Explore mode ignores global allow rules so the read-only lane cannot be elevated into write access."
   },
   {
-    "name": "completion_check_continuation",
+    "name": "non_mutating_completion_no_longer_forces_continuation",
     "category": "behavior",
-    "description": "Premature completion triggers a continuation prompt and the task continues."
+    "description": "Non-mutating tasks now return the model response directly instead of injecting a continuation prompt."
   },
   {
     "name": "tool_result_contract_regression",

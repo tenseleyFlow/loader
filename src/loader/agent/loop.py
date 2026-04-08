@@ -9,6 +9,7 @@ from pathlib import Path
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role, ToolCall
 from ..runtime.capabilities import resolve_backend_capability_profile
+from ..runtime.context import RuntimeContext, RuntimeLegacyServices
 from ..runtime.conversation import ConversationRuntime
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
@@ -22,6 +23,7 @@ from ..runtime.prompt_history import PromptSnapshot
 from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
+from .parsing import parse_tool_calls
 from .planner import (
     PLANNING_PROMPT,
     SHOULD_PLAN_PROMPT,
@@ -353,6 +355,60 @@ class Agent:
         if refreshed_profile != previous_profile:
             self._system_message = None
         self._use_react = None
+
+    def _build_runtime_context(self) -> RuntimeContext:
+        """Build a typed runtime context over the current agent state."""
+
+        context: RuntimeContext | None = None
+
+        def _queue_steering_message(message: str) -> None:
+            self._steering_queue.put_nowait(message)
+
+        def _set_workflow_mode(mode: str) -> None:
+            self.set_workflow_mode(mode)
+            if context is not None:
+                context.workflow_mode = self.workflow_mode
+                context.prompt_format = self.prompt_format
+                context.prompt_sections = list(self.prompt_sections)
+
+        def _refresh_capability_profile() -> None:
+            self.refresh_capability_profile()
+            if context is not None:
+                context.capability_profile = self.capability_profile
+
+        def _get_recovery_context() -> RecoveryContext | None:
+            return self._recovery_context
+
+        def _set_recovery_context(value: RecoveryContext | None) -> None:
+            self._recovery_context = value
+
+        context = RuntimeContext(
+            project_root=self.project_root,
+            backend=self.backend,
+            registry=self.registry,
+            session=self.session,
+            config=self.config,
+            capability_profile=self.capability_profile,
+            project_context=self.project_context,
+            permission_policy=self.permission_policy,
+            permission_config_status=self.permission_config_status,
+            workflow_mode=self.workflow_mode,
+            safeguards=self.safeguards,
+            legacy=RuntimeLegacyServices(
+                message_history=lambda: self.messages,
+                drain_steering_queue=self._drain_steering_queue,
+                queue_steering_message=_queue_steering_message,
+                set_workflow_mode=_set_workflow_mode,
+                refresh_capability_profile=_refresh_capability_profile,
+                assess_confidence=self._assess_confidence,
+                verify_action=self._verify_action,
+                get_recovery_context=_get_recovery_context,
+                set_recovery_context=_set_recovery_context,
+            ),
+            prompt_format=self.prompt_format,
+            prompt_sections=list(self.prompt_sections),
+        )
+        return context
 
     def _get_few_shot_examples(self) -> list[Message]:
         """Get few-shot examples demonstrating proper tool use."""
@@ -886,8 +942,16 @@ class Agent:
         import os
         import re
 
+        allowed_tool_names = [tool.name for tool in self.registry.list_tools()]
+        parsed = parse_tool_calls(
+            content,
+            allowed_tool_names=allowed_tool_names,
+        )
+        if parsed.tool_calls:
+            return parsed.tool_calls
+
         tool_calls = []
-        tool_names = ["write", "read", "edit", "bash", "glob", "grep"]
+        tool_names = [name.casefold() for name in allowed_tool_names]
 
         # Debug log
         def debug(msg):
@@ -924,7 +988,7 @@ class Agent:
                 args_str = match.group(2).strip()
                 debug(f"  matched: tool={tool_name}, args={args_str[:50]}...")
 
-                if tool_name not in tool_names:
+                if tool_name.casefold() not in tool_names:
                     debug(f"  skipping - tool_name '{tool_name}' not in tool_names")
                     continue
 

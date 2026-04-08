@@ -5,14 +5,15 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 
-from ..agent.parsing import parse_tool_calls
-from ..agent.prompts import format_tool_descriptions, get_project_specific_tips
 from ..llm.base import Message, Role
 from ..runtime.events import AgentEvent, TurnSummary
 from ..tools.base import create_explore_registry
+from .context import RuntimeContext
 from .executor import ToolExecutionState, ToolExecutor
 from .hooks import build_default_tool_hooks
+from .parsing import parse_tool_calls
 from .permissions import PermissionMode, PermissionRuleSet, build_permission_policy
+from .prompting import format_tool_descriptions, get_project_specific_tips
 from .tracing import RuntimeTracer
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -73,27 +74,30 @@ class ExploreRuntime:
     """Minimal read-only runtime for lookup-oriented tasks."""
 
     def __init__(self, agent) -> None:
-        self.agent = agent
-        self.registry = create_explore_registry(agent.project_root)
+        self.context: RuntimeContext = agent._build_runtime_context()
+        self.registry = create_explore_registry(self.context.project_root)
         explore_rules = PermissionRuleSet(
-            deny=list(agent.permission_policy.rules.deny),
-            ask=list(agent.permission_policy.rules.ask),
-            source_path=agent.permission_policy.rules.source_path,
+            deny=list(self.context.permission_policy.rules.deny),
+            ask=list(self.context.permission_policy.rules.ask),
+            source_path=self.context.permission_policy.rules.source_path,
         )
         self.permission_policy = build_permission_policy(
             active_mode=PermissionMode.READ_ONLY,
-            workspace_root=agent.project_root,
+            workspace_root=self.context.project_root,
             tool_requirements=self.registry.get_tool_requirements(),
             rules=explore_rules,
         )
+        self.context.registry = self.registry
+        self.context.permission_policy = self.permission_policy
+        self.context.workflow_mode = "explore"
         self.tracer = RuntimeTracer()
         self.executor = ToolExecutor(
             self.registry,
             self.tracer,
             self.permission_policy,
             hooks=build_default_tool_hooks(
-                action_tracker=self.agent.safeguards.action_tracker,
-                validator=self.agent.safeguards.validator,
+                action_tracker=self.context.safeguards.action_tracker,
+                validator=self.context.safeguards.validator,
                 registry=self.registry,
                 rollback_plan=None,
             ),
@@ -111,22 +115,25 @@ class ExploreRuntime:
             Message(role=Role.SYSTEM, content=self._build_system_prompt()),
             Message(role=Role.USER, content=prompt),
         ]
-        use_react = self.agent.use_react
+        use_react = self.context.use_react
         tools = None if use_react else self.registry.get_schemas()
 
-        for iteration in range(1, min(self.agent.config.max_iterations, 6) + 1):
+        for iteration in range(1, min(self.context.config.max_iterations, 6) + 1):
             summary.iterations = iteration
             self.tracer.record("explore.iteration_started", iteration=iteration)
             await emit(AgentEvent(type="thinking"))
 
-            response = await self.agent.backend.complete(
+            response = await self.context.backend.complete(
                 messages=messages,
                 tools=tools,
-                temperature=min(self.agent.config.temperature, 0.2),
-                max_tokens=min(self.agent.config.max_tokens, 1024),
+                temperature=min(self.context.config.temperature, 0.2),
+                max_tokens=min(self.context.config.max_tokens, 1024),
             )
 
-            parsed = parse_tool_calls(response.content)
+            parsed = parse_tool_calls(
+                response.content,
+                allowed_tool_names=[tool.name for tool in self.context.registry.list_tools()],
+            )
             tool_calls = list(response.tool_calls or parsed.tool_calls)
             cleaned_content = parsed.content if parsed.tool_calls else response.content
 
@@ -196,21 +203,21 @@ class ExploreRuntime:
         return summary
 
     async def _prepare_runtime_capabilities(self) -> None:
-        describe_model = getattr(self.agent.backend, "describe_model", None)
+        describe_model = getattr(self.context.backend, "describe_model", None)
         if callable(describe_model):
             await describe_model()
-        self.agent.refresh_capability_profile()
+        self.context.legacy.refresh_capability_profile()
 
     def _build_system_prompt(self) -> str:
         tool_descriptions = format_tool_descriptions(self.registry.get_schemas())
         project_tips = ""
-        if self.agent.project_context is not None:
+        if self.context.project_context is not None:
             project_tips = "\n\n## Project Tips\n" + get_project_specific_tips(
-                self.agent.project_context
+                self.context.project_context
             )
         template = (
             EXPLORE_REACT_SYSTEM_PROMPT
-            if self.agent.use_react
+            if self.context.use_react
             else EXPLORE_SYSTEM_PROMPT
         )
         return template.format(

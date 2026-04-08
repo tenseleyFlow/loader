@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from ..agent.parsing import parse_tool_calls
 from ..runtime.capabilities import CapabilityProfile, resolve_capability_profile
 from .base import (
     CompletionResponse,
@@ -99,6 +100,31 @@ class OllamaBackend(LLMBackend):
             return any(self.model in m or m in self.model for m in models)
         except Exception:
             return False
+
+    async def chat_health_check(self) -> tuple[bool, str | None]:
+        """Probe whether the live chat endpoint can complete a minimal request."""
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Reply with OK."}],
+            "stream": False,
+            "options": self._build_options(temperature=0.0, max_tokens=8),
+        }
+
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+            )
+            if response.status_code == 400:
+                error_data = response.json() if response.content else {}
+                error_msg = error_data.get("error", "Bad request")
+                return False, f"Ollama /api/chat rejected the probe: {error_msg}"
+            response.raise_for_status()
+        except Exception as exc:
+            return False, str(exc)
+
+        return True, None
 
     async def list_models(self) -> list[dict[str, Any]]:
         """List all available models from Ollama.
@@ -198,45 +224,32 @@ class OllamaBackend(LLMBackend):
             })
         return formatted
 
-    def _parse_tool_calls(self, response_text: str) -> tuple[str, list[ToolCall]]:
-        """Parse tool calls from response text.
+    @staticmethod
+    def _allowed_tool_names(tools: list[dict[str, Any]] | None) -> list[str] | None:
+        """Return the tool names currently exposed to the model, if any."""
 
-        Models may format tool calls differently. We handle:
-        1. JSON tool call blocks
-        2. XML-style <tool_call> blocks
-        3. Plain text with no tool calls
-        """
-        tool_calls = []
-        content = response_text
+        if not tools:
+            return None
+        names = [
+            str(tool.get("name", "")).strip()
+            for tool in tools
+            if isinstance(tool, dict) and tool.get("name")
+        ]
+        return names or None
 
-        import re
+    def _parse_tool_calls(
+        self,
+        response_text: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, list[ToolCall]]:
+        """Parse text tool calls through the shared parser."""
 
-        # Pattern for tool call JSON blocks - handle both "arguments" and "parameters"
-        json_pattern = r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"(?:arguments|parameters)"\s*:\s*(\{[^{}]*\})[^{}]*\}'
-        matches = re.findall(json_pattern, response_text, re.DOTALL)
-
-        for i, (name, args_str) in enumerate(matches):
-            try:
-                args = json.loads(args_str)
-                tool_calls.append(ToolCall(
-                    id=f"call_{i}",
-                    name=name,
-                    arguments=args,
-                ))
-            except json.JSONDecodeError:
-                pass
-
-        # Remove tool call JSON from content
-        if tool_calls:
-            content = re.sub(json_pattern, "", content)
-
-        # Also remove any <tool_call> tags
-        content = re.sub(r"</?tool_call>", "", content)
-
-        # Clean up whitespace
-        content = re.sub(r"\n{3,}", "\n\n", content)
-
-        return content.strip(), tool_calls
+        parsed = parse_tool_calls(
+            response_text,
+            allowed_tool_names=self._allowed_tool_names(tools),
+        )
+        return parsed.content, parsed.tool_calls
 
     async def complete(
         self,
@@ -306,7 +319,7 @@ class OllamaBackend(LLMBackend):
                 ))
         else:
             # Try to parse tool calls from text
-            content, tool_calls = self._parse_tool_calls(content)
+            content, tool_calls = self._parse_tool_calls(content, tools=tools)
 
         return CompletionResponse(
             content=content,
@@ -362,7 +375,7 @@ class OllamaBackend(LLMBackend):
             else:
                 response.raise_for_status()
                 # Stream the response
-                async for chunk in self._stream_response(response):
+                async for chunk in self._stream_response(response, tools=tools):
                     yield chunk
                 return
 
@@ -374,7 +387,7 @@ class OllamaBackend(LLMBackend):
             json=payload,
         ) as response:
             response.raise_for_status()
-            async for chunk in self._stream_response(response):
+            async for chunk in self._stream_response(response, tools=tools):
                 yield chunk
 
     def _debug_log(self, message: str) -> None:
@@ -385,18 +398,18 @@ class OllamaBackend(LLMBackend):
         except Exception:
             pass
 
-    async def _stream_response(self, response) -> AsyncIterator[StreamChunk]:
+    async def _stream_response(
+        self,
+        response,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
         """Internal helper to stream response chunks."""
 
         full_content = ""
         display_content = ""  # Content to show (filtered)
-        json_buffer = ""  # Buffer for potential tool call JSON
-        tool_call_buffer = ""  # Buffer for <tool_call> block content
-        in_json_block = False
         in_think_block = False  # For reasoning models like deepseek-r1
         in_tool_call_block = False  # For ReAct <tool_call> tags
-        detected_tool_calls: list[ToolCall] = []  # Track tool calls found during streaming
-        tool_call_counter = 0
 
         async for line in response.aiter_lines():
             if not line:
@@ -433,21 +446,19 @@ class OllamaBackend(LLMBackend):
                             arguments=args,
                         ))
                 else:
-                    # Use detected tool calls from streaming, or parse from text
-                    if detected_tool_calls:
-                        self._debug_log(f"is_done: using {len(detected_tool_calls)} detected_tool_calls from streaming")
-                        tool_calls = detected_tool_calls
-                    else:
-                        self._debug_log(f"is_done: parsing tool calls from text (len={len(full_content)})")
-                        self._debug_log(f"is_done: full_content = {repr(full_content[:500])}")
-                        clean_content, tool_calls = self._parse_tool_calls(full_content)
-                        self._debug_log(f"is_done: parsed {len(tool_calls)} tool calls")
-                        display_content = clean_content
+                    self._debug_log(f"is_done: parsing tool calls from text (len={len(full_content)})")
+                    self._debug_log(f"is_done: full_content = {repr(full_content[:500])}")
+                    clean_content, tool_calls = self._parse_tool_calls(
+                        full_content,
+                        tools=tools,
+                    )
+                    self._debug_log(f"is_done: parsed {len(tool_calls)} tool calls")
+                    display_content = clean_content
 
                 self._debug_log(f"is_done: yielding final chunk with {len(tool_calls)} tool_calls")
                 yield StreamChunk(
                     content="",  # Don't emit final chunk content (already streamed)
-                    full_content=display_content or full_content,
+                    full_content=display_content,
                     tool_calls=tool_calls,
                     is_done=True,
                     usage={
@@ -479,7 +490,6 @@ class OllamaBackend(LLMBackend):
                 # Filter out <tool_call> blocks from ReAct mode - but parse them!
                 if "<tool_call>" in chunk_content:
                     in_tool_call_block = True
-                    tool_call_buffer = ""  # Reset buffer
                     # Keep content before <tool_call>
                     before = chunk_content.split("<tool_call>")[0]
                     if before:
@@ -488,100 +498,23 @@ class OllamaBackend(LLMBackend):
                     # Start buffering the tool call content
                     after_tag = chunk_content.split("<tool_call>", 1)[-1]
                     if "</tool_call>" in after_tag:
-                        # Complete tool call in same chunk
-                        tool_json = after_tag.split("</tool_call>")[0]
                         after_close = after_tag.split("</tool_call>", 1)[-1]
                         in_tool_call_block = False
-                        # Parse and yield the tool call
-                        try:
-                            tc_data = json.loads(tool_json.strip())
-                            tc = ToolCall(
-                                id=f"call_{tool_call_counter}",
-                                name=tc_data.get("name", ""),
-                                arguments=tc_data.get("arguments", tc_data.get("parameters", {})),
-                            )
-                            tool_call_counter += 1
-                            detected_tool_calls.append(tc)
-                            yield StreamChunk(content="", pending_tool_call=tc)
-                        except (json.JSONDecodeError, KeyError):
-                            pass
                         if after_close.strip():
                             display_content += after_close
                             yield StreamChunk(content=after_close)
-                    else:
-                        tool_call_buffer = after_tag
                     continue
                 elif in_tool_call_block:
                     if "</tool_call>" in chunk_content:
                         in_tool_call_block = False
-                        # Complete the tool call buffer
-                        tool_json = tool_call_buffer + chunk_content.split("</tool_call>")[0]
                         after_close = chunk_content.split("</tool_call>", 1)[-1]
-                        # Parse and yield the tool call
-                        try:
-                            tc_data = json.loads(tool_json.strip())
-                            tc = ToolCall(
-                                id=f"call_{tool_call_counter}",
-                                name=tc_data.get("name", ""),
-                                arguments=tc_data.get("arguments", tc_data.get("parameters", {})),
-                            )
-                            tool_call_counter += 1
-                            detected_tool_calls.append(tc)
-                            yield StreamChunk(content="", pending_tool_call=tc)
-                        except (json.JSONDecodeError, KeyError):
-                            pass
                         if after_close.strip():
                             display_content += after_close
                             yield StreamChunk(content=after_close)
-                    else:
-                        # Still accumulating tool call content
-                        tool_call_buffer += chunk_content
                     continue
 
-                # Filter out tool call JSON from display (bare JSON without tags)
-                # Detect start of JSON tool call
-                if not in_json_block and '{"name"' in chunk_content:
-                    in_json_block = True
-                    # Split at the JSON start
-                    parts = chunk_content.split('{"name"', 1)
-                    if parts[0]:
-                        display_content += parts[0]
-                        yield StreamChunk(content=parts[0])
-                    json_buffer = '{"name"' + parts[1] if len(parts) > 1 else '{"name"'
-                elif in_json_block:
-                    json_buffer += chunk_content
-                    # Check if JSON block closed (simple heuristic)
-                    open_braces = json_buffer.count('{')
-                    close_braces = json_buffer.count('}')
-                    if close_braces >= open_braces and open_braces > 0:
-                        # JSON block complete, try to parse it
-                        in_json_block = False
-                        try:
-                            # Find where JSON ends
-                            last_brace = json_buffer.rfind('}')
-                            json_str = json_buffer[:last_brace + 1]
-                            after_json = json_buffer[last_brace + 1:]
-                            # Try to parse as tool call
-                            tc_data = json.loads(json_str)
-                            if "name" in tc_data:
-                                tc = ToolCall(
-                                    id=f"call_{tool_call_counter}",
-                                    name=tc_data.get("name", ""),
-                                    arguments=tc_data.get("arguments", tc_data.get("parameters", {})),
-                                )
-                                tool_call_counter += 1
-                                detected_tool_calls.append(tc)
-                                yield StreamChunk(content="", pending_tool_call=tc)
-                            if after_json.strip():
-                                display_content += after_json
-                                yield StreamChunk(content=after_json)
-                        except (json.JSONDecodeError, KeyError):
-                            # Not valid JSON, just discard
-                            pass
-                        json_buffer = ""
-                else:
-                    display_content += chunk_content
-                    yield StreamChunk(content=chunk_content)
+                display_content += chunk_content
+                yield StreamChunk(content=chunk_content)
 
     async def close(self) -> None:
         """Close the HTTP client."""

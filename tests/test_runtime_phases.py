@@ -73,7 +73,7 @@ async def test_completion_nudge_and_tool_batch_emit_named_phases(
     target = temp_dir / "hello.py"
     backend = ScriptedBackend(
         completions=[
-            CompletionResponse(content="Done."),
+            CompletionResponse(content="I looked into it."),
             CompletionResponse(
                 content="You're right, I'll create the file first.",
                 tool_calls=[

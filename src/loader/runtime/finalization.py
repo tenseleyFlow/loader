@@ -59,6 +59,14 @@ class TurnFinalizer:
         self.dod_store = dod_store
         self.set_workflow_mode = set_workflow_mode
 
+    @property
+    def _prompt_format(self) -> str | None:
+        return getattr(self.agent, "prompt_format", None)
+
+    @property
+    def _prompt_sections(self) -> list[str]:
+        return list(getattr(self.agent, "prompt_sections", []))
+
     async def run_definition_of_done_gate(
         self,
         *,
@@ -111,8 +119,8 @@ class TurnFinalizer:
                     reason_code="verification_not_required",
                     summary="verification skipped because the turn made no mutating changes",
                     decision_kind=WorkflowDecisionKind.FORCED.value,
-                    prompt_format=self.agent.prompt_format,
-                    prompt_sections=list(self.agent.prompt_sections),
+                    prompt_format=self._prompt_format,
+                    prompt_sections=self._prompt_sections,
                 )
             )
             summary.workflow_timeline = list(self.agent.session.workflow_timeline)
@@ -314,9 +322,11 @@ class TurnFinalizer:
         )
         summary.session_id = self.agent.session.session_id
         summary.last_turn_transition_summary = (
-            self.agent.session.last_turn_transition_summary
+            getattr(self.agent.session, "last_turn_transition_summary", None)
         )
-        summary.workflow_timeline = list(self.agent.session.workflow_timeline)
+        summary.workflow_timeline = list(
+            getattr(self.agent.session, "workflow_timeline", [])
+        )
         if summary.definition_of_done and summary.definition_of_done.status == "done":
             MemoryStore(self.agent.project_root).capture_definition_of_done(
                 build_verification_summary(summary.definition_of_done.evidence)

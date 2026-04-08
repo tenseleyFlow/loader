@@ -1,6 +1,8 @@
 """Tests for the ReAct parsing module."""
 
-from loader.agent.parsing import format_tool_result, parse_tool_calls
+import json
+
+from loader.runtime.parsing import format_tool_result, parse_tool_calls
 
 
 class TestParseToolCalls:
@@ -51,6 +53,76 @@ Final Answer: The file contains a hello world program.'''
         result = parse_tool_calls(text)
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "read"
+
+    def test_parse_bare_json_todowrite_with_nested_items(self):
+        text = json.dumps(
+            {
+                "name": "TodoWrite",
+                "arguments": {
+                    "todos": [
+                        {
+                            "content": "Run tests",
+                            "active_form": "Running tests",
+                            "status": "in_progress",
+                        }
+                    ]
+                },
+            }
+        )
+        result = parse_tool_calls(text)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "TodoWrite"
+        assert result.tool_calls[0].arguments["todos"][0]["content"] == "Run tests"
+
+    def test_parse_bare_json_patch_with_nested_hunks(self):
+        text = json.dumps(
+            {
+                "name": "patch",
+                "arguments": {
+                    "file_path": "sample.txt",
+                    "hunks": [
+                        {
+                            "old_start": 2,
+                            "old_lines": 1,
+                            "new_start": 2,
+                            "new_lines": 1,
+                            "lines": ["-beta", "+beta updated"],
+                        }
+                    ],
+                },
+            }
+        )
+        result = parse_tool_calls(text)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "patch"
+        assert result.tool_calls[0].arguments["hunks"][0]["lines"] == [
+            "-beta",
+            "+beta updated",
+        ]
+
+    def test_parse_bare_json_ask_user_question_with_option_objects(self):
+        text = json.dumps(
+            {
+                "name": "AskUserQuestion",
+                "arguments": {
+                    "question": "Which path should we take?",
+                    "options": [
+                        {
+                            "label": "Plan first",
+                            "description": "Write the plan before changing code.",
+                        },
+                        {
+                            "label": "Execute now",
+                            "description": "Start implementing immediately.",
+                        },
+                    ],
+                },
+            }
+        )
+        result = parse_tool_calls(text)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "AskUserQuestion"
+        assert result.tool_calls[0].arguments["options"][1]["label"] == "Execute now"
 
     def test_parse_removes_react_labels(self):
         text = '''Thought: I need to check this.
@@ -131,6 +203,27 @@ Created the file.'''
         assert result.tool_calls[0].arguments["file_path"] == "test.py"
         assert result.tool_calls[0].arguments["old_string"] == "foo"
         assert result.tool_calls[0].arguments["new_string"] == "bar"
+
+    def test_parse_bracketed_mixed_case_tool_uses_allowed_name(self):
+        text = '[calls askuserquestion tool with: question="Which path should we take?"]'
+        result = parse_tool_calls(
+            text,
+            allowed_tool_names=["AskUserQuestion", "TodoWrite", "read"],
+        )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "AskUserQuestion"
+        assert result.tool_calls[0].arguments == {
+            "question": "Which path should we take?"
+        }
+
+    def test_parse_bare_json_filters_unknown_tool_when_allowed_names_provided(self):
+        text = '{"name": "TotallyUnknownTool", "arguments": {"question": "ignored"}}'
+        result = parse_tool_calls(
+            text,
+            allowed_tool_names=["AskUserQuestion", "TodoWrite", "read"],
+        )
+        assert result.tool_calls == []
+        assert "TotallyUnknownTool" in result.content
 
 
 class TestFormatToolResult:

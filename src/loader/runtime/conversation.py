@@ -41,6 +41,7 @@ class ConversationRuntime:
 
     def __init__(self, agent: Any) -> None:
         self.agent = agent
+        self.context = agent._build_runtime_context()
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
         self.dod_store = DefinitionOfDoneStore(agent.project_root)
@@ -88,13 +89,13 @@ class ConversationRuntime:
             agent,
             tracer=self.tracer,
             phase_tracker=self.phase_tracker,
-            tool_batches=ToolBatchRunner(agent, self.dod_store),
+            tool_batches=ToolBatchRunner(self.context, self.dod_store),
             turn_completion=self.turn_completion,
         )
         self.turn_iteration = TurnIterationController(
             agent,
             phase_tracker=self.phase_tracker,
-            turn_requester=AssistantTurnRequester(agent, self.tracer),
+            turn_requester=AssistantTurnRequester(self.context, self.tracer),
             repairer=self.repairer,
             response_router=self.response_router,
         )
@@ -140,6 +141,10 @@ class ConversationRuntime:
             original_task=original_task,
             on_user_question=on_user_question,
         )
+        self.context.capability_profile = self.agent.capability_profile
+        self.context.workflow_mode = self.agent.workflow_mode
+        self.context.prompt_format = self.agent.prompt_format
+        self.context.prompt_sections = list(self.agent.prompt_sections)
         self.executor = prepared_turn.executor
         summary = prepared_turn.summary
         dod = prepared_turn.definition_of_done

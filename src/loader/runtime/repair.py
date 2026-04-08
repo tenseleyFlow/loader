@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from ..agent.parsing import parse_tool_calls
 from ..llm.base import ToolCall
+from .parsing import parse_tool_calls as parse_runtime_tool_calls
 
 
 @dataclass(slots=True)
@@ -101,7 +102,7 @@ class ResponseRepairer:
         clear_stream = False
         next_extracted_iterations = extracted_iterations
         if not normalized_tool_calls:
-            raw_tool_calls = self.agent._extract_raw_json_tool_calls(response_content)
+            raw_tool_calls = self._extract_raw_tool_calls(response_content)
             if raw_tool_calls:
                 normalized_tool_calls = raw_tool_calls
                 tool_source = "raw_text"
@@ -133,3 +134,20 @@ class ResponseRepairer:
             clear_stream=clear_stream,
             extracted_iterations=next_extracted_iterations,
         )
+
+    def _extract_raw_tool_calls(self, response_content: str) -> list[ToolCall]:
+        """Recover raw-text tool calls for either agent or RuntimeContext callers."""
+
+        extractor = getattr(self.agent, "_extract_raw_json_tool_calls", None)
+        if callable(extractor):
+            return extractor(response_content)
+
+        registry = getattr(self.agent, "registry", None)
+        allowed_tool_names = None
+        if registry is not None:
+            allowed_tool_names = [tool.name for tool in registry.list_tools()]
+        parsed = parse_runtime_tool_calls(
+            response_content,
+            allowed_tool_names=allowed_tool_names,
+        )
+        return parsed.tool_calls

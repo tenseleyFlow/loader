@@ -446,6 +446,35 @@ class ConversationSession:
 
         return self.store.session_path(self.session_id)
 
+    @property
+    def workflow_artifact_status(self) -> str:
+        """Compatibility status for whether workflow artifacts are active."""
+
+        return "active" if self.active_dod_path else "idle"
+
+    @property
+    def workflow_artifact_sources(self) -> list[str]:
+        """Compatibility list of active workflow artifact kinds."""
+
+        if not self.active_dod_path:
+            return []
+        path = Path(self.active_dod_path)
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+
+        sources: list[str] = []
+        if data.get("clarify_brief"):
+            sources.append("clarify_brief")
+        if data.get("implementation_plan"):
+            sources.append("implementation_plan")
+        if data.get("verification_plan"):
+            sources.append("verification_plan")
+        return sources
+
     def build_request_messages(self) -> list[Message]:
         """Build the full request transcript for the backend."""
 

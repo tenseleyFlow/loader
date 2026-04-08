@@ -7,13 +7,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
-from ..agent.reasoning import RollbackPlan, create_rollback_plan_for_action, is_destructive_tool
-from ..agent.safeguards import ActionTracker, PreActionValidator
 from ..llm.base import ToolCall
 from ..tools.base import Tool, ToolRegistry
 from ..tools.base import ToolResult as RegistryToolResult
 from .memory import MemoryStore
 from .permissions import PermissionOverride, PermissionPolicy
+from .rollback import RollbackPlan, create_rollback_plan_for_action, is_destructive_tool
+from .safeguard_services import ActionTracker, PreActionValidator
 
 
 class HookEvent(StrEnum):
