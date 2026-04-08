@@ -8,9 +8,7 @@ from pathlib import Path
 
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role
-from ..runtime.bootstrap import build_runtime_context
 from ..runtime.capabilities import resolve_backend_capability_profile
-from ..runtime.context import RuntimeContext
 from ..runtime.conversation import ConversationRuntime
 from ..runtime.deliberation import (
     DECOMPOSITION_PROMPT,
@@ -342,11 +340,6 @@ class Agent:
         """Drain queued runtime steering messages."""
 
         return self._drain_steering_queue()
-
-    def _build_runtime_context(self) -> RuntimeContext:
-        """Build a typed runtime context over the current agent state."""
-
-        return build_runtime_context(self)
 
     def _get_few_shot_examples(self) -> list[Message]:
         """Get few-shot examples demonstrating proper tool use."""
