@@ -44,11 +44,11 @@ class ConversationRuntime:
         self.context = agent._build_runtime_context()
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
-        self.dod_store = DefinitionOfDoneStore(agent.project_root)
+        self.dod_store = DefinitionOfDoneStore(self.context.project_root)
         self.workflow_signals = WorkflowSignalExtractor()
         self.workflow_policy = WorkflowPolicy(self.workflow_signals)
         self.artifact_invalidation = ArtifactInvalidationAssessor()
-        self.artifact_store = WorkflowArtifactStore(agent.project_root)
+        self.artifact_store = WorkflowArtifactStore(self.context.project_root)
         self.workflow_state = WorkflowStateController(
             self.context,
             dod_store=self.dod_store,
@@ -73,7 +73,7 @@ class ConversationRuntime:
         self.completion_policy = CompletionPolicy(self.context)
         self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
         self.finalizer = TurnFinalizer(
-            agent,
+            self.context,
             self.tracer,
             self.dod_store,
             self.workflow_state.set_workflow_mode,
