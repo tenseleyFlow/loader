@@ -25,12 +25,12 @@ from ..runtime.permissions import (
 )
 from ..runtime.prompt_history import PromptSnapshot
 from ..runtime.reasoning_types import TaskDecomposition
+from ..runtime.safeguards import RuntimeSafeguards
 from ..runtime.session import ConversationSession
 from ..runtime.task_classification import is_conversational
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
 from .prompts import build_system_prompt_result
-from .safeguards import RuntimeSafeguards
 
 
 @dataclass
