@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -88,7 +89,9 @@ def build_context(
     )
 
 
-def test_response_repairer_uses_context_legacy_raw_fallback(temp_dir: Path) -> None:
+def test_response_repairer_uses_runtime_parser_for_bracket_tool_fallback(
+    temp_dir: Path,
+) -> None:
     context = build_context(
         temp_dir=temp_dir,
         use_react=False,
@@ -112,3 +115,52 @@ def test_response_repairer_uses_context_legacy_raw_fallback(temp_dir: Path) -> N
     ]
     assert analysis.tool_source == "raw_text"
     assert analysis.clear_stream is True
+
+
+def test_response_repairer_recovers_todowrite_from_runtime_registry(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    analysis = repairer.analyze_response(
+        content="I'll track the work first.",
+        response_content=json.dumps(
+            {
+                "name": "TodoWrite",
+                "arguments": {
+                    "todos": [
+                        {
+                            "content": "Run tests",
+                            "active_form": "Running tests",
+                            "status": "in_progress",
+                        }
+                    ]
+                },
+            }
+        ),
+        tool_calls=[],
+        extracted_iterations=0,
+        max_extracted_iterations=3,
+    )
+
+    assert analysis.tool_source == "raw_text"
+    assert analysis.clear_stream is True
+    assert analysis.tool_calls == [
+        ToolCall(
+            id="call_0",
+            name="TodoWrite",
+            arguments={
+                "todos": [
+                    {
+                        "content": "Run tests",
+                        "active_form": "Running tests",
+                        "status": "in_progress",
+                    }
+                ]
+            },
+        )
+    ]
