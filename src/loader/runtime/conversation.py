@@ -93,7 +93,7 @@ class ConversationRuntime:
             turn_completion=self.turn_completion,
         )
         self.turn_iteration = TurnIterationController(
-            agent,
+            self.context,
             phase_tracker=self.phase_tracker,
             turn_requester=AssistantTurnRequester(self.context, self.tracer),
             repairer=self.repairer,

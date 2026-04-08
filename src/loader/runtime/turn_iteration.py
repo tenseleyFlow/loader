@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from ..llm.base import Message, Role
 from .assistant_turns import AssistantTurnRequester
+from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
@@ -53,14 +54,14 @@ class TurnIterationController:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         *,
         phase_tracker: TurnPhaseTracker,
         turn_requester: AssistantTurnRequester,
         repairer: ResponseRepairer,
         response_router: AssistantResponseRouter,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.phase_tracker = phase_tracker
         self.turn_requester = turn_requester
         self.repairer = repairer
@@ -219,7 +220,7 @@ class TurnIterationController:
             max_empty_retries=max_empty_retries,
         )
         if empty_decision.should_continue and empty_decision.retry_message:
-            self.agent.session.append(
+            self.context.session.append(
                 Message(
                     role=Role.USER,
                     content=empty_decision.retry_message,
