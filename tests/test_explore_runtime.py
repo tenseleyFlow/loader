@@ -10,6 +10,12 @@ from loader.runtime.permissions import PermissionMode
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
+class DescribingBackend(ScriptedBackend):
+    async def describe_model(self) -> dict[str, object]:
+        self._supports_native_tools = False
+        return {"supports_native_tools": False}
+
+
 @pytest.mark.asyncio
 async def test_explore_mode_skips_workflow_router_and_definition_of_done(temp_dir) -> None:
     target = temp_dir / "feature.py"
@@ -108,6 +114,32 @@ async def test_explore_mode_denies_write_attempts_even_with_workspace_write(temp
     assert "read-only" in "\n".join(tool_results).lower()
     assert "cannot make that change" in response.lower()
     assert not (temp_dir / "new.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_explore_mode_refreshes_capabilities_before_request(temp_dir) -> None:
+    backend = DescribingBackend(
+        completions=[CompletionResponse(content="I checked the repo in read-only mode.")],
+        supports_native_tools=True,
+    )
+    agent = Agent(
+        backend=backend,
+        config=AgentConfig(
+            auto_context=False,
+            stream=False,
+            permission_mode=PermissionMode.WORKSPACE_WRITE,
+        ),
+        project_root=temp_dir,
+    )
+
+    response = await agent.run_explore(
+        "Give me a quick repo summary.",
+    )
+
+    assert response == "I checked the repo in read-only mode."
+    assert agent.capability_profile.supports_native_tools is False
+    assert backend.invocations
+    assert backend.invocations[0].tools is None
 
 
 @pytest.mark.asyncio
