@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..llm.base import Message, Role, ToolCall
+from .context import RuntimeContext
 from .dod import (
     DefinitionOfDone,
     DefinitionOfDoneStore,
@@ -49,23 +50,23 @@ class TurnFinalizer:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         tracer: RuntimeTracer,
         dod_store: DefinitionOfDoneStore,
         set_workflow_mode: WorkflowSetter,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.tracer = tracer
         self.dod_store = dod_store
         self.set_workflow_mode = set_workflow_mode
 
     @property
     def _prompt_format(self) -> str | None:
-        return getattr(self.agent, "prompt_format", None)
+        return self.context.prompt_format
 
     @property
     def _prompt_sections(self) -> list[str]:
-        return list(getattr(self.agent, "prompt_sections", []))
+        return list(self.context.prompt_sections)
 
     async def run_definition_of_done_gate(
         self,
@@ -93,7 +94,7 @@ class TurnFinalizer:
             pending_text = "\n".join(f"- {item}" for item in tracked_pending_items)
             self.dod_store.save(dod)
             await self.emit_dod_status(emit, dod)
-            self.agent.session.append(
+            self.context.session.append(
                 Message(
                     role=Role.USER,
                     content=(
@@ -111,11 +112,11 @@ class TurnFinalizer:
             dod.last_verification_result = "skipped"
             summary.verification_status = "skipped"
             summary.definition_of_done = dod
-            self.agent.session.append_workflow_timeline_entry(
+            self.context.session.append_workflow_timeline_entry(
                 WorkflowTimelineEntry(
                     timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     kind=WorkflowTimelineEntryKind.VERIFY_SKIP.value,
-                    mode=self.agent.workflow_mode,
+                    mode=self.context.workflow_mode,
                     reason_code="verification_not_required",
                     summary="verification skipped because the turn made no mutating changes",
                     decision_kind=WorkflowDecisionKind.FORCED.value,
@@ -123,7 +124,7 @@ class TurnFinalizer:
                     prompt_sections=self._prompt_sections,
                 )
             )
-            summary.workflow_timeline = list(self.agent.session.workflow_timeline)
+            summary.workflow_timeline = list(self.context.session.workflow_timeline)
             self.dod_store.save(dod)
             await self.emit_dod_status(emit, dod)
             return CompletionGateResult(
@@ -147,7 +148,7 @@ class TurnFinalizer:
         if not dod.verification_commands:
             dod.verification_commands = derive_verification_commands(
                 dod,
-                project_root=self.agent.project_root,
+                project_root=self.context.project_root,
                 task_statement=dod.task_statement,
             )
 
@@ -235,7 +236,7 @@ class TurnFinalizer:
             f"{build_verification_summary(dod.evidence)}\n\n"
             "Fix the failures above, then finish the task again."
         )
-        self.agent.session.append(Message(role=Role.USER, content=failure_prompt))
+        self.context.session.append(Message(role=Role.USER, content=failure_prompt))
         return CompletionGateResult(should_continue=True, final_response="")
 
     async def verify_definition_of_done(
@@ -262,7 +263,7 @@ class TurnFinalizer:
             verification_call = ToolCall(
                 id=f"verify-{summary.iterations}-{index}",
                 name="bash",
-                arguments={"command": command, "cwd": str(self.agent.project_root)},
+                arguments={"command": command, "cwd": str(self.context.project_root)},
             )
             await emit(
                 AgentEvent(
@@ -304,7 +305,7 @@ class TurnFinalizer:
             dod.evidence.append(evidence)
             all_passed = all_passed and evidence.passed
             summary.tool_result_messages.append(outcome.message)
-            self.agent.session.append(outcome.message)
+            self.context.session.append(outcome.message)
 
         self.dod_store.save(dod)
         summary.verification_status = "passed" if all_passed else "failed"
@@ -315,20 +316,20 @@ class TurnFinalizer:
 
         summary.usage["tool_calls"] = len(summary.tool_result_messages)
         summary.usage["iterations"] = summary.iterations
-        summary.cumulative_usage = self.agent.session.record_turn_usage(
+        summary.cumulative_usage = self.context.session.record_turn_usage(
             summary.usage,
             tool_calls=len(summary.tool_result_messages),
             iterations=summary.iterations,
         )
-        summary.session_id = self.agent.session.session_id
+        summary.session_id = self.context.session.session_id
         summary.last_turn_transition_summary = (
-            getattr(self.agent.session, "last_turn_transition_summary", None)
+            getattr(self.context.session, "last_turn_transition_summary", None)
         )
         summary.workflow_timeline = list(
-            getattr(self.agent.session, "workflow_timeline", [])
+            getattr(self.context.session, "workflow_timeline", [])
         )
         if summary.definition_of_done and summary.definition_of_done.status == "done":
-            MemoryStore(self.agent.project_root).capture_definition_of_done(
+            MemoryStore(self.context.project_root).capture_definition_of_done(
                 build_verification_summary(summary.definition_of_done.evidence)
             )
         summary.trace = list(self.tracer.events)
