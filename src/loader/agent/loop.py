@@ -7,16 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..context.project import ProjectContext, detect_project
-from ..llm.base import LLMBackend, Message, Role, ToolCall
+from ..llm.base import LLMBackend, Message, Role
 from ..runtime.bootstrap import build_runtime_context
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.context import RuntimeContext
 from ..runtime.conversation import ConversationRuntime
 from ..runtime.deliberation import (
     DECOMPOSITION_PROMPT,
-    SELF_CRITIQUE_PROMPT,
     parse_decomposition,
-    parse_self_critique,
     should_decompose,
 )
 from ..runtime.dod import DefinitionOfDoneStore
@@ -28,19 +26,11 @@ from ..runtime.permissions import (
     load_permission_rules,
 )
 from ..runtime.prompt_history import PromptSnapshot
-from ..runtime.reasoning_types import SelfCritique, TaskDecomposition
+from ..runtime.reasoning_types import TaskDecomposition
 from ..runtime.session import ConversationSession
 from ..runtime.task_classification import is_conversational
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
-from .parsing import parse_tool_calls
-from .planner import (
-    PLANNING_PROMPT,
-    SHOULD_PLAN_PROMPT,
-    Plan,
-    parse_plan,
-    should_plan,
-)
 from .prompts import build_system_prompt_result
 from .safeguards import RuntimeSafeguards
 
@@ -377,34 +367,6 @@ class Agent:
                 Message(role=Role.ASSISTANT, content="Done."),
             ]
 
-    async def _should_plan(self, task: str) -> bool:
-        """Ask LLM if this task needs planning."""
-        if not self.config.auto_plan:
-            return False
-
-        prompt = SHOULD_PLAN_PROMPT.format(task=task)
-        response = await self.backend.complete(
-            messages=[Message(role=Role.USER, content=prompt)],
-            tools=None,
-            temperature=0.3,
-            max_tokens=20,
-        )
-        return should_plan(response.content)
-
-    async def _create_plan(self, task: str) -> Plan:
-        """Generate a plan for the task."""
-        prompt = PLANNING_PROMPT.format(task=task)
-        response = await self.backend.complete(
-            messages=[
-                self._get_system_message(),
-                Message(role=Role.USER, content=prompt),
-            ],
-            tools=None,
-            temperature=0.5,
-            max_tokens=500,
-        )
-        return parse_plan(response.content, goal=task)
-
     # === Reasoning Stage Methods ===
 
     async def _decompose_task(self, task: str) -> TaskDecomposition:
@@ -420,17 +382,6 @@ class Agent:
             max_tokens=1000,
         )
         return parse_decomposition(response.content, task)
-
-    async def _self_critique(self, response: str, context: str) -> SelfCritique:
-        """Perform self-critique on a response."""
-        prompt = SELF_CRITIQUE_PROMPT.format(response=response, context=context)
-        critique_response = await self.backend.complete(
-            messages=[Message(role=Role.USER, content=prompt)],
-            tools=None,
-            temperature=0.3,
-            max_tokens=500,
-        )
-        return parse_self_critique(critique_response.content, response)
 
     async def _handle_conversational(
         self,
@@ -710,340 +661,6 @@ class Agent:
         runtime = ExploreRuntime(self)
         self.last_turn_summary = await runtime.run_query(user_message, emit)
         return self.last_turn_summary.final_response
-
-    def _contains_unexecuted_code(self, content: str) -> bool:
-        """Detect if response contains code blocks that should be tool calls.
-
-        Returns True if the response looks like chatbot-style advice with
-        code blocks, rather than an actual final answer.
-        """
-        import re
-
-        # Check for raw JSON tool call attempts (model outputting tool calls as text)
-        # This happens when small models try to call tools but output JSON instead
-        json_tool_patterns = [
-            r'\{"name"\s*:\s*"(write|read|edit|bash|glob|grep)"',  # Tool call JSON
-            r'"name"\s*:\s*"(write|read|edit|bash|glob|grep)".*"(?:parameters|arguments)"',
-        ]
-        for pattern in json_tool_patterns:
-            if re.search(pattern, content):
-                return True
-
-        # Check for bracket format: [calls bash tool with: ...] or [USE write tool: ...]
-        bracket_patterns = [
-            r'\[calls?\s+\w+\s+tool\s+with:',
-            r'\[USE\s+\w+\s+tool:',
-        ]
-        for pattern in bracket_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                return True
-
-        # Check for hallucinated/narrated tool uses - model DESCRIBES using tools
-        # but doesn't actually call them (past tense narration)
-        hallucination_patterns = [
-            r'used\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "Used bash tool..."
-            r'used\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "Used the bash tool..."
-            r'using\s+the\s+`?(?:bash|write|read|edit|glob|grep)`?\s+tool',  # "...using the write tool"
-            r'with\s+file_path\s*=\s*[`\'"]',  # "with file_path=`..." (narrated parameter)
-            r'with\s+command\s*[`\'"]',  # "with command `..." (narrated bash)
-            r'i\s+(ran|executed|created|wrote|read)\s+(the\s+)?(command|file)',  # "I ran the command"
-            r'\*\s*used\s+`',  # "* Used `bash`..." (bullet point narration)
-            r'here\s+is\s+what\s+i\s+did:',  # "Here is what I did:"
-        ]
-        for pattern in hallucination_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                return True
-
-        # Look for markdown code blocks
-        code_blocks = re.findall(r'```(\w*)\n(.*?)```', content, re.DOTALL)
-
-        if not code_blocks:
-            return False
-
-        # Check if any code blocks look like commands or file contents
-        action_indicators = [
-            'bash', 'sh', 'shell', 'cmd', 'powershell',  # Shell code
-            'mkdir', 'cd ', 'npm ', 'pip ', 'git ',  # Commands in code
-            'python', 'html', 'css', 'javascript', 'js', 'ts',  # File content
-        ]
-
-        chatbot_phrases = [
-            'you can run', 'you can create', 'you can use',
-            'run this', 'create this', 'save this',
-            'here\'s how', 'here is', 'copy this',
-            'execute this', 'paste this',
-        ]
-
-        # Tutorial/instruction patterns
-        tutorial_patterns = [
-            r'^\s*\d+\.\s+(open|create|navigate|run|execute|make)',  # Numbered instructions
-            r'(first|second|third|next|then),?\s+(open|create|navigate)',  # Sequenced steps
-            r'open your (terminal|command|shell)',  # Tutorial starter
-            r'navigate to (the|your|~/)',  # Navigation instruction
-            r'here\'s how you can (quickly|easily)?',  # How-to preamble
-            r'you can (start by|begin by|follow these)',  # Tutorial start
-        ]
-
-        content_lower = content.lower()
-
-        # Check for tutorial patterns
-        for pattern in tutorial_patterns:
-            if re.search(pattern, content_lower, re.MULTILINE | re.IGNORECASE):
-                return True
-
-        # If chatbot phrases present with code blocks, it's describing not doing
-        for phrase in chatbot_phrases:
-            if phrase in content_lower:
-                return True
-
-        # Check code block languages that suggest action needed
-        for lang, _ in code_blocks:
-            if lang.lower() in action_indicators:
-                return True
-
-        return False
-
-    def _extract_raw_json_tool_calls(self, content: str) -> list[ToolCall]:
-        """Try to extract tool calls from raw JSON or bracket format in content.
-
-        Some small models output tool calls as raw JSON text or bracket format
-        instead of using the proper tool calling API. This method tries to
-        parse and recover them.
-        """
-        import json
-        import os
-        import re
-
-        allowed_tool_names = [tool.name for tool in self.registry.list_tools()]
-        parsed = parse_tool_calls(
-            content,
-            allowed_tool_names=allowed_tool_names,
-        )
-        if parsed.tool_calls:
-            return parsed.tool_calls
-
-        tool_calls = []
-        tool_names = [name.casefold() for name in allowed_tool_names]
-
-        # Debug log
-        def debug(msg):
-            try:
-                with open("/tmp/loader_debug.log", "a") as f:
-                    f.write(f"[extract] {msg}\n")
-            except Exception:
-                pass
-
-        debug(f"checking content len={len(content)}")
-
-        # First, try to extract bracket format: [calls bash tool with: ...]
-        # or [USE bash tool: ...] or similar variations
-        # Note: Using (.+?) with re.DOTALL to capture content that may span patterns
-        # The ] at end acts as anchor, but we need to handle ] inside content
-        # Also handle formats without colon: [calls bash tool with command="..."]
-        bracket_patterns = [
-            # With colon after "with"
-            r'\[calls?\s+(\w+)\s+tool\s+with:\s*(.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error))',
-            r'\[USE\s+(\w+)\s+tool:\s*(.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error))',
-            r'\[calls?\s+(\w+)\s+tool\s+with:\s*([^\]]+)\]',
-            r'\[USE\s+(\w+)\s+tool:\s*([^\]]+)\]',
-            # Without colon - direct key=value format: [calls bash tool with command="..."]
-            r'\[calls?\s+(\w+)\s+tool\s+with\s+(\w+\s*=.+?)\](?=\s*(?:\n|$|[A-Z]|Done|Created|Error|Directly))',
-            r'\[calls?\s+(\w+)\s+tool\s+with\s+([^\]]+)\]',
-            # Inline format: [calls write tool with file_path="..." and inline content "..."]
-            r'\[calls?\s+(\w+)\s+tool\s+with\s+(.+?)\](?=\s*(?:\n|$|Directly|Done))',
-        ]
-
-        for pattern in bracket_patterns:
-            debug(f"trying pattern: {pattern}")
-            for match in re.finditer(pattern, content, re.IGNORECASE):
-                tool_name = match.group(1).lower()
-                args_str = match.group(2).strip()
-                debug(f"  matched: tool={tool_name}, args={args_str[:50]}...")
-
-                if tool_name.casefold() not in tool_names:
-                    debug(f"  skipping - tool_name '{tool_name}' not in tool_names")
-                    continue
-
-                # Skip if we already have a tool call at this position (avoid duplicates)
-                match_start = match.start()
-                if any(tc.id.endswith(f"_pos{match_start}") for tc in tool_calls):
-                    debug(f"  skipping - already extracted at position {match_start}")
-                    continue
-
-                try:
-                    # Parse the arguments based on tool type
-                    if tool_name == "bash":
-                        # bash tool: extract command, handling various formats
-                        # Model might output: "mkdir -p /foo" or "command='mkdir -p /foo'"
-                        cmd = args_str
-                        # If it has command= prefix, extract just the command value
-                        cmd_match = re.search(r'command\s*[=:]\s*["\']?([^"\']+)["\']?', args_str)
-                        if cmd_match:
-                            cmd = cmd_match.group(1).strip()
-                        # Also handle case where model outputs "cmd, command='cmd'" - take first part
-                        elif ',' in args_str and 'command=' in args_str:
-                            cmd = args_str.split(',')[0].strip()
-                        # Expand ~ in command
-                        cmd = os.path.expanduser(cmd)
-                        tool_calls.append(ToolCall(
-                            id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
-                            name=tool_name,
-                            arguments={"command": cmd},
-                        ))
-                    elif tool_name == "write":
-                        # write tool: file_path=..., content="..."
-                        # Handle quoted file paths
-                        file_path_match = re.search(r'file_path[=:]\s*["\']?([^"\'`,\s]+)["\']?', args_str)
-
-                        # For content, find the content= part and extract everything after it
-                        # Handle both quoted and unquoted content
-                        # Also handle "inline content" format: and inline content "..."
-                        content_start = re.search(r'(?:inline\s+)?content[=:]\s*', args_str, re.IGNORECASE)
-                        if not content_start:
-                            # Also try: and inline content "..."
-                            content_start = re.search(r'and\s+inline\s+content\s+', args_str, re.IGNORECASE)
-
-                        file_content = ""
-                        if content_start:
-                            rest = args_str[content_start.end():]
-                            # Check if content starts with a quote
-                            if rest.startswith('"'):
-                                # Find matching end quote (handle escaped quotes)
-                                end_idx = len(rest) - 1
-                                # Walk backward to find the last quote
-                                while end_idx > 0 and rest[end_idx] != '"':
-                                    end_idx -= 1
-                                if end_idx > 0:
-                                    file_content = rest[1:end_idx]
-                            elif rest.startswith("'"):
-                                end_idx = len(rest) - 1
-                                while end_idx > 0 and rest[end_idx] != "'":
-                                    end_idx -= 1
-                                if end_idx > 0:
-                                    file_content = rest[1:end_idx]
-                            else:
-                                # No quotes - take everything
-                                file_content = rest.strip()
-
-                        debug(f"  write: file_path={file_path_match.group(1) if file_path_match else None}, content_len={len(file_content)}")
-
-                        if file_path_match:
-                            file_path = file_path_match.group(1).strip('"\'')
-                            file_path = os.path.expanduser(file_path)  # Expand ~
-                            tool_calls.append(ToolCall(
-                                id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
-                                name=tool_name,
-                                arguments={"file_path": file_path, "content": file_content},
-                            ))
-                    elif tool_name == "read":
-                        # read tool: file_path
-                        file_path = args_str.split(',')[0].split('=')[-1].strip().strip('"\'')
-                        file_path = os.path.expanduser(file_path)
-                        tool_calls.append(ToolCall(
-                            id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
-                            name=tool_name,
-                            arguments={"file_path": file_path},
-                        ))
-                    elif tool_name == "edit":
-                        # edit tool: file_path=..., old_string="...", new_string="..."
-                        file_path_match = re.search(r'file_path[=:]\s*["\']?([^"\'`,]+)["\']?', args_str)
-                        old_match = re.search(r'old_string[=:]\s*["\'](.+?)["\']', args_str)
-                        new_match = re.search(r'new_string[=:]\s*["\'](.+?)["\']', args_str)
-
-                        if file_path_match and old_match and new_match:
-                            file_path = os.path.expanduser(file_path_match.group(1).strip('"\''))
-                            tool_calls.append(ToolCall(
-                                id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
-                                name=tool_name,
-                                arguments={
-                                    "file_path": file_path,
-                                    "old_string": old_match.group(1),
-                                    "new_string": new_match.group(1),
-                                },
-                            ))
-                    elif tool_name in ("glob", "grep"):
-                        # glob/grep: pattern - expand ~ if it looks like a path
-                        pattern = args_str
-                        if '~' in pattern:
-                            pattern = os.path.expanduser(pattern)
-                        tool_calls.append(ToolCall(
-                            id=f"bracket_{tool_name}_{len(tool_calls)}_pos{match_start}",
-                            name=tool_name,
-                            arguments={"pattern": pattern},
-                        ))
-                except Exception:
-                    continue
-
-        # If we found bracket-format calls, return them
-        if tool_calls:
-            return tool_calls
-
-        # Otherwise, try to find JSON objects starting with {"name": "tool_name"
-        # This is tricky because the content field may contain arbitrary text
-
-        for tool_name in tool_names:
-            # Look for the start of a tool call JSON
-            pattern = rf'\{{\s*"name"\s*:\s*"{tool_name}"\s*,\s*"(?:parameters|arguments)"\s*:\s*\{{'
-            for match in re.finditer(pattern, content):
-                start = match.start()
-
-                # Try to find the matching closing braces by parsing
-                # Start from the beginning of the JSON object
-                try:
-                    # Find the complete JSON by tracking brace depth
-                    brace_count = 0
-                    in_string = False
-                    escape_next = False
-                    end = start
-
-                    for i, char in enumerate(content[start:], start):
-                        if escape_next:
-                            escape_next = False
-                            continue
-
-                        if char == '\\' and in_string:
-                            escape_next = True
-                            continue
-
-                        if char == '"' and not escape_next:
-                            in_string = not in_string
-                            continue
-
-                        if not in_string:
-                            if char == '{':
-                                brace_count += 1
-                            elif char == '}':
-                                brace_count -= 1
-                                if brace_count == 0:
-                                    end = i + 1
-                                    break
-
-                    if brace_count == 0 and end > start:
-                        json_str = content[start:end]
-                        try:
-                            # Try to parse as-is first
-                            data = json.loads(json_str)
-                        except json.JSONDecodeError:
-                            # Model may have output literal newlines in strings
-                            # Escape them so JSON parser accepts it
-                            try:
-                                fixed = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                                data = json.loads(fixed)
-                            except json.JSONDecodeError:
-                                continue
-
-                        if "name" in data and ("parameters" in data or "arguments" in data):
-                            args = data.get("arguments") or data.get("parameters", {})
-                            tool_calls.append(ToolCall(
-                                id=f"raw_{data['name']}_{len(tool_calls)}",
-                                name=data["name"],
-                                arguments=args,
-                            ))
-
-                except Exception:
-                    continue
-
-        return tool_calls
 
     def clear_history(self) -> None:
         """Clear conversation history."""
