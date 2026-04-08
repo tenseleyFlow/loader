@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from ..llm.base import Message, Role
 from .completion_policy import CompletionPolicy
+from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
@@ -42,14 +43,14 @@ class TurnCompletionController:
 
     def __init__(
         self,
-        agent,
+        context: RuntimeContext,
         *,
         repairer: ResponseRepairer,
         completion_policy: CompletionPolicy,
         finalizer: TurnFinalizer,
         phase_tracker: TurnPhaseTracker,
     ) -> None:
-        self.agent = agent
+        self.context = context
         self.repairer = repairer
         self.completion_policy = completion_policy
         self.finalizer = finalizer
@@ -93,8 +94,8 @@ class TurnCompletionController:
                 finalize_reason_summary="Finalizing after text-loop bailout",
             )
 
-        cfg = self.agent.config.reasoning
-        self.agent.safeguards.record_response(content)
+        cfg = self.context.config.reasoning
+        self.context.safeguards.record_response(content)
         if (
             cfg.completion_check
             and not dod.mutating_actions
@@ -122,7 +123,7 @@ class TurnCompletionController:
         )
 
         final_message = Message(role=Role.ASSISTANT, content=response_content)
-        self.agent.session.append(final_message)
+        self.context.session.append(final_message)
         summary.assistant_messages.append(final_message)
 
         gate_result = await self.finalizer.run_definition_of_done_gate(

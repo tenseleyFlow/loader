@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..llm.base import ToolCall
+from .context import RuntimeContext
 from .parsing import parse_tool_calls
 
 
@@ -37,8 +38,8 @@ class ToolCallAnalysis:
 class ResponseRepairer:
     """Owns response-repair heuristics that used to live inline in the loop."""
 
-    def __init__(self, agent) -> None:
-        self.agent = agent
+    def __init__(self, context: RuntimeContext) -> None:
+        self.context = context
 
     def handle_empty_response(
         self,
@@ -85,7 +86,7 @@ class ResponseRepairer:
         normalized_tool_calls = list(tool_calls)
         tool_source = "native"
 
-        if self.agent.use_react:
+        if self.context.use_react:
             parsed = parse_tool_calls(content)
             normalized_tool_calls = parsed.tool_calls
             normalized_content = parsed.content
@@ -135,16 +136,11 @@ class ResponseRepairer:
         )
 
     def _extract_raw_tool_calls(self, response_content: str) -> list[ToolCall]:
-        """Recover raw-text tool calls for either agent or RuntimeContext callers."""
+        """Recover raw-text tool calls from the runtime parser and registry."""
 
-        extractor = getattr(self.agent, "_extract_raw_json_tool_calls", None)
-        if callable(extractor):
-            return extractor(response_content)
-
-        registry = getattr(self.agent, "registry", None)
-        allowed_tool_names = None
-        if registry is not None:
-            allowed_tool_names = [tool.name for tool in registry.list_tools()]
+        allowed_tool_names = [
+            tool.name for tool in self.context.registry.list_tools()
+        ]
         parsed = parse_tool_calls(
             response_content,
             allowed_tool_names=allowed_tool_names,

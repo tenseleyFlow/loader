@@ -69,8 +69,8 @@ class ConversationRuntime:
             append_timeline=self.workflow_state.append_timeline_from_decision,
             append_execute_bridge=self.workflow_state.maybe_append_execute_bridge,
         )
-        self.repairer = ResponseRepairer(agent)
-        self.completion_policy = CompletionPolicy(agent)
+        self.repairer = ResponseRepairer(self.context)
+        self.completion_policy = CompletionPolicy(self.context)
         self.phase_tracker = TurnPhaseTracker(self.context, self.tracer)
         self.finalizer = TurnFinalizer(
             agent,
@@ -79,7 +79,7 @@ class ConversationRuntime:
             self.workflow_state.set_workflow_mode,
         )
         self.turn_completion = TurnCompletionController(
-            agent,
+            self.context,
             repairer=self.repairer,
             completion_policy=self.completion_policy,
             finalizer=self.finalizer,
