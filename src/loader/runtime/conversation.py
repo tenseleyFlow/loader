@@ -14,6 +14,7 @@ from .executor import ToolExecutor
 from .finalization import TurnFinalizer
 from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
 from .repair import ResponseRepairer
+from .response_routing import AssistantResponseRouter
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .turn_completion import TurnCompletionController
@@ -83,14 +84,19 @@ class ConversationRuntime:
             finalizer=self.finalizer,
             phase_tracker=self.phase_tracker,
         )
-        self.turn_iteration = TurnIterationController(
+        self.response_router = AssistantResponseRouter(
             agent,
             tracer=self.tracer,
             phase_tracker=self.phase_tracker,
-            turn_requester=AssistantTurnRequester(agent, self.tracer),
-            repairer=self.repairer,
             tool_batches=ToolBatchRunner(agent, self.dod_store),
             turn_completion=self.turn_completion,
+        )
+        self.turn_iteration = TurnIterationController(
+            agent,
+            phase_tracker=self.phase_tracker,
+            turn_requester=AssistantTurnRequester(agent, self.tracer),
+            repairer=self.repairer,
+            response_router=self.response_router,
         )
         self.turn_preparation = TurnPreparationController(
             agent,
