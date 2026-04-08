@@ -20,6 +20,7 @@ from ..runtime.permissions import (
     load_permission_rules,
 )
 from ..runtime.prompt_history import PromptSnapshot
+from ..runtime.reasoning_service import RuntimeReasoningService
 from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
@@ -33,25 +34,15 @@ from .planner import (
 )
 from .prompts import build_system_prompt_result
 from .reasoning import (
-    CONFIDENCE_PROMPT,
     DECOMPOSITION_PROMPT,
     SELF_CRITIQUE_PROMPT,
-    VERIFICATION_PROMPT,
-    ActionVerification,
-    ConfidenceAssessment,
-    ConfidenceLevel,
     SelfCritique,
     TaskDecomposition,
-    estimate_confidence_quick,
     is_conversational,
-    parse_confidence,
     parse_decomposition,
     parse_self_critique,
-    parse_verification,
-    quick_verify,
     should_decompose,
 )
-from .recovery import RecoveryContext
 from .safeguards import RuntimeSafeguards
 
 
@@ -150,9 +141,6 @@ class Agent:
         self._use_react: bool | None = None
         self.capability_profile = resolve_backend_capability_profile(self.backend)
         self.last_turn_summary: TurnSummary | None = None
-
-        # Recovery tracking
-        self._recovery_context: RecoveryContext | None = None
 
         # Steering: allow user to send messages during execution
         self._steering_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -376,12 +364,6 @@ class Agent:
             if context is not None:
                 context.capability_profile = self.capability_profile
 
-        def _get_recovery_context() -> RecoveryContext | None:
-            return self._recovery_context
-
-        def _set_recovery_context(value: RecoveryContext | None) -> None:
-            self._recovery_context = value
-
         context = RuntimeContext(
             project_root=self.project_root,
             backend=self.backend,
@@ -400,11 +382,8 @@ class Agent:
                 queue_steering_message=_queue_steering_message,
                 set_workflow_mode=_set_workflow_mode,
                 refresh_capability_profile=_refresh_capability_profile,
-                assess_confidence=self._assess_confidence,
-                verify_action=self._verify_action,
-                get_recovery_context=_get_recovery_context,
-                set_recovery_context=_set_recovery_context,
             ),
+            reasoning=RuntimeReasoningService(self.backend, self.config),
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
         )
@@ -483,82 +462,6 @@ class Agent:
             max_tokens=500,
         )
         return parse_self_critique(critique_response.content, response)
-
-    async def _assess_confidence(
-        self,
-        tool_name: str,
-        tool_args: dict,
-        context: str = "",
-    ) -> ConfidenceAssessment:
-        """Assess confidence in a tool action."""
-        cfg = self.config.reasoning
-
-        # Try quick heuristic first
-        if cfg.use_quick_confidence:
-            quick_level = estimate_confidence_quick(tool_name, tool_args, context)
-            # Only call LLM if quick estimate is low
-            if quick_level.value >= ConfidenceLevel.MEDIUM.value:
-                return ConfidenceAssessment(
-                    action=f"{tool_name} with {tool_args}",
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    level=quick_level,
-                    reasoning="Quick heuristic assessment",
-                )
-
-        # Full LLM assessment
-        action = f"Call {tool_name} with arguments: {tool_args}"
-        prompt = CONFIDENCE_PROMPT.format(
-            action=action,
-            tool_name=tool_name,
-            tool_args=tool_args,
-            context=context[-2000:] if context else "No prior context",
-        )
-        response = await self.backend.complete(
-            messages=[Message(role=Role.USER, content=prompt)],
-            tools=None,
-            temperature=0.3,
-            max_tokens=300,
-        )
-        return parse_confidence(response.content, tool_name, tool_args)
-
-    async def _verify_action(
-        self,
-        tool_name: str,
-        tool_args: dict,
-        result: str,
-        expected: str = "",
-    ) -> ActionVerification:
-        """Verify that an action produced the expected result."""
-        cfg = self.config.reasoning
-
-        # Try quick verification first
-        if cfg.use_quick_verification:
-            quick_result = quick_verify(tool_name, tool_args, result)
-            if quick_result:
-                return ActionVerification(
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    expected_outcome=expected or "Success",
-                    actual_result=result[:500],
-                    verified=True,
-                    verification_method="quick_heuristic",
-                )
-
-        # Full LLM verification
-        prompt = VERIFICATION_PROMPT.format(
-            tool_name=tool_name,
-            tool_args=tool_args,
-            expected=expected or "The action should complete successfully",
-            result=result[:2000],  # Truncate long results
-        )
-        response = await self.backend.complete(
-            messages=[Message(role=Role.USER, content=prompt)],
-            tools=None,
-            temperature=0.3,
-            max_tokens=300,
-        )
-        return parse_verification(response.content, tool_name, tool_args, expected, result)
 
     async def _handle_conversational(
         self,
@@ -1179,7 +1082,6 @@ class Agent:
         self.prompt_format = None
         self.prompt_sections = []
         self.session = self._create_session(messages=self.messages)
-        self._recovery_context = None
         self._current_task = None
         self.last_turn_summary = None
         self.workflow_mode = WorkflowMode.EXECUTE.value

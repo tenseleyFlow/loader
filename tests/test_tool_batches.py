@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,14 +17,13 @@ from loader.runtime.permissions import (
     build_permission_policy,
     load_permission_rules,
 )
-from loader.runtime.recovery import RecoveryContext
 from loader.runtime.reasoning_types import (
     ActionVerification,
     ConfidenceAssessment,
     ConfidenceLevel,
 )
+from loader.runtime.recovery import RecoveryContext
 from loader.runtime.tool_batches import ToolBatchRunner
-from loader.runtime.tracing import RuntimeTracer
 from loader.tools.base import ToolResult as RegistryToolResult
 from loader.tools.base import create_default_registry
 from tests.helpers.runtime_harness import ScriptedBackend
@@ -97,7 +95,7 @@ def build_context(
     verification: bool = False,
     auto_recover: bool = True,
     min_confidence_for_action: int = 3,
-) -> tuple[RuntimeContext, dict[str, RecoveryContext | None]]:
+) -> RuntimeContext:
     registry = create_default_registry(temp_dir)
     registry.configure_workspace_root(temp_dir)
     rule_status = load_permission_rules(temp_dir)
@@ -107,7 +105,6 @@ def build_context(
         tool_requirements=registry.get_tool_requirements(),
         rules=rule_status.rules,
     )
-    recovery_holder = {"value": recovery_context}
     context = RuntimeContext(
         project_root=temp_dir,
         backend=ScriptedBackend(),
@@ -140,13 +137,14 @@ def build_context(
             queue_steering_message=lambda message: None,
             set_workflow_mode=lambda mode: None,
             refresh_capability_profile=lambda: None,
+        ),
+        reasoning=SimpleNamespace(
             assess_confidence=assess_confidence,
             verify_action=verify_action,
-            get_recovery_context=lambda: recovery_holder["value"],
-            set_recovery_context=lambda value: recovery_holder.__setitem__("value", value),
         ),
+        recovery_context=recovery_context,
     )
-    return context, recovery_holder
+    return context
 
 
 def tool_outcome(
@@ -189,7 +187,7 @@ async def test_tool_batch_runner_uses_context_for_confidence_gate(temp_dir: Path
     async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
         raise AssertionError("Verification should not run for skipped actions")
 
-    context, _ = build_context(
+    context = build_context(
         temp_dir=temp_dir,
         messages=[
             Message(role=Role.USER, content="Please inspect the project."),
@@ -239,7 +237,7 @@ async def test_tool_batch_runner_tracks_recovery_with_legacy_context(temp_dir: P
     async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
         raise AssertionError("Verification should not run for failed actions")
 
-    context, recovery_holder = build_context(
+    context = build_context(
         temp_dir=temp_dir,
         messages=[],
         safeguards=FakeSafeguards(),
@@ -270,7 +268,7 @@ async def test_tool_batch_runner_tracks_recovery_with_legacy_context(temp_dir: P
         consecutive_errors=0,
     )
 
-    assert recovery_holder["value"] is not None
+    assert context.recovery_context is not None
     assert summary.tool_result_messages
     assert context.session.messages[-1] == summary.tool_result_messages[-1]
     assert any(event.type == "recovery" for event in events)
@@ -300,7 +298,7 @@ async def test_tool_batch_runner_verifies_with_context_services(temp_dir: Path) 
         original_tool="edit",
         original_args={"file_path": "README.md"},
     )
-    context, recovery_holder = build_context(
+    context = build_context(
         temp_dir=temp_dir,
         messages=[],
         safeguards=FakeSafeguards(),
@@ -332,7 +330,7 @@ async def test_tool_batch_runner_verifies_with_context_services(temp_dir: Path) 
     )
 
     assert verification_calls == ["file contents"]
-    assert recovery_holder["value"] is None
+    assert context.recovery_context is None
     assert context.session.messages[-1].role == Role.TOOL
     assert context.session.messages[-1].content == "file contents"
     assert any(event.type == "verification" for event in events)

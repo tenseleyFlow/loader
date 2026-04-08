@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -74,6 +74,28 @@ class RuntimeSafeguardsProtocol(Protocol):
     def record_response(self, content: str) -> None:
         """Record a completed assistant response for safeguard bookkeeping."""
 
+
+class RuntimeReasoningServiceProtocol(Protocol):
+    """Typed action-reasoning surface the runtime can rely on."""
+
+    async def assess_confidence(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        context: str = "",
+    ) -> ConfidenceAssessment:
+        """Assess confidence in a planned tool action."""
+
+    async def verify_action(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        """Verify that a tool action produced the desired result."""
+
+
 @dataclass(slots=True)
 class RuntimeLegacyServices:
     """Explicit migration seams for legacy agent-owned behavior."""
@@ -83,10 +105,6 @@ class RuntimeLegacyServices:
     queue_steering_message: Callable[[str], None]
     set_workflow_mode: Callable[[str], None]
     refresh_capability_profile: Callable[[], None]
-    assess_confidence: Callable[[str, dict[str, Any], str], Awaitable[ConfidenceAssessment]]
-    verify_action: Callable[[str, dict[str, Any], str, str], Awaitable[ActionVerification]]
-    get_recovery_context: Callable[[], RecoveryContext | None]
-    set_recovery_context: Callable[[RecoveryContext | None], None]
 
 
 @dataclass(slots=True)
@@ -105,6 +123,8 @@ class RuntimeContext:
     workflow_mode: str
     safeguards: RuntimeSafeguardsProtocol
     legacy: RuntimeLegacyServices
+    reasoning: RuntimeReasoningServiceProtocol | None = None
+    recovery_context: RecoveryContext | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
 
@@ -131,3 +151,28 @@ class RuntimeContext:
         """Return rule counts for the active permission policy."""
 
         return self.permission_policy.rule_counts()
+
+    async def assess_confidence(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        context: str = "",
+    ) -> ConfidenceAssessment:
+        """Assess confidence using the primary runtime reasoning service."""
+
+        if self.reasoning is None:
+            raise RuntimeError("RuntimeContext.reasoning is required for confidence checks")
+        return await self.reasoning.assess_confidence(tool_name, tool_args, context)
+
+    async def verify_action(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        """Verify a tool action using the primary runtime reasoning service."""
+
+        if self.reasoning is None:
+            raise RuntimeError("RuntimeContext.reasoning is required for verification checks")
+        return await self.reasoning.verify_action(tool_name, tool_args, result, expected)

@@ -181,7 +181,7 @@ class ToolBatchRunner:
             for message in self.context.messages[-5:]
             if message.content
         )
-        confidence = await self.context.legacy.assess_confidence(
+        confidence = await self.context.assess_confidence(
             tool_call.name,
             tool_call.arguments,
             context,
@@ -224,7 +224,7 @@ class ToolBatchRunner:
             if isinstance(new_todos, list):
                 sync_todos_to_definition_of_done(dod, new_todos)
         self.dod_store.save(dod)
-        self.context.legacy.set_recovery_context(None)
+        self.context.recovery_context = None
         return None
 
     async def _run_post_tool_verification(
@@ -244,7 +244,7 @@ class ToolBatchRunner:
         ):
             return False
 
-        verification = await self.context.legacy.verify_action(
+        verification = await self.context.verify_action(
             tool_call.name,
             tool_call.arguments,
             outcome.result_output,
@@ -277,14 +277,14 @@ class ToolBatchRunner:
     ) -> Message | None:
         """Generate a recovery follow-up after an executed tool failure."""
 
-        recovery_context = self.context.legacy.get_recovery_context()
+        recovery_context = self.context.recovery_context
         if recovery_context is None:
             recovery_context = RecoveryContext(
                 original_tool=tool_call.name,
                 original_args=tool_call.arguments,
                 max_retries=self.context.config.max_recovery_attempts,
             )
-            self.context.legacy.set_recovery_context(recovery_context)
+            self.context.recovery_context = recovery_context
 
         if recovery_context.is_similar_attempt(
             tool_call.name,
@@ -341,7 +341,7 @@ class ToolBatchRunner:
                 tool_name=tool_call.name,
             )
         )
-        self.context.legacy.set_recovery_context(None)
+        self.context.recovery_context = None
         return Message.tool_result_message(
             tool_call_id=tool_call.id,
             display_content=(f"Observation [{tool_call.name}]: Error: {failure_message}"),
