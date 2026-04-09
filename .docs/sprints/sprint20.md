@@ -166,3 +166,31 @@ The goal is to make Loader easier to audit after the fact, not simply more verbo
 - AST-aware semantic diffs
 - a broad visual workflow UI
 - rich permission-rule editing UX
+
+## Audit
+
+### Status
+
+- Sprint 20 is complete, and the audit is green. Loader now treats the workflow timeline as the canonical policy/accountability artifact, grounds more follow-through decisions in runtime verification state, and makes the remaining `Agent` shell boundary explicit in both code and tests.
+
+### Landed
+
+- canonical policy/accountability ownership is tighter now: `src/loader/runtime/session.py`, `src/loader/runtime/completion_trace.py`, and `src/loader/runtime/turn_completion.py` now project live completion traces from the canonical workflow timeline instead of treating completion trace writes as a peer runtime artifact
+- follow-through checks now consume stronger runtime evidence: `src/loader/runtime/task_completion.py`, `src/loader/runtime/completion_policy.py`, and `src/loader/runtime/turn_completion.py` now use DoD verification commands, prior verification results, successful verification evidence, and tracked pending items to decide whether a non-mutating turn can honestly stop
+- operator accountability is sharper without adding new commands: `src/loader/runtime/inspection.py` and `src/loader/cli/main.py` now surface a one-line latest-policy rollup in `loader status` and `loader session show`, sourced from the canonical workflow timeline rather than an ad hoc side channel
+- the public shell boundary is now settled on purpose instead of merely smaller by accident: `src/loader/runtime/public_shell.py` owns prompt-mode resolution, prompt-cache invalidation, and owner-bound system/few-shot construction, while `src/loader/agent/loop.py` is down to 267 lines and explicitly documented as the public facade over runtime-owned launch/session helpers
+- the shell boundary is also pinned by proof now: `tests/test_runtime_public_shell.py` covers owner-based prompt/few-shot construction and workflow-mode invalidation, while `tests/test_compat_boundaries.py` now guards `agent/loop.py` against drifting back to direct runtime-controller imports
+
+### Verification
+
+- `uv run pytest -q` is green: `372 passed`
+- `tests/test_completion_policy.py`, `tests/test_turn_completion.py`, and `tests/test_session_state.py` now pin verifier-backed follow-through decisions plus live canonical completion-trace projection
+- `tests/test_inspection.py` now covers the latest-policy rollup in the existing status/session surfaces
+- `tests/test_runtime_public_shell.py`, `tests/test_runtime_bootstrap.py`, and `tests/test_compat_boundaries.py` now cover the settled public-shell boundary directly
+
+### Residual debt
+
+- the workflow timeline is now the canonical policy artifact, but completion traces still remain as a compatibility/read-model surface because status/session inspection still benefits from a compact per-turn view
+- follow-through is more verifier-backed than Sprint 19, but it is still runtime-authored and heuristic in places; Loader still does not have OMX-style deeper verifier reasoning or richer artifact-derived proof models
+- `src/loader/agent/loop.py` is now explicitly the public facade, but Loader still keeps that compatibility shell instead of collapsing to a narrower runtime-first API
+- Loader is more coherent and auditable than Sprint 19, but it still stops short of claw-code's fuller policy engine, richer rule/prompt policy surfaces, and OMX's deeper interview/verifier rigor
