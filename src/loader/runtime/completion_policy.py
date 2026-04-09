@@ -32,6 +32,9 @@ class ContinuationDecision:
     decision_code: str
     decision_summary: str
     completion_check: TaskCompletionCheck | None = None
+    should_finalize: bool = False
+    final_response: str = ""
+    failure: str | None = None
 
 
 class CompletionPolicy:
@@ -102,14 +105,6 @@ class CompletionPolicy:
             if cfg.use_quick_completion
             else None
         )
-        if continuation_count >= cfg.max_continuation_prompts:
-            return ContinuationDecision(
-                should_continue=False,
-                decision_code="continuation_budget_exhausted",
-                decision_summary="accepted the response because the continuation budget was exhausted",
-                completion_check=completion_check,
-            )
-
         is_premature = (
             detect_premature_completion(task, content, actions_taken)
             if cfg.use_quick_completion
@@ -121,6 +116,27 @@ class CompletionPolicy:
                 decision_code="completion_response_accepted",
                 decision_summary="accepted the response because completion heuristics found no missing follow-through",
                 completion_check=completion_check,
+            )
+
+        if continuation_count >= cfg.max_continuation_prompts:
+            await emit(
+                AgentEvent(
+                    type="completion_check",
+                    content=f"Task may be incomplete ({len(actions_taken)} actions taken)",
+                    completion_check=completion_check,
+                )
+            )
+            return ContinuationDecision(
+                should_continue=False,
+                should_finalize=True,
+                decision_code="continuation_budget_exhausted",
+                decision_summary=(
+                    "stopped because the continuation budget was exhausted while "
+                    "follow-through evidence was still missing"
+                ),
+                completion_check=completion_check,
+                final_response=self._format_budget_exhausted_response(completion_check),
+                failure="missing follow-through evidence after continuation budget exhaustion",
             )
 
         await emit(
@@ -151,3 +167,18 @@ class CompletionPolicy:
 
         _ = actions_taken
         return content
+
+    @staticmethod
+    def _format_budget_exhausted_response(
+        completion_check: TaskCompletionCheck | None,
+    ) -> str:
+        if completion_check is None or not completion_check.missing_evidence:
+            return (
+                "I stopped because the continuation budget was exhausted before I could "
+                "show enough evidence that the task was complete."
+            )
+        missing = "; ".join(completion_check.missing_evidence[:2])
+        return (
+            "I stopped because I still could not show enough evidence that the task "
+            f"was complete. Missing evidence: {missing}."
+        )

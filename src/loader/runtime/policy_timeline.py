@@ -21,6 +21,7 @@ def append_policy_timeline_entry(
     policy_stage: str | None = None,
     policy_outcome: str | None = None,
     decision_kind: WorkflowDecisionKind | str | None = WorkflowDecisionKind.FORCED,
+    evidence_summary: list[str] | None = None,
 ) -> WorkflowTimelineEntry:
     """Append one typed completion/repair accountability event."""
 
@@ -34,6 +35,7 @@ def append_policy_timeline_entry(
         decision_kind=decision_kind,
         prompt_format=context.prompt_format,
         prompt_sections=context.prompt_sections,
+        evidence_summary=evidence_summary,
     )
     context.session.append_workflow_timeline_entry(entry)
     summary.workflow_timeline = list(context.session.workflow_timeline)

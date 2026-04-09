@@ -214,6 +214,7 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
             outcome="continue",
             decision_code="verification_failed_reentry",
             decision_summary="continued after verification failed and the runtime re-entered execute mode",
+            evidence_summary=["verification contradiction: pytest still failed"],
         )
     )
 
@@ -251,6 +252,9 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     )
     assert [entry.decision_code for entry in reloaded.completion_trace] == [
         "verification_failed_reentry"
+    ]
+    assert reloaded.completion_trace[0].evidence_summary == [
+        "verification contradiction: pytest still failed"
     ]
     assert reloaded.last_turn_transition_summary == (
         "completion -> finalize [terminal] Finalizing completed turn"

@@ -83,12 +83,14 @@ class TurnCompletionController:
         outcome: str,
         decision_code: str,
         decision_summary: str,
+        evidence_summary: list[str] | None = None,
     ) -> None:
         entry = CompletionTraceEntry(
             stage=stage,
             outcome=outcome,
             decision_code=decision_code,
             decision_summary=decision_summary,
+            evidence_summary=list(evidence_summary or []),
         )
         summary.completion_trace.append(entry)
         self.context.session.append_completion_trace_entry(entry)
@@ -100,6 +102,7 @@ class TurnCompletionController:
             reason_summary=decision_summary,
             policy_stage=stage,
             policy_outcome=outcome,
+            evidence_summary=evidence_summary,
         )
 
     async def handle_text_response(
@@ -157,7 +160,6 @@ class TurnCompletionController:
         if (
             cfg.completion_check
             and not dod.mutating_actions
-            and continuation_count < cfg.max_continuation_prompts
         ):
             continuation_decision = (
                 await self.completion_policy.maybe_continue_for_completion(
@@ -175,10 +177,15 @@ class TurnCompletionController:
                 outcome=(
                     "continue"
                     if continuation_decision.should_continue
-                    else "accept"
+                    else "finalize" if continuation_decision.should_finalize else "accept"
                 ),
                 decision_code=continuation_decision.decision_code,
                 decision_summary=continuation_decision.decision_summary,
+                evidence_summary=(
+                    continuation_decision.completion_check.missing_evidence
+                    if continuation_decision.completion_check is not None
+                    else None
+                ),
             )
             if continuation_decision.should_continue:
                 self._record_completion_decision(
@@ -189,6 +196,32 @@ class TurnCompletionController:
                 return TurnCompletionDecision(
                     action=TurnCompletionAction.CONTINUE,
                     continuation_count=continuation_count + 1,
+                )
+            if continuation_decision.should_finalize:
+                final_response = continuation_decision.final_response
+                summary.final_response = final_response
+                if continuation_decision.failure:
+                    summary.failures.append(continuation_decision.failure)
+                final_message = Message(role=Role.ASSISTANT, content=final_response)
+                self.context.session.append(final_message)
+                summary.assistant_messages.append(final_message)
+                self._record_completion_decision(
+                    summary=summary,
+                    decision_code=continuation_decision.decision_code,
+                    decision_summary=continuation_decision.decision_summary,
+                )
+                await emit(
+                    AgentEvent(
+                        type="error",
+                        content=continuation_decision.decision_summary,
+                    )
+                )
+                await emit(AgentEvent(type="response", content=final_response))
+                return TurnCompletionDecision(
+                    action=TurnCompletionAction.FINALIZE,
+                    continuation_count=continuation_count,
+                    finalize_reason_code=continuation_decision.decision_code,
+                    finalize_reason_summary=continuation_decision.decision_summary,
                 )
 
         final_response = self.completion_policy.finalize_response_text(

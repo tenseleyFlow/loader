@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -14,6 +14,7 @@ class CompletionTraceEntry:
     outcome: str
     decision_code: str
     decision_summary: str
+    evidence_summary: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, str]:
         """Serialize the entry into persisted session state."""
@@ -23,6 +24,7 @@ class CompletionTraceEntry:
             "outcome": self.outcome,
             "decision_code": self.decision_code,
             "decision_summary": self.decision_summary,
+            "evidence_summary": list(self.evidence_summary),
         }
 
     @classmethod
@@ -34,6 +36,11 @@ class CompletionTraceEntry:
             outcome=str(data.get("outcome", "")),
             decision_code=str(data.get("decision_code", "")),
             decision_summary=str(data.get("decision_summary", "")),
+            evidence_summary=[
+                str(item)
+                for item in data.get("evidence_summary", [])
+                if str(item).strip()
+            ],
         )
 
 

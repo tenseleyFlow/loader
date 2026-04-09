@@ -356,3 +356,76 @@ async def test_turn_completion_skips_self_critique_reroute(
     )
     assert not any("[SELF-CRITIQUE]" in message.content for message in agent.session.messages)
     assert not any(event.type == "critique" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_finalizes_when_follow_through_budget_is_exhausted(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    agent = Agent(
+        backend=backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task="Fix the README heading.",
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+    await runtime.phase_tracker.enter(
+        TurnPhase.ASSISTANT,
+        capture,
+        detail="Requesting assistant response",
+        reason_code="request_assistant_response",
+    )
+
+    decision = await runtime.turn_completion.handle_text_response(
+        content="I looked into it.",
+        response_content="I looked into it.",
+        task=prepared.task,
+        effective_task=prepared.effective_task,
+        iterations=1,
+        max_iterations=agent.config.max_iterations,
+        actions_taken=[],
+        continuation_count=agent.config.reasoning.max_continuation_prompts,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        executor=prepared.executor,
+        rollback_plan=prepared.rollback_plan,
+    )
+
+    assert decision.action == TurnCompletionAction.FINALIZE
+    assert decision.finalize_reason_code == "continuation_budget_exhausted"
+    assert prepared.summary.final_response.startswith(
+        "I stopped because I still could not show enough evidence"
+    )
+    assert prepared.summary.completion_decision_code == "continuation_budget_exhausted"
+    assert prepared.summary.failures == [
+        "missing follow-through evidence after continuation budget exhaustion"
+    ]
+    assert prepared.summary.completion_trace[-1].outcome == "finalize"
+    assert prepared.summary.completion_trace[-1].decision_code == (
+        "continuation_budget_exhausted"
+    )
+    assert prepared.summary.completion_trace[-1].evidence_summary == [
+        "showing the requested work was actually carried out"
+    ]
+    assert prepared.summary.workflow_timeline[-1].kind == "completion_finalize"
+    assert prepared.summary.workflow_timeline[-1].evidence_summary == [
+        "showing the requested work was actually carried out"
+    ]
+    assert [event.type for event in events[-3:]] == [
+        "completion_check",
+        "error",
+        "response",
+    ]

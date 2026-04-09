@@ -241,3 +241,38 @@ async def test_completion_policy_requests_continuation_using_runtime_context(
         "showing the requested work was actually carried out",
         "showing the result was run or verified",
     ]
+
+
+@pytest.mark.asyncio
+async def test_completion_policy_finalizes_when_budget_is_exhausted(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir,
+        safeguards=FakeSafeguards(),
+        max_continuation_prompts=1,
+    )
+    policy = CompletionPolicy(context)
+    events = []
+
+    async def emit(event) -> None:
+        events.append(event)
+
+    decision = await policy.maybe_continue_for_completion(
+        content="I looked into it.",
+        response_content="I looked into it.",
+        task="Fix the README heading.",
+        actions_taken=[],
+        continuation_count=1,
+        emit=emit,
+    )
+
+    assert decision.should_continue is False
+    assert decision.should_finalize is True
+    assert decision.decision_code == "continuation_budget_exhausted"
+    assert decision.completion_check is not None
+    assert decision.completion_check.missing_evidence == [
+        "showing the requested work was actually carried out"
+    ]
+    assert "Missing evidence" in decision.final_response
+    assert events[0].type == "completion_check"
