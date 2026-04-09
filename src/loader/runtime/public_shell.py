@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Protocol
 
 from ..context.project import ProjectContext
 from ..llm.base import Message, Role
@@ -14,7 +15,7 @@ from ..tools.base import ToolRegistry
 from .capabilities import CapabilityProfile, resolve_backend_capability_profile
 from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
-from .permissions import PermissionConfigStatus, PermissionPolicy
+from .permissions import PermissionConfigStatus, PermissionMode, PermissionPolicy
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
 from .session import ConversationSession
@@ -110,6 +111,45 @@ class SteeringMailbox:
         self._is_running = False
 
 
+class RuntimeShellConfigProtocol(Protocol):
+    """Typed view of shell config used for session lifecycle helpers."""
+
+    session_rotate_after_bytes: int
+    session_auto_compaction_input_tokens_threshold: int
+    session_compaction_keep_last_messages: int
+
+
+class RuntimeShellOwner(Protocol):
+    """Typed public-shell owner for session lifecycle helpers."""
+
+    project_root: Path
+    backend: Any
+    session: ConversationSession
+    messages: list[Message]
+    config: RuntimeShellConfigProtocol
+    permission_policy: PermissionPolicy
+    permission_config_status: PermissionConfigStatus
+    capability_profile: CapabilityProfile
+    workflow_mode: str
+    prompt_format: str | None
+    prompt_sections: list[str]
+    current_task: str | None
+    last_turn_summary: TurnSummary | None
+    steering: SteeringMailbox
+    safeguards: Any
+    _system_message: Message | None
+    _use_react: bool | None
+
+    def set_workflow_mode(self, workflow_mode: str) -> None:
+        """Update the active workflow mode."""
+
+    def _get_system_message(self) -> Message:
+        """Build the active system message."""
+
+    def _get_few_shot_examples(self) -> list[Message]:
+        """Build the active few-shot examples."""
+
+
 def create_runtime_session(
     *,
     project_root: Path,
@@ -189,6 +229,52 @@ def create_runtime_session_install(
     )
 
 
+def apply_runtime_session_install(
+    owner: RuntimeShellOwner,
+    install: RuntimeSessionInstall,
+) -> None:
+    """Apply one restored runtime session onto the public shell owner."""
+
+    owner.steering.clear()
+    owner.session = install.session
+    owner.messages = install.restored.messages
+    owner.current_task = install.restored.current_task
+    owner.set_workflow_mode(install.restored.workflow_mode)
+    owner.permission_policy.active_mode = PermissionMode.from_str(
+        install.restored.permission_mode
+    )
+    owner.prompt_format = install.restored.prompt_format
+    owner.prompt_sections = list(install.restored.prompt_sections)
+    owner.last_turn_summary = install.restored.last_turn_summary
+    owner._system_message = None
+
+
+def build_fresh_runtime_session_install(
+    owner: RuntimeShellOwner,
+    *,
+    messages: list[Message] | None = None,
+    workflow_mode: str | None = None,
+) -> RuntimeSessionInstall:
+    """Build a fresh runtime session install from the current public shell."""
+
+    return create_runtime_session_install(
+        project_root=owner.project_root,
+        messages=messages,
+        permission_policy=owner.permission_policy,
+        permission_config_status=owner.permission_config_status,
+        prompt_format=owner.prompt_format,
+        prompt_sections=list(owner.prompt_sections),
+        workflow_mode=workflow_mode or owner.workflow_mode,
+        rotate_after_bytes=owner.config.session_rotate_after_bytes,
+        auto_compaction_input_tokens_threshold=(
+            owner.config.session_auto_compaction_input_tokens_threshold
+        ),
+        compaction_keep_last_messages=owner.config.session_compaction_keep_last_messages,
+        system_message_factory=owner._get_system_message,
+        few_shot_factory=owner._get_few_shot_examples,
+    )
+
+
 def restore_runtime_session_state(
     *,
     project_root: Path,
@@ -261,6 +347,51 @@ def load_runtime_session_install(
             session=session,
         ),
     )
+
+
+def resume_runtime_shell_session(
+    owner: RuntimeShellOwner,
+    *,
+    session_id: str | None = None,
+) -> bool:
+    """Resume the latest or named persisted session onto the public shell."""
+
+    loaded = load_runtime_session_install(
+        project_root=owner.project_root,
+        system_message_factory=owner._get_system_message,
+        few_shot_factory=owner._get_few_shot_examples,
+        session_id=session_id,
+        rotate_after_bytes=owner.config.session_rotate_after_bytes,
+        auto_compaction_input_tokens_threshold=(
+            owner.config.session_auto_compaction_input_tokens_threshold
+        ),
+        compaction_keep_last_messages=owner.config.session_compaction_keep_last_messages,
+    )
+    if loaded is None:
+        return False
+    apply_runtime_session_install(owner, loaded)
+    return True
+
+
+def clear_runtime_shell_history(owner: RuntimeShellOwner) -> None:
+    """Reset the public shell onto a fresh runtime session."""
+
+    owner.messages = []
+    owner.prompt_format = None
+    owner.prompt_sections = []
+    owner.current_task = None
+    owner.last_turn_summary = None
+    owner.set_workflow_mode("execute")
+    apply_runtime_session_install(
+        owner,
+        build_fresh_runtime_session_install(
+            owner,
+            messages=owner.messages,
+            workflow_mode="execute",
+        ),
+    )
+    owner._system_message = None
+    owner.safeguards.reset()
 
 
 def build_event_emitter(

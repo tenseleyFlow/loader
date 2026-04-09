@@ -13,14 +13,18 @@ from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.public_shell import (
     SteeringMailbox,
+    apply_runtime_session_install,
     build_event_emitter,
+    build_fresh_runtime_session_install,
     build_runtime_few_shot_examples,
     build_runtime_system_message,
+    clear_runtime_shell_history,
     create_runtime_session,
     create_runtime_session_install,
     load_runtime_session_install,
     refresh_runtime_capability_state,
     restore_runtime_session_state,
+    resume_runtime_shell_session,
 )
 from loader.runtime.session import ConversationSession
 from tests.helpers.runtime_harness import ScriptedBackend
@@ -200,6 +204,69 @@ def test_create_runtime_session_install_builds_restored_shell_state(
     assert install.restored.last_turn_summary is None
 
 
+def test_apply_runtime_session_install_updates_agent_shell_state(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+    install = create_runtime_session_install(
+        project_root=agent.project_root,
+        messages=[Message(role=Role.USER, content="Resume the runtime session.")],
+        permission_policy=agent.permission_policy,
+        permission_config_status=agent.permission_config_status,
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context"],
+        workflow_mode="plan",
+        rotate_after_bytes=agent.config.session_rotate_after_bytes,
+        auto_compaction_input_tokens_threshold=(
+            agent.config.session_auto_compaction_input_tokens_threshold
+        ),
+        compaction_keep_last_messages=agent.config.session_compaction_keep_last_messages,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+    )
+    install.session.permission_mode = "prompt"
+    install.restored.current_task = "Resume the runtime session."
+    install.restored.permission_mode = "prompt"
+
+    apply_runtime_session_install(agent, install)
+
+    assert agent.session is install.session
+    assert agent.messages[-1].content == "Resume the runtime session."
+    assert agent.current_task == "Resume the runtime session."
+    assert agent.workflow_mode == "plan"
+    assert agent.active_permission_mode == "prompt"
+    assert agent.prompt_format == "native"
+    assert agent.prompt_sections == ["Runtime Config", "Workflow Context"]
+
+
+def test_build_fresh_runtime_session_install_uses_current_agent_shell_state(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+    agent.current_task = "Keep the runtime shell tidy."
+    agent.prompt_format = "native"
+    agent.prompt_sections = ["Runtime Config", "Workflow Context"]
+    agent.set_workflow_mode("clarify")
+
+    install = build_fresh_runtime_session_install(
+        agent,
+        messages=[Message(role=Role.USER, content="Fresh runtime task.")],
+    )
+
+    assert install.session.prompt_format == "native"
+    assert install.session.prompt_sections == ["Runtime Config", "Workflow Context"]
+    assert install.restored.workflow_mode == "clarify"
+    assert install.restored.messages[-1].content == "Fresh runtime task."
+
+
 def test_restore_runtime_session_state_recovers_last_turn_summary(
     temp_dir: Path,
 ) -> None:
@@ -284,3 +351,60 @@ def test_load_runtime_session_install_reconstructs_saved_shell_state(
     assert install.restored.current_task == "Resume the saved runtime session."
     assert install.restored.permission_mode == "prompt"
     assert install.restored.messages[-1].content == "Resume the saved runtime session."
+
+
+def test_resume_runtime_shell_session_restores_saved_agent_state(
+    temp_dir: Path,
+) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+    )
+    session.current_task = "Resume the saved runtime session."
+    session.workflow_mode = "plan"
+    session.permission_mode = "prompt"
+    session.prompt_format = "native"
+    session.prompt_sections = ["Runtime Config", "Workflow Context"]
+    session.append(Message(role=Role.USER, content="Resume the saved runtime session."))
+    session.persist()
+
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+
+    assert resume_runtime_shell_session(agent, session_id=session.session_id) is True
+    assert agent.session.session_id == session.session_id
+    assert agent.current_task == "Resume the saved runtime session."
+    assert agent.workflow_mode == "plan"
+    assert agent.active_permission_mode == "prompt"
+    assert agent.prompt_format == "native"
+
+
+def test_clear_runtime_shell_history_resets_agent_shell_state(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+    original_session_id = agent.session.session_id
+    agent.current_task = "Keep runtime state tidy."
+    agent.prompt_format = "native"
+    agent.prompt_sections = ["Runtime Config", "Workflow Context"]
+    agent.set_workflow_mode("clarify")
+    agent.queue_steering_message("Stay in runtime.")
+
+    clear_runtime_shell_history(agent)
+
+    assert agent.session.session_id != original_session_id
+    assert agent.current_task is None
+    assert agent.workflow_mode == "execute"
+    assert agent.prompt_format is None
+    assert agent.prompt_sections == []
+    assert agent.messages == []
+    assert agent.last_turn_summary is None
+    assert agent.drain_steering_messages() == []
