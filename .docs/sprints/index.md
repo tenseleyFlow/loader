@@ -75,6 +75,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 19](sprint19.md) — Facade Finalization, Continuation Hardening, and Unified Policy Timeline
 
+## Phase 18: Canonical Policy Contracts and Facade Settlement
+
+- [Sprint 20](sprint20.md) — Canonical Policy Events, Verifier-Backed Follow-Through, and Facade Settlement
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
