@@ -157,3 +157,33 @@ Implementation targets:
 - multi-agent or team orchestration
 - AST-aware or LSP-aware semantic artifact diffs
 - a full visual explore/workflow UI
+
+## Audit
+
+### Status
+
+- Sprint 16 is complete, and the audit is green. Loader now has a real public launcher/entrypoint contract, a visibly smaller `agent/loop.py`, explicit compatibility-boundary proof, and a persisted read-only explore continuity story that stays outside the main workflow runtime.
+
+### Landed
+
+- the launcher contract is now first-class under `src/loader/runtime/launcher.py`: the public runtime seam no longer just constructs runtimes, it now owns conversational fast-path routing, decomposition entry routing, direct turn routing, and read-only explore launch through a single entry contract
+- `src/loader/agent/loop.py` has shrunk further toward a real facade: conversational handling and decomposition orchestration now live under `src/loader/runtime/chat_lane.py` and `src/loader/runtime/decomposition_lane.py`, and the remaining shell is much closer to public entrypoints, session lifecycle, prompt factories, and UI/event integration than to runtime ownership
+- the compatibility surface is now deliberate instead of implicit: `tests/test_compat_boundaries.py`, `tests/test_reasoning_compat.py`, and `tests/test_safeguard_services.py` explicitly lock the current `agent/reasoning.py` / `agent/safeguards.py` export contract and assert that internal runtime code does not drift back to importing through those compatibility shims
+- explore mode now has a stronger continuity/state story without becoming a second workflow runtime: `src/loader/runtime/explore_state.py` persists a bounded read-only transcript under `.loader/state/explore.json`, `src/loader/runtime/explore.py` reuses that transcript for follow-up questions by default, and `loader explore --fresh` gives operators a clean escape hatch when they want a one-off lookup
+- operator visibility now reflects that explore state: `src/loader/runtime/inspection.py` includes recent explore activity in the status snapshot, and `src/loader/cli/main.py` surfaces explore turns, bounded transcript state, and the last explore query in `loader status`
+
+### Verification
+
+- `uv run pytest -q` is green: `329 passed`
+- `tests/test_runtime_launcher.py`, `tests/test_chat_lane.py`, and `tests/test_decomposition_lane.py` now prove the public launcher contract directly, including conversational routing, decomposition delegation, direct turn routing, and explore launch behavior
+- `tests/test_runtime_bootstrap.py` and `tests/test_runtime_context.py` remained green after the launcher ownership shift, which keeps the shared bootstrap/context seam honest instead of reintroducing an agent-only backdoor
+- `tests/test_compat_boundaries.py`, `tests/test_reasoning_compat.py`, and `tests/test_safeguard_services.py` now pin the intended compatibility-export boundary directly and fail if internal Loader code slides back into using those shims as primary imports
+- `tests/test_explore_runtime.py` and `tests/test_inspection.py` now cover persisted explore continuity, `fresh` resets, and status-surface visibility for recent explore activity
+
+### Residual debt
+
+- `src/loader/agent/loop.py` is much smaller and clearer, but it still owns prompt/session factories, resume/clear lifecycle, and event-wrapper glue; Loader is close to a minimal public shell, not fully there yet
+- `src/loader/runtime/conversation.py` and `src/loader/runtime/explore.py` still start from an `Agent`-shaped bootstrap source at the public boundary, even though the launcher contract is now more explicit and load-bearing
+- the compatibility exports are now intentionally bounded and tested, but they still exist until Loader decides whether the external import surface can narrow further
+- explore continuity is now real, but it is still transcript-first and lightweight: there is no richer explore inspection command, multi-step read-only workflow, or deeper repo-navigation UX yet
+- Loader’s runtime shell is materially cleaner after Sprint 16, but it still stops short of claw-code’s tighter policy seams, OMX’s deeper planning/interview rigor, and richer operator tooling around policy, rules, and explore workflows
