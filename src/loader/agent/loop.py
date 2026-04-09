@@ -1,17 +1,13 @@
 """The main agent loop."""
 
-import asyncio
-import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message
-from ..runtime.bootstrap import build_runtime_bootstrap_source
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.events import AgentEvent, TurnSummary
-from ..runtime.launcher import build_runtime_launcher
 from ..runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -19,13 +15,15 @@ from ..runtime.permissions import (
 )
 from ..runtime.public_shell import (
     SteeringMailbox,
-    build_event_emitter,
     build_fresh_runtime_session_install,
     build_runtime_few_shot_examples,
     build_runtime_system_message,
     clear_runtime_shell_history,
     refresh_runtime_shell_capability_profile,
     resume_runtime_shell_session,
+    run_runtime_shell,
+    run_runtime_shell_explore,
+    stream_runtime_shell,
 )
 from ..runtime.safeguards import RuntimeSafeguards
 from ..runtime.workflow import WorkflowMode
@@ -228,11 +226,6 @@ class Agent:
 
         self.steering.queue(message)
 
-    def build_runtime_source(self):
-        """Build the explicit runtime bootstrap source for public entrypoints."""
-
-        return build_runtime_bootstrap_source(self)
-
     def drain_steering_messages(self) -> list[str]:
         """Drain queued runtime steering messages."""
 
@@ -262,56 +255,22 @@ class Agent:
         Returns:
             The final response text
         """
-        emit = build_event_emitter(on_event)
-
-        # Mark agent as running (enables steering)
-        self.steering.mark_running()
-        try:
-            launcher = build_runtime_launcher(self.build_runtime_source())
-            return await launcher.run_user_message(
-                user_message,
-                emit,
-                on_confirmation=on_confirmation,
-                on_user_question=on_user_question,
-                use_plan=use_plan,
-            )
-        finally:
-            self.steering.mark_idle()
+        return await run_runtime_shell(
+            self,
+            user_message,
+            on_event=on_event,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            use_plan=use_plan,
+        )
 
     async def run_streaming(
         self,
         user_message: str,
     ) -> AsyncIterator[AgentEvent]:
         """Run the agent with streaming output from the primary runtime path."""
-
-        queue: asyncio.Queue[AgentEvent | BaseException | None] = asyncio.Queue()
-
-        async def on_event(event: AgentEvent) -> None:
-            await queue.put(event)
-
-        async def run_agent() -> None:
-            try:
-                await self.run(user_message, on_event=on_event)
-            except BaseException as exc:  # pragma: no cover - propagated below
-                await queue.put(exc)
-            finally:
-                await queue.put(None)
-
-        task = asyncio.create_task(run_agent())
-        try:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                if isinstance(item, BaseException):
-                    raise item
-                yield item
-            await task
-        finally:
-            if not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+        async for event in stream_runtime_shell(self, user_message):
+            yield event
 
     async def run_explore(
         self,
@@ -321,15 +280,12 @@ class Agent:
         fresh: bool = False,
     ) -> str:
         """Run one read-only explore query outside the main workflow runtime."""
-        emit = build_event_emitter(on_event)
-
-        launcher = build_runtime_launcher(self.build_runtime_source())
-        self.last_turn_summary = await launcher.run_explore(
+        return await run_runtime_shell_explore(
+            self,
             user_message,
-            emit,
+            on_event=on_event,
             fresh=fresh,
         )
-        return self.last_turn_summary.final_response
 
     def clear_history(self) -> None:
         """Clear conversation history."""
