@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from loader.agent.loop import Agent, AgentConfig
+from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse
 from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
 from tests.helpers.runtime_harness import ScriptedBackend
@@ -75,3 +75,47 @@ async def test_runtime_launcher_runs_explore_query(
     assert summary.workflow_mode == "explore"
     assert summary.final_response == "Quick repo summary."
     assert any(event.type == "response" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_launcher_runs_decomposition_fallback_turn(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content=(
+                    '{"subtasks": [{"id": "1", "description": "Ship the feature", '
+                    '"verification": "Done"}]}'
+                )
+            ),
+            CompletionResponse(content="Feature shipped directly."),
+        ]
+    )
+    agent = Agent(
+        backend=backend,
+        config=AgentConfig(
+            auto_context=False,
+            stream=False,
+            reasoning=ReasoningConfig(decomposition=True),
+        ),
+        project_root=temp_dir,
+    )
+    launcher = build_runtime_launcher(agent)
+    events = []
+
+    async def emit(event) -> None:
+        events.append(event)
+
+    response = await launcher.run_decomposed(
+        "Ship the feature",
+        emit,
+        requested_mode="execute",
+        original_task="Ship the feature",
+    )
+
+    assert response == "Feature shipped directly."
+    assert events[0].type == "thinking"
+    assert any(event.type == "response" for event in events)
+    assert not any(event.type == "decomposition" for event in events)
+    assert agent.session.messages[0].content == "Ship the feature"
