@@ -169,6 +169,7 @@ class TurnCompletionController:
                     actions_taken=actions_taken,
                     continuation_count=continuation_count,
                     emit=emit,
+                    dod=dod,
                 )
             )
             self._append_completion_trace_entry(

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
+from .dod import DefinitionOfDone
 from .reasoning_types import TaskCompletionCheck
 
 _ACTION_VERBS = ("create", "write", "make", "edit", "fix", "add", "delete", "run")
@@ -70,6 +72,12 @@ _EXPLICIT_COMPLETIONS = {
 _INSTALL_HINTS = ("install", "dependencies", "set up project")
 _NODE_HINTS = ("node", "npm")
 _PYTHON_HINTS = ("python", "pip")
+_IMPLEMENTATION_ITEM = "Complete the requested work"
+_VERIFY_ITEM = "Collect verification evidence"
+_ACTION_EVIDENCE = "showing the requested work was actually carried out"
+_INSTALL_EVIDENCE = "showing dependencies or setup steps were completed"
+_VERIFICATION_EVIDENCE = "showing the result was run or verified"
+_COMPLEX_EVIDENCE = "showing the broader end-to-end implementation or setup was completed"
 
 COMPLETION_CHECK_PROMPT = """Evaluate if this task has been FULLY completed.
 
@@ -98,10 +106,25 @@ Respond in this exact JSON format:
 Only output the JSON, no other text."""
 
 
+@dataclass(slots=True)
+class _FollowThroughFacts:
+    """Structured runtime evidence for one completion check."""
+
+    has_recorded_work: bool
+    has_install_evidence: bool
+    has_verification_evidence: bool
+    has_failed_verification: bool
+    verification_command: str | None
+    pending_items: list[str]
+    accomplished: list[str]
+
+
 def detect_premature_completion(
     task: str,
     response: str,
     actions_taken: list[str],
+    *,
+    dod: DefinitionOfDone | None = None,
 ) -> bool:
     """Heuristically detect when the assistant is stopping too early."""
     if not actions_taken and response.lower().strip() in _EXPLICIT_COMPLETIONS:
@@ -110,15 +133,23 @@ def detect_premature_completion(
         task=task,
         response=response,
         actions_taken=actions_taken,
+        dod=dod,
     ).is_complete
 
 
-def get_continuation_prompt(task: str, actions_taken: list[str], response: str) -> str:
+def get_continuation_prompt(
+    task: str,
+    actions_taken: list[str],
+    response: str,
+    *,
+    dod: DefinitionOfDone | None = None,
+) -> str:
     """Generate a helpful follow-through prompt for incomplete tasks."""
     return assess_completion_follow_through(
         task=task,
         response=response,
         actions_taken=actions_taken,
+        dod=dod,
     ).continuation_prompt
 
 
@@ -127,12 +158,19 @@ def assess_completion_follow_through(
     task: str,
     response: str,
     actions_taken: list[str],
+    dod: DefinitionOfDone | None = None,
 ) -> TaskCompletionCheck:
     """Build a typed follow-through assessment for one candidate response."""
 
     task_lower = task.lower().strip()
     response_lower = response.lower().strip()
     action_types = _action_types(actions_taken)
+    facts = _build_follow_through_facts(
+        task_lower=task_lower,
+        actions_taken=actions_taken,
+        action_types=action_types,
+        dod=dod,
+    )
     informational = _is_informational_task(task_lower)
     complex_task = any(indicator in task_lower for indicator in _COMPLEX_INDICATORS)
     simple_task = any(indicator in task_lower for indicator in _SIMPLE_TASK_INDICATORS)
@@ -141,7 +179,7 @@ def assess_completion_follow_through(
     )
     requires_install = any(indicator in task_lower for indicator in _INSTALL_HINTS)
 
-    accomplished = [_summarize_action(action) for action in actions_taken]
+    accomplished = list(facts.accomplished)
     required_evidence = _required_evidence(
         task_lower=task_lower,
         informational=informational,
@@ -170,49 +208,74 @@ def assess_completion_follow_through(
             ),
         )
 
-    if not actions_taken and _requires_action(task_lower):
+    if facts.pending_items:
+        next_item = facts.pending_items[0]
         _append_follow_through_gap(
             missing_evidence,
             remaining,
             suggested_next_steps,
-            evidence="showing the requested work was actually carried out",
+            evidence=f"completion of tracked work items ({next_item})",
+            remaining_item="Finish the remaining tracked work items",
+            next_step=f"Complete the tracked item: {next_item}",
+        )
+
+    if _requires_action(task_lower) and not facts.has_recorded_work:
+        _append_follow_through_gap(
+            missing_evidence,
+            remaining,
+            suggested_next_steps,
+            evidence=_ACTION_EVIDENCE,
             remaining_item="Perform the requested work instead of stopping at intent or narration",
             next_step="Carry out the requested change or command now",
         )
 
-    if requires_install and not _has_install_evidence(task_lower, action_types, actions_taken):
+    if requires_install and not facts.has_install_evidence:
         _append_follow_through_gap(
             missing_evidence,
             remaining,
             suggested_next_steps,
-            evidence="showing dependencies or setup steps were completed",
+            evidence=_INSTALL_EVIDENCE,
             remaining_item="Install or initialize the required dependencies",
-            next_step=_install_follow_up(task_lower),
+            next_step=_install_follow_up(task_lower, facts.verification_command),
         )
 
-    if requires_verification and not _has_verification_evidence(action_types, actions_taken):
+    if requires_verification:
+        if facts.has_failed_verification:
+            _append_follow_through_gap(
+                missing_evidence,
+                remaining,
+                suggested_next_steps,
+                evidence=_failed_verification_evidence(facts.verification_command),
+                remaining_item="Fix the failing verification result and rerun it",
+                next_step=_verification_retry_step(facts.verification_command),
+            )
+        elif not facts.has_verification_evidence:
+            _append_follow_through_gap(
+                missing_evidence,
+                remaining,
+                suggested_next_steps,
+                evidence=_missing_verification_evidence(facts.verification_command),
+                remaining_item="Run the result and capture a concrete verification outcome",
+                next_step=_verification_follow_up(
+                    task_lower=task_lower,
+                    verification_command=facts.verification_command,
+                ),
+            )
+
+    if complex_task and len(actions_taken) < 3 and not facts.pending_items:
         _append_follow_through_gap(
             missing_evidence,
             remaining,
             suggested_next_steps,
-            evidence="showing the result was run or verified",
-            remaining_item="Run the result and capture a concrete verification outcome",
-            next_step="Execute what you created or run the relevant tests now",
-        )
-
-    if complex_task and len(actions_taken) < 3:
-        _append_follow_through_gap(
-            missing_evidence,
-            remaining,
-            suggested_next_steps,
-            evidence="showing the broader end-to-end implementation or setup was completed",
+            evidence=_COMPLEX_EVIDENCE,
             remaining_item="Finish the larger end-to-end task instead of stopping after a partial step",
             next_step="Continue through the remaining setup or implementation steps",
         )
 
     if (
         any(phrase in response_lower for phrase in _DEFLECTION_PHRASES)
-        and len(actions_taken) < 2
+        and not facts.has_recorded_work
+        and not facts.has_verification_evidence
     ):
         _append_follow_through_gap(
             missing_evidence,
@@ -227,7 +290,7 @@ def assess_completion_follow_through(
         missing_evidence = [
             item
             for item in missing_evidence
-            if item != "showing the requested work was actually carried out"
+            if item != _ACTION_EVIDENCE
         ]
         remaining = [
             item
@@ -336,13 +399,13 @@ def _required_evidence(
 
     required: list[str] = []
     if _requires_action(task_lower):
-        required.append("showing the requested work was actually carried out")
+        required.append(_ACTION_EVIDENCE)
     if requires_install:
-        required.append("showing dependencies or setup steps were completed")
+        required.append(_INSTALL_EVIDENCE)
     if requires_verification:
-        required.append("showing the result was run or verified")
+        required.append(_VERIFICATION_EVIDENCE)
     if complex_task:
-        required.append("showing the broader end-to-end implementation or setup was completed")
+        required.append(_COMPLEX_EVIDENCE)
     return required
 
 
@@ -375,11 +438,13 @@ def _has_verification_evidence(
     )
 
 
-def _install_follow_up(task_lower: str) -> str:
+def _install_follow_up(task_lower: str, verification_command: str | None) -> str:
     if any(hint in task_lower for hint in _NODE_HINTS):
         return "Run `npm install` to install dependencies"
     if any(hint in task_lower for hint in _PYTHON_HINTS):
         return "Install the Python dependencies"
+    if verification_command:
+        return f"Finish setup before rerunning `{verification_command}`"
     return "Install or initialize the required dependencies now"
 
 
@@ -429,3 +494,137 @@ def _format_continuation_prompt(
 def _summarize_action(action: str) -> str:
     head, _, _ = action.partition(":")
     return head.strip() or action.strip()
+
+
+def _build_follow_through_facts(
+    *,
+    task_lower: str,
+    actions_taken: list[str],
+    action_types: set[str],
+    dod: DefinitionOfDone | None,
+) -> _FollowThroughFacts:
+    accomplished = [_summarize_action(action) for action in actions_taken]
+    has_recorded_work = bool(actions_taken)
+    has_install_evidence = _has_install_evidence(task_lower, action_types, actions_taken)
+    has_verification_evidence = _has_verification_evidence(action_types, actions_taken)
+    has_failed_verification = False
+    verification_command: str | None = None
+    pending_items: list[str] = []
+
+    if dod is None:
+        return _FollowThroughFacts(
+            has_recorded_work=has_recorded_work,
+            has_install_evidence=has_install_evidence,
+            has_verification_evidence=has_verification_evidence,
+            has_failed_verification=has_failed_verification,
+            verification_command=verification_command,
+            pending_items=pending_items,
+            accomplished=accomplished,
+        )
+
+    pending_items = [
+        item.strip()
+        for item in dod.pending_items
+        if item.strip() and item not in {_IMPLEMENTATION_ITEM, _VERIFY_ITEM}
+    ]
+    verification_command = _first_verification_command(dod)
+    has_install_evidence = has_install_evidence or any(
+        token in command.lower()
+        for command in dod.successful_commands
+        for token in ("install", "init", "setup")
+    )
+    has_verification_evidence = has_verification_evidence or any(
+        evidence.passed for evidence in dod.evidence
+    )
+    has_failed_verification = (
+        dod.last_verification_result == "failed"
+        or any(not evidence.passed for evidence in dod.evidence)
+    )
+    has_recorded_work = has_recorded_work or bool(
+        dod.touched_files
+        or dod.successful_commands
+        or dod.mutating_actions
+        or dod.completed_items
+        or has_verification_evidence
+        or has_failed_verification
+    )
+    for evidence in dod.evidence:
+        if not evidence.passed:
+            continue
+        if evidence.command:
+            _append_unique(accomplished, f"verified: {evidence.command}")
+        elif evidence.output:
+            _append_unique(accomplished, "verified the runtime result")
+    for command in dod.successful_commands:
+        if _looks_like_verification_command(command):
+            _append_unique(accomplished, f"ran: {command}")
+    for item in dod.completed_items:
+        if item and item not in {_IMPLEMENTATION_ITEM, _VERIFY_ITEM}:
+            _append_unique(accomplished, f"completed: {item}")
+
+    return _FollowThroughFacts(
+        has_recorded_work=has_recorded_work,
+        has_install_evidence=has_install_evidence,
+        has_verification_evidence=has_verification_evidence,
+        has_failed_verification=has_failed_verification,
+        verification_command=verification_command,
+        pending_items=pending_items,
+        accomplished=accomplished,
+    )
+
+
+def _first_verification_command(dod: DefinitionOfDone) -> str | None:
+    for evidence in dod.evidence:
+        if evidence.command:
+            return evidence.command
+    for command in dod.verification_commands:
+        if command:
+            return command
+    for command in dod.successful_commands:
+        if _looks_like_verification_command(command):
+            return command
+    return None
+
+
+def _looks_like_verification_command(command: str) -> bool:
+    command_lower = command.lower()
+    return any(
+        token in command_lower
+        for token in ("test", "pytest", "jest", "verify", "run", "execute", "check")
+    )
+
+
+def _missing_verification_evidence(verification_command: str | None) -> str:
+    if verification_command:
+        return f"a passing verification result from `{verification_command}`"
+    return _VERIFICATION_EVIDENCE
+
+
+def _failed_verification_evidence(verification_command: str | None) -> str:
+    if verification_command:
+        return (
+            f"a passing verification result from `{verification_command}` "
+            "(current verification is still failing)"
+        )
+    return "a passing verification result (current verification is still failing)"
+
+
+def _verification_follow_up(
+    *,
+    task_lower: str,
+    verification_command: str | None,
+) -> str:
+    if verification_command:
+        return f"Run `{verification_command}` and capture the concrete result"
+    return "Execute what you created or run the relevant tests now"
+
+
+def _verification_retry_step(verification_command: str | None) -> str:
+    if verification_command:
+        return f"Fix the failing `{verification_command}` result and rerun it"
+    return "Fix the failing verification result and rerun it"
+
+
+def _append_unique(items: list[str], item: str) -> None:
+    if item not in items:
+        items.append(item)

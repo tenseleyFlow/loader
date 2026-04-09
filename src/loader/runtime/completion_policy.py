@@ -7,9 +7,10 @@ from dataclasses import dataclass
 
 from ..llm.base import Message, Role
 from .context import RuntimeContext
+from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .reasoning_types import TaskCompletionCheck
-from .task_completion import assess_completion_follow_through, detect_premature_completion
+from .task_completion import assess_completion_follow_through
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -92,6 +93,7 @@ class CompletionPolicy:
         actions_taken: list[str],
         continuation_count: int,
         emit: EventSink,
+        dod: DefinitionOfDone | None = None,
     ) -> ContinuationDecision:
         """Nudge non-mutating tasks to continue when completion looks premature."""
 
@@ -101,15 +103,12 @@ class CompletionPolicy:
                 task=task,
                 response=content,
                 actions_taken=actions_taken,
+                dod=dod,
             )
             if cfg.use_quick_completion
             else None
         )
-        is_premature = (
-            detect_premature_completion(task, content, actions_taken)
-            if cfg.use_quick_completion
-            else False
-        )
+        is_premature = bool(completion_check is not None and not completion_check.is_complete)
         if not is_premature:
             return ContinuationDecision(
                 should_continue=False,

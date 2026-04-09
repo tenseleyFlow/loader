@@ -10,6 +10,7 @@ import pytest
 from loader.llm.base import Message, Role
 from loader.runtime.completion_policy import CompletionPolicy
 from loader.runtime.context import RuntimeContext
+from loader.runtime.dod import VerificationEvidence, create_definition_of_done
 from loader.runtime.events import TurnSummary
 from loader.runtime.permissions import (
     PermissionMode,
@@ -161,6 +162,60 @@ def test_assess_completion_follow_through_accepts_informational_tasks() -> None:
     assert check.missing_evidence == []
 
 
+def test_assess_completion_follow_through_uses_passing_verification_evidence() -> None:
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.evidence = [
+        VerificationEvidence(
+            command="pytest -q",
+            passed=True,
+            stdout="342 passed",
+            kind="test",
+        )
+    ]
+    dod.last_verification_result = "passed"
+
+    check = assess_completion_follow_through(
+        task="Run pytest -q and make sure it works.",
+        response="The test suite passed.",
+        actions_taken=[],
+        dod=dod,
+    )
+
+    assert check.is_complete is True
+    assert check.missing_evidence == []
+    assert "verified: pytest -q" in check.accomplished
+
+
+def test_assess_completion_follow_through_surfaces_failing_verification() -> None:
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.evidence = [
+        VerificationEvidence(
+            command="pytest -q",
+            passed=False,
+            stderr="1 failed",
+            kind="test",
+        )
+    ]
+    dod.last_verification_result = "failed"
+
+    check = assess_completion_follow_through(
+        task="Run pytest -q and make sure it works.",
+        response="The tests are done.",
+        actions_taken=[],
+        dod=dod,
+    )
+
+    assert check.is_complete is False
+    assert check.missing_evidence == [
+        "a passing verification result from `pytest -q` (current verification is still failing)"
+    ]
+    assert check.suggested_next_steps == [
+        "Fix the failing `pytest -q` result and rerun it"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_completion_policy_stops_for_text_loop_using_runtime_context(
     temp_dir: Path,
@@ -241,6 +296,96 @@ async def test_completion_policy_requests_continuation_using_runtime_context(
         "showing the requested work was actually carried out",
         "showing the result was run or verified",
     ]
+
+
+@pytest.mark.asyncio
+async def test_completion_policy_accepts_passed_verification_from_dod(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir,
+        safeguards=FakeSafeguards(),
+    )
+    policy = CompletionPolicy(context)
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.evidence = [
+        VerificationEvidence(
+            command="pytest -q",
+            passed=True,
+            stdout="342 passed",
+            kind="test",
+        )
+    ]
+    dod.last_verification_result = "passed"
+    events = []
+
+    async def emit(event) -> None:
+        events.append(event)
+
+    decision = await policy.maybe_continue_for_completion(
+        content="The tests passed.",
+        response_content="The tests passed.",
+        task="Run pytest -q and make sure it works.",
+        actions_taken=[],
+        continuation_count=0,
+        emit=emit,
+        dod=dod,
+    )
+
+    assert decision.should_continue is False
+    assert decision.should_finalize is False
+    assert decision.decision_code == "completion_response_accepted"
+    assert decision.completion_check is not None
+    assert decision.completion_check.missing_evidence == []
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_completion_policy_finalizes_with_concrete_failed_verification_gap(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir,
+        safeguards=FakeSafeguards(),
+        max_continuation_prompts=1,
+    )
+    policy = CompletionPolicy(context)
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.evidence = [
+        VerificationEvidence(
+            command="pytest -q",
+            passed=False,
+            stderr="1 failed",
+            kind="test",
+        )
+    ]
+    dod.last_verification_result = "failed"
+    events = []
+
+    async def emit(event) -> None:
+        events.append(event)
+
+    decision = await policy.maybe_continue_for_completion(
+        content="The tests are done.",
+        response_content="The tests are done.",
+        task="Run pytest -q and make sure it works.",
+        actions_taken=[],
+        continuation_count=1,
+        emit=emit,
+        dod=dod,
+    )
+
+    assert decision.should_continue is False
+    assert decision.should_finalize is True
+    assert decision.decision_code == "continuation_budget_exhausted"
+    assert decision.completion_check is not None
+    assert decision.completion_check.missing_evidence == [
+        "a passing verification result from `pytest -q` (current verification is still failing)"
+    ]
+    assert "pytest -q" in decision.final_response
+    assert events[0].type == "completion_check"
 
 
 @pytest.mark.asyncio
