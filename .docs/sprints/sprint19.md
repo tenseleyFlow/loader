@@ -161,3 +161,31 @@ The goal is to keep Loader reference-guided and self-aware, not to drift into ei
 - AST-aware semantic diffs
 - a broad visual workflow UI
 - rich permission-rule editing UX
+
+## Audit
+
+### Status
+
+- Sprint 19 is complete, and the audit is green. Loader now enforces a typed follow-through contract for non-mutating completion checks, fails honestly once that contract is still unsatisfied after the continuation budget is exhausted, and exposes a clearer unified policy story through workflow and session inspection.
+
+### Landed
+
+- the public shell contraction continued below `Agent`: `src/loader/runtime/public_shell.py` now owns the public run / run_streaming / run_explore entry helpers plus session-install, resume/reset, and capability-refresh helpers, and `src/loader/agent/loop.py` is down to 292 lines instead of remaining a mixed runtime shell
+- non-mutating completion checks are now evidence-shaped instead of binary-only: `src/loader/runtime/task_completion.py` and `src/loader/runtime/completion_policy.py` derive explicit required and missing follow-through evidence, thread that through `TaskCompletionCheck`, and persist it through runtime policy decisions
+- Loader now stops honestly when follow-through evidence is still missing after the continuation budget is exhausted: `src/loader/runtime/completion_policy.py` and `src/loader/runtime/turn_completion.py` finalize with an explicit failure response and decision code instead of silently accepting the response
+- completion-policy evidence now survives inspection and resume: `src/loader/runtime/completion_trace.py`, `src/loader/runtime/policy_timeline.py`, `src/loader/runtime/session.py`, and `src/loader/runtime/turn_completion.py` persist evidence summaries on completion traces and unified workflow-policy timeline entries
+- operators now get a clearer single policy story: `src/loader/runtime/inspection.py` and `src/loader/cli/main.py` add policy-focused workflow filtering through `loader workflow show --policy`, extend workflow kind filters to repair/completion entries, and show a `Policy Timeline` preview inside `loader session show`
+
+### Verification
+
+- `uv run pytest -q` is green: `359 passed`
+- `tests/test_completion_policy.py`, `tests/test_turn_completion.py`, and `tests/test_session_state.py` now pin the typed follow-through contract plus the honest budget-exhausted finalize path and persisted evidence summaries
+- `tests/test_inspection.py` now covers `loader workflow show --policy`, accountability-only timeline filtering, and the new policy-timeline preview in `loader session show`
+- the broader runtime shell and launcher coverage stayed green while the shell contraction continued: `tests/test_runtime_public_shell.py`, `tests/test_runtime_harness.py`, and the existing status/session/workflow inspection coverage all remained green
+
+### Residual debt
+
+- `src/loader/agent/loop.py` is now much closer to a true facade, but it still exists as the public compatibility shell and still owns some user-facing API shape rather than disappearing entirely
+- the unified operator story is better, but completion traces and the workflow timeline still remain separate persisted artifacts under the hood; Sprint 19 made them coherent to inspect, not identical contracts
+- the new follow-through assessment is explicit and typed, but it is still heuristic and runtime-authored rather than driven by a deeper verifier/model contract like OMX
+- Loader is now more honest and inspectable than Sprint 18, but it still stops short of claw-code's fuller policy engine and OMX's richer long-horizon verifier/interview rigor
