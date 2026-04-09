@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -58,6 +58,22 @@ class EvidenceProvenance:
         return self.summary
 
 
+@dataclass(slots=True)
+class EvidenceProvenanceRollup:
+    """Operator-facing grouped view of supporting and blocking evidence."""
+
+    supporting: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    contradicted: list[str] = field(default_factory=list)
+    context: list[str] = field(default_factory=list)
+
+    @property
+    def blocking(self) -> list[str]:
+        """Return the combined missing and contradicted evidence list."""
+
+        return [*self.missing, *self.contradicted]
+
+
 def normalize_evidence_provenance(value: Any) -> list[EvidenceProvenance]:
     """Coerce persisted provenance payloads into typed entries."""
 
@@ -84,6 +100,39 @@ def summarize_evidence_provenance(
         if summary and summary not in summaries:
             summaries.append(summary)
     return summaries
+
+
+def rollup_evidence_provenance(
+    entries: list[EvidenceProvenance],
+    *,
+    max_items_per_status: int | None = None,
+) -> EvidenceProvenanceRollup:
+    """Group evidence provenance by decision relevance for operator surfaces."""
+
+    grouped: dict[str, list[str]] = {
+        EvidenceProvenanceStatus.SUPPORTS.value: [],
+        EvidenceProvenanceStatus.MISSING.value: [],
+        EvidenceProvenanceStatus.CONTRADICTS.value: [],
+        EvidenceProvenanceStatus.CONTEXT.value: [],
+    }
+    for entry in entries:
+        summary = entry.render_summary().strip()
+        if not summary:
+            continue
+        bucket = grouped.setdefault(entry.status, [])
+        if summary not in bucket:
+            bucket.append(summary)
+
+    if max_items_per_status is not None:
+        for status, items in grouped.items():
+            grouped[status] = items[:max_items_per_status]
+
+    return EvidenceProvenanceRollup(
+        supporting=grouped[EvidenceProvenanceStatus.SUPPORTS.value],
+        missing=grouped[EvidenceProvenanceStatus.MISSING.value],
+        contradicted=grouped[EvidenceProvenanceStatus.CONTRADICTS.value],
+        context=grouped[EvidenceProvenanceStatus.CONTEXT.value],
+    )
 
 
 def _optional_text(value: Any) -> str | None:

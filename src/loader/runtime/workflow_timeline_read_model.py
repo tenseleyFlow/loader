@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .evidence_provenance import EvidenceProvenanceRollup, rollup_evidence_provenance
 from .workflow_ledger import WorkflowLedger, workflow_ledger_highlights
 from .workflow_policy import WorkflowTimelineEntry
 
@@ -15,7 +16,9 @@ class WorkflowTimelineProjection:
     total_entries: int
     entries: list[WorkflowTimelineEntry] = field(default_factory=list)
     policy_entries: list[WorkflowTimelineEntry] = field(default_factory=list)
+    latest_policy_entry: WorkflowTimelineEntry | None = None
     latest_policy_summary: str | None = None
+    latest_policy_evidence: EvidenceProvenanceRollup | None = None
     highlights: list[str] = field(default_factory=list)
 
 
@@ -44,11 +47,22 @@ def project_workflow_timeline(
     if limit is not None:
         filtered_entries = filtered_entries[-limit:]
 
+    latest_policy_entry = _latest_matching_entry(
+        source_entries,
+        is_policy_accountability_entry,
+    )
+
     return WorkflowTimelineProjection(
         total_entries=len(source_entries),
         entries=filtered_entries,
         policy_entries=policy_entries,
+        latest_policy_entry=latest_policy_entry,
         latest_policy_summary=latest_policy_accountability_summary(source_entries),
+        latest_policy_evidence=(
+            workflow_entry_evidence_rollup(latest_policy_entry)
+            if latest_policy_entry is not None
+            else None
+        ),
         highlights=list(dict.fromkeys(highlights)),
     )
 
@@ -146,6 +160,7 @@ def workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
     """Render one compact explanation for policy and workflow timeline surfaces."""
 
     parts = [entry.summary]
+    evidence_rollup = workflow_entry_evidence_rollup(entry)
     if entry.reason_code:
         parts.append(f"code={entry.reason_code}")
     if entry.clarify_stage:
@@ -160,7 +175,11 @@ def workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
         parts.append("gates=" + ",".join(entry.missing_readiness_gates))
     if entry.unresolved_questions:
         parts.append(entry.unresolved_questions[0])
-    if entry.evidence_summary:
+    if evidence_rollup.blocking:
+        parts.append("needs=" + "; ".join(evidence_rollup.blocking[:2]))
+    if evidence_rollup.supporting:
+        parts.append("satisfied=" + "; ".join(evidence_rollup.supporting[:2]))
+    if entry.evidence_summary and not evidence_rollup.blocking and not evidence_rollup.supporting:
         parts.append("evidence=" + "; ".join(entry.evidence_summary[:2]))
     if entry.evidence_provenance:
         parts.append(
@@ -190,3 +209,20 @@ def format_evidence_provenance_brief(entries, *, max_entries: int = 2) -> str:
         subject = f"({entry.subject})" if entry.subject else ""
         parts.append(f"{entry.status}:{entry.category}{source}{subject}")
     return "; ".join(parts)
+
+
+def workflow_entry_evidence_rollup(
+    entry: WorkflowTimelineEntry,
+) -> EvidenceProvenanceRollup:
+    """Return the grouped evidence view for one workflow timeline entry."""
+
+    rollup = rollup_evidence_provenance(entry.evidence_provenance, max_items_per_status=2)
+    if entry.evidence_summary and not (
+        rollup.supporting or rollup.missing or rollup.contradicted or rollup.context
+    ):
+        rollup.context.extend(
+            item
+            for item in entry.evidence_summary[:2]
+            if item not in rollup.context
+        )
+    return rollup

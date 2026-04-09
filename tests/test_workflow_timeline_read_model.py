@@ -64,6 +64,10 @@ def test_project_workflow_timeline_builds_policy_views_and_highlights() -> None:
     assert "provenance=contradicts:verification@dod.evidence(pytest -q)" in (
         projection.latest_policy_summary
     )
+    assert projection.latest_policy_evidence is not None
+    assert projection.latest_policy_evidence.blocking == [
+        "verification failed for `pytest -q`"
+    ]
     assert any(item.startswith("Repair path:") for item in projection.highlights)
     assert any(item.startswith("Completion decision:") for item in projection.highlights)
     assert any(item.startswith("Contradicted assumptions:") for item in projection.highlights)
@@ -113,4 +117,44 @@ def test_project_workflow_timeline_applies_policy_filters_and_limits() -> None:
     assert [entry.kind for entry in projection.policy_entries] == [
         "repair_retry",
         "completion_check",
+    ]
+
+
+def test_project_workflow_timeline_rolls_up_supporting_and_missing_evidence() -> None:
+    entries = [
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:02:00Z",
+            kind="completion_finalize",
+            mode="verify",
+            reason_code="verification_budget_exhausted",
+            summary="completion: stopped because verification evidence was still missing",
+            decision_kind="forced",
+            policy_stage="definition_of_done",
+            policy_outcome="finalize",
+            evidence_provenance=[
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.evidence",
+                    summary="verification evidence was still missing for `pytest -q`",
+                    status="missing",
+                    subject="pytest -q",
+                ),
+                EvidenceProvenance(
+                    category="tracked_work",
+                    source="dod.pending_items",
+                    summary="all tracked work items except verification were complete",
+                    status="supports",
+                ),
+            ],
+        )
+    ]
+
+    projection = project_workflow_timeline(entries)
+
+    assert projection.latest_policy_evidence is not None
+    assert projection.latest_policy_evidence.missing == [
+        "verification evidence was still missing for `pytest -q`"
+    ]
+    assert projection.latest_policy_evidence.supporting == [
+        "all tracked work items except verification were complete"
     ]
