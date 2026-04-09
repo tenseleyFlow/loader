@@ -83,6 +83,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 21](sprint21.md) — Evidence Provenance, Read-Model Cleanup, and Runtime-First API
 
+## Phase 20: Runtime-First Entry and Verification Observability
+
+- [Sprint 22](sprint22.md) — Runtime Entry API, Verification Observations, and Compatibility Narrowing
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
