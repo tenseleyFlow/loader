@@ -79,6 +79,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 20](sprint20.md) — Canonical Policy Events, Verifier-Backed Follow-Through, and Facade Settlement
 
+## Phase 19: Evidence Provenance and Runtime-First Narrowing
+
+- [Sprint 21](sprint21.md) — Evidence Provenance, Read-Model Cleanup, and Runtime-First API
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
