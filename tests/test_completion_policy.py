@@ -24,7 +24,10 @@ from loader.runtime.task_completion import (
     detect_premature_completion,
     get_continuation_prompt,
 )
-from loader.runtime.verification_observations import VerificationObservationStatus
+from loader.runtime.verification_observations import (
+    VerificationObservationStatus,
+    verification_attempt_id,
+)
 from loader.tools.base import create_default_registry
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -263,6 +266,9 @@ def test_assess_completion_follow_through_requires_fresh_verification_when_stale
     dod = create_definition_of_done("Run pytest -q and make sure it works.")
     dod.verification_commands = ["pytest -q"]
     dod.last_verification_result = "stale"
+    dod.verification_attempt_counter = 2
+    dod.active_verification_attempt_id = verification_attempt_id(2)
+    dod.active_verification_attempt_number = 2
 
     check = assess_completion_follow_through(
         task="Run pytest -q and make sure it works.",
@@ -278,6 +284,31 @@ def test_assess_completion_follow_through_requires_fresh_verification_when_stale
     assert check.suggested_next_steps == [
         "Rerun `pytest -q` now that the implementation changed again"
     ]
+
+
+def test_completion_assessment_projects_superseded_verification_attempt_for_stale_result() -> None:
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.last_verification_result = "stale"
+    dod.verification_attempt_counter = 2
+    dod.active_verification_attempt_id = verification_attempt_id(2)
+    dod.active_verification_attempt_number = 2
+
+    assessment = assess_completion_follow_through_with_provenance(
+        task="Run pytest -q and make sure it works.",
+        response="The tests were already handled.",
+        actions_taken=["write: README.md"],
+        dod=dod,
+    )
+
+    assert [item.status for item in assessment.verification_observations] == [
+        VerificationObservationStatus.STALE.value
+    ]
+    assert assessment.verification_observations[0].attempt_id == verification_attempt_id(1)
+    assert assessment.verification_observations[0].attempt_number == 1
+    assert assessment.verification_observations[0].supersedes_attempt_id == (
+        verification_attempt_id(2)
+    )
 
 
 def test_completion_assessment_attaches_typed_verification_provenance() -> None:
@@ -460,6 +491,9 @@ async def test_completion_policy_finalizes_with_concrete_failed_verification_gap
         )
     ]
     dod.last_verification_result = "failed"
+    dod.verification_attempt_counter = 2
+    dod.active_verification_attempt_id = verification_attempt_id(2)
+    dod.active_verification_attempt_number = 2
     events = []
 
     async def emit(event) -> None:
@@ -480,7 +514,8 @@ async def test_completion_policy_finalizes_with_concrete_failed_verification_gap
     assert decision.decision_code == "continuation_budget_exhausted"
     assert decision.decision_summary == (
         "stopped because the continuation budget was exhausted while observed "
-        "verification still showed verification failed for `pytest -q` [1 failed]"
+        "verification still showed verification failed for `pytest -q` "
+        "[1 failed; attempt 2]"
     )
     assert decision.completion_check is not None
     assert decision.completion_check.missing_evidence == [
@@ -488,7 +523,8 @@ async def test_completion_policy_finalizes_with_concrete_failed_verification_gap
     ]
     assert decision.final_response == (
         "I stopped because the continuation budget was exhausted and observed "
-        "verification still showed: verification failed for `pytest -q` [1 failed]."
+        "verification still showed: verification failed for `pytest -q` "
+        "[1 failed; attempt 2]."
     )
     assert events[0].type == "completion_check"
     assert [item.status for item in decision.evidence_provenance] == [
@@ -497,6 +533,7 @@ async def test_completion_policy_finalizes_with_concrete_failed_verification_gap
     assert [item.status for item in decision.verification_observations] == [
         VerificationObservationStatus.FAILED.value
     ]
+    assert decision.verification_observations[0].attempt_number == 2
 
 
 @pytest.mark.asyncio
@@ -512,6 +549,9 @@ async def test_completion_policy_uses_missing_observed_verification_when_budget_
     dod = create_definition_of_done("Run pytest -q and make sure it works.")
     dod.verification_commands = ["pytest -q"]
     dod.last_verification_result = "failed"
+    dod.verification_attempt_counter = 3
+    dod.active_verification_attempt_id = verification_attempt_id(3)
+    dod.active_verification_attempt_number = 3
     events = []
 
     async def emit(event) -> None:
@@ -533,16 +573,17 @@ async def test_completion_policy_uses_missing_observed_verification_when_budget_
     assert decision.decision_summary == (
         "stopped because the continuation budget was exhausted while observed "
         "verification still showed verification did not produce an observed "
-        "result for `pytest -q`"
+        "result for `pytest -q` [attempt 3]"
     )
     assert decision.final_response == (
         "I stopped because the continuation budget was exhausted and observed "
         "verification still showed: verification did not produce an observed "
-        "result for `pytest -q`."
+        "result for `pytest -q` [attempt 3]."
     )
     assert [item.status for item in decision.verification_observations] == [
         VerificationObservationStatus.MISSING.value
     ]
+    assert decision.verification_observations[0].attempt_number == 3
     assert events[0].type == "completion_check"
 
 
@@ -559,6 +600,9 @@ async def test_completion_policy_uses_pending_observed_verification_when_budget_
     dod = create_definition_of_done("Run pytest -q and make sure it works.")
     dod.verification_commands = ["pytest -q"]
     dod.last_verification_result = "pending"
+    dod.verification_attempt_counter = 4
+    dod.active_verification_attempt_id = verification_attempt_id(4)
+    dod.active_verification_attempt_number = 4
     events = []
 
     async def emit(event) -> None:
@@ -579,15 +623,16 @@ async def test_completion_policy_uses_pending_observed_verification_when_budget_
     assert decision.decision_code == "continuation_budget_exhausted"
     assert decision.decision_summary == (
         "stopped because the continuation budget was exhausted while observed "
-        "verification still showed verification pending for `pytest -q`"
+        "verification still showed verification pending for `pytest -q` [attempt 4]"
     )
     assert decision.final_response == (
         "I stopped because the continuation budget was exhausted and observed "
-        "verification still showed: verification pending for `pytest -q`."
+        "verification still showed: verification pending for `pytest -q` [attempt 4]."
     )
     assert [item.status for item in decision.verification_observations] == [
         VerificationObservationStatus.PENDING.value
     ]
+    assert decision.verification_observations[0].attempt_number == 4
     assert events[0].type == "completion_check"
 
 
@@ -604,6 +649,9 @@ async def test_completion_policy_uses_stale_observed_verification_when_budget_is
     dod = create_definition_of_done("Run pytest -q and make sure it works.")
     dod.verification_commands = ["pytest -q"]
     dod.last_verification_result = "stale"
+    dod.verification_attempt_counter = 2
+    dod.active_verification_attempt_id = verification_attempt_id(2)
+    dod.active_verification_attempt_number = 2
     events = []
 
     async def emit(event) -> None:
@@ -625,16 +673,20 @@ async def test_completion_policy_uses_stale_observed_verification_when_budget_is
     assert decision.decision_summary == (
         "stopped because the continuation budget was exhausted while observed "
         "verification still showed verification became stale for `pytest -q` "
-        "after new mutating work"
+        "after new mutating work [attempt 1 -> attempt 2]"
     )
     assert decision.final_response == (
         "I stopped because the continuation budget was exhausted and observed "
         "verification still showed: verification became stale for `pytest -q` "
-        "after new mutating work."
+        "after new mutating work [attempt 1 -> attempt 2]."
     )
     assert [item.status for item in decision.verification_observations] == [
         VerificationObservationStatus.STALE.value
     ]
+    assert decision.verification_observations[0].attempt_number == 1
+    assert decision.verification_observations[0].supersedes_attempt_id == (
+        verification_attempt_id(2)
+    )
     assert events[0].type == "completion_check"
 
 

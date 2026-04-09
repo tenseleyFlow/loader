@@ -9,8 +9,10 @@ from .dod import DefinitionOfDone
 from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .reasoning_types import TaskCompletionCheck
 from .verification_observations import (
+    VerificationAttempt,
     VerificationObservation,
     VerificationObservationStatus,
+    verification_attempt_id,
 )
 
 _ACTION_VERBS = ("create", "write", "make", "edit", "fix", "add", "delete", "run")
@@ -1033,6 +1035,41 @@ def _verification_provenance(
     ]
 
 
+def _active_verification_attempt(
+    dod: DefinitionOfDone,
+) -> VerificationAttempt | None:
+    if (
+        dod.active_verification_attempt_id
+        and dod.active_verification_attempt_number is not None
+    ):
+        return VerificationAttempt(
+            attempt_id=dod.active_verification_attempt_id,
+            attempt_number=dod.active_verification_attempt_number,
+        )
+    if dod.active_verification_attempt_number is not None:
+        return VerificationAttempt(
+            attempt_id=verification_attempt_id(
+                dod.active_verification_attempt_number
+            ),
+            attempt_number=dod.active_verification_attempt_number,
+        )
+    return None
+
+
+def _stale_verification_attempt(
+    dod: DefinitionOfDone,
+) -> VerificationAttempt | None:
+    active_attempt = _active_verification_attempt(dod)
+    if active_attempt is None or active_attempt.attempt_number <= 1:
+        return None
+    stale_attempt_number = active_attempt.attempt_number - 1
+    return VerificationAttempt(
+        attempt_id=verification_attempt_id(stale_attempt_number),
+        attempt_number=stale_attempt_number,
+        supersedes_attempt_id=active_attempt.attempt_id,
+    )
+
+
 def _observed_completion_verification(
     *,
     dod: DefinitionOfDone | None,
@@ -1042,6 +1079,7 @@ def _observed_completion_verification(
     if dod is None or not requires_verification:
         return []
 
+    active_attempt = _active_verification_attempt(dod)
     observations: list[VerificationObservation] = []
     observed_commands: set[str] = set()
     for evidence in dod.evidence:
@@ -1068,6 +1106,10 @@ def _observed_completion_verification(
                 kind=evidence.kind,
                 exit_code=evidence.exit_code,
                 detail=_verification_detail(evidence),
+                attempt_id=active_attempt.attempt_id if active_attempt else None,
+                attempt_number=(
+                    active_attempt.attempt_number if active_attempt else None
+                ),
             )
         )
 
@@ -1080,6 +1122,10 @@ def _observed_completion_verification(
                     status=VerificationObservationStatus.MISSING.value,
                     summary=f"verification did not produce an observed result for `{command}`",
                     command=command,
+                    attempt_id=active_attempt.attempt_id if active_attempt else None,
+                    attempt_number=(
+                        active_attempt.attempt_number if active_attempt else None
+                    ),
                 )
             )
         return observations
@@ -1091,12 +1137,20 @@ def _observed_completion_verification(
                     status=VerificationObservationStatus.PENDING.value,
                     summary=f"verification pending for `{verification_command}`",
                     command=verification_command,
+                    attempt_id=active_attempt.attempt_id if active_attempt else None,
+                    attempt_number=(
+                        active_attempt.attempt_number if active_attempt else None
+                    ),
                 )
             ]
         return [
             VerificationObservation(
                 status=VerificationObservationStatus.PENDING.value,
                 summary="verification is pending for the active command set",
+                attempt_id=active_attempt.attempt_id if active_attempt else None,
+                attempt_number=(
+                    active_attempt.attempt_number if active_attempt else None
+                ),
             )
         ]
 
@@ -1107,16 +1161,25 @@ def _observed_completion_verification(
                     status=VerificationObservationStatus.PLANNED.value,
                     summary=f"verification planned for `{verification_command}`",
                     command=verification_command,
+                    attempt_id=active_attempt.attempt_id if active_attempt else None,
+                    attempt_number=(
+                        active_attempt.attempt_number if active_attempt else None
+                    ),
                 )
             ]
         return [
             VerificationObservation(
                 status=VerificationObservationStatus.PLANNED.value,
                 summary="verification is planned but has not run yet",
+                attempt_id=active_attempt.attempt_id if active_attempt else None,
+                attempt_number=(
+                    active_attempt.attempt_number if active_attempt else None
+                ),
             )
         ]
 
     if dod.last_verification_result == VerificationObservationStatus.STALE.value:
+        stale_attempt = _stale_verification_attempt(dod)
         if verification_command:
             return [
                 VerificationObservation(
@@ -1126,12 +1189,32 @@ def _observed_completion_verification(
                         f"`{verification_command}` after new mutating work"
                     ),
                     command=verification_command,
+                    attempt_id=(
+                        stale_attempt.attempt_id if stale_attempt else None
+                    ),
+                    attempt_number=(
+                        stale_attempt.attempt_number if stale_attempt else None
+                    ),
+                    supersedes_attempt_id=(
+                        stale_attempt.supersedes_attempt_id
+                        if stale_attempt
+                        else None
+                    ),
                 )
             ]
         return [
             VerificationObservation(
                 status=VerificationObservationStatus.STALE.value,
                 summary="previous verification became stale after new mutating work",
+                attempt_id=stale_attempt.attempt_id if stale_attempt else None,
+                attempt_number=(
+                    stale_attempt.attempt_number if stale_attempt else None
+                ),
+                supersedes_attempt_id=(
+                    stale_attempt.supersedes_attempt_id
+                    if stale_attempt
+                    else None
+                ),
             )
         ]
 
@@ -1144,6 +1227,10 @@ def _observed_completion_verification(
                     f"`{verification_command}`"
                 ),
                 command=verification_command,
+                attempt_id=active_attempt.attempt_id if active_attempt else None,
+                attempt_number=(
+                    active_attempt.attempt_number if active_attempt else None
+                ),
             )
         ]
     return []

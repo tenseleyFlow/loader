@@ -12,7 +12,11 @@ from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance
 from .reasoning_types import TaskCompletionCheck
 from .task_completion import assess_completion_follow_through_with_provenance
-from .verification_observations import VerificationObservation, VerificationObservationStatus
+from .verification_observations import (
+    VerificationObservation,
+    VerificationObservationStatus,
+    describe_verification_attempt,
+)
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -278,8 +282,14 @@ class CompletionPolicy:
     @staticmethod
     def _render_observation(entry: VerificationObservation) -> str:
         summary = entry.summary.strip()
+        details: list[str] = []
         if entry.detail:
             detail = entry.detail.strip()
             if detail and detail not in summary:
-                return f"{summary} [{detail}]"
+                details.append(detail)
+        attempt = describe_verification_attempt(entry)
+        if attempt and attempt not in summary:
+            details.append(attempt)
+        if details:
+            return f"{summary} [{'; '.join(details)}]"
         return summary
