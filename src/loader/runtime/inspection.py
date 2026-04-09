@@ -16,6 +16,7 @@ from ..runtime.capabilities import CapabilityProfile, resolve_capability_profile
 from ..tools.base import ToolRegistry, create_default_registry
 from .dod import DefinitionOfDone, DefinitionOfDoneStore, VerificationEvidence
 from .explore_state import ExploreStateStore
+from .owner_metadata import format_runtime_boundary_label
 from .permissions import (
     PermissionConfigStatus,
     PermissionDecision,
@@ -165,6 +166,7 @@ class StatusSnapshot:
     model: str
     capability_profile: CapabilityProfile
     active_session_id: str | None
+    runtime_boundary_summary: str | None
     workflow_mode: str
     workflow_reason_code: str | None
     workflow_reason_summary: str | None
@@ -192,6 +194,7 @@ class StatusSnapshot:
     dod_status: str | None
     dod_pending_items_count: int
     last_verification_result: str | None
+    verification_state_summary: str | None
     recent_verification: list[VerificationSummary]
     latest_policy_supporting_evidence: list[str] = field(default_factory=list)
     latest_policy_blocking_evidence: list[str] = field(default_factory=list)
@@ -232,6 +235,7 @@ class SessionSummary:
     created_at: str
     updated_at: str
     message_count: int
+    runtime_boundary_summary: str | None
     workflow_mode: str
     workflow_reason_code: str | None
     workflow_reason_summary: str | None
@@ -260,6 +264,8 @@ class SessionDetail:
     snapshot: SessionSnapshot
     is_current: bool
     definition_of_done: DefinitionOfDone | None
+    runtime_boundary_summary: str | None = None
+    verification_state_summary: str | None = None
     recent_verification: list[VerificationSummary] = field(default_factory=list)
 
 
@@ -290,8 +296,10 @@ class WorkflowTimelineSnapshot:
     project_root: Path
     session_id: str | None
     is_current: bool
+    runtime_boundary_summary: str | None
     workflow_mode: str
     current_task: str | None
+    verification_state_summary: str | None = None
     total_entries: int = 0
     latest_policy_summary: str | None = None
     latest_policy_supporting_evidence: list[str] = field(default_factory=list)
@@ -461,6 +469,7 @@ def collect_status_snapshot(
             model=resolved_model,
             capability_profile=capability_profile,
             active_session_id=None,
+            runtime_boundary_summary=None,
             runtime_owner_type=None,
             runtime_owner_path=None,
             workflow_mode="execute",
@@ -498,6 +507,7 @@ def collect_status_snapshot(
             dod_status=None,
             dod_pending_items_count=0,
             last_verification_result=None,
+            verification_state_summary=None,
             recent_verification=[],
             usage={},
             compaction_count=0,
@@ -535,6 +545,10 @@ def collect_status_snapshot(
         model=resolved_model,
         capability_profile=capability_profile,
         active_session_id=snapshot.session_id,
+        runtime_boundary_summary=_runtime_boundary_summary(
+            snapshot.runtime_owner_type,
+            snapshot.runtime_owner_path,
+        ),
         runtime_owner_type=snapshot.runtime_owner_type,
         runtime_owner_path=snapshot.runtime_owner_path,
         workflow_mode=snapshot.workflow_mode,
@@ -581,6 +595,12 @@ def collect_status_snapshot(
         last_verification_result=_last_verification_result(
             dod=dod,
             recent_verification=recent_verification,
+        ),
+        verification_state_summary=_verification_state_summary(
+            recent_verification,
+            fallback_status=(
+                dod.last_verification_result if dod is not None else None
+            ),
         ),
         recent_verification=recent_verification,
         usage=dict(snapshot.usage),
@@ -648,6 +668,10 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                 session_id=snapshot.session_id,
                 created_at=snapshot.created_at,
                 updated_at=snapshot.updated_at,
+                runtime_boundary_summary=_runtime_boundary_summary(
+                    snapshot.runtime_owner_type,
+                    snapshot.runtime_owner_path,
+                ),
                 runtime_owner_type=snapshot.runtime_owner_type,
                 runtime_owner_path=snapshot.runtime_owner_path,
                 message_count=len(snapshot.messages),
@@ -689,14 +713,23 @@ def load_session_detail(
     snapshot = store.load(session_id)
     current_session_id = _current_session_id(store)
     dod = _load_dod(snapshot.active_dod_path, project_root=resolved_root)
+    recent_verification = _recent_verification_summaries(
+        timeline=snapshot.workflow_timeline,
+        evidence=dod.evidence if dod else [],
+    )
     return SessionDetail(
         snapshot=snapshot,
         is_current=snapshot.session_id == current_session_id,
         definition_of_done=dod,
-        recent_verification=_recent_verification_summaries(
-            timeline=snapshot.workflow_timeline,
-            evidence=dod.evidence if dod else [],
+        runtime_boundary_summary=_runtime_boundary_summary(
+            snapshot.runtime_owner_type,
+            snapshot.runtime_owner_path,
         ),
+        verification_state_summary=_verification_state_summary(
+            recent_verification,
+            fallback_status=(dod.last_verification_result if dod is not None else None),
+        ),
+        recent_verification=recent_verification,
     )
 
 
@@ -943,10 +976,12 @@ def collect_workflow_timeline(
             project_root=resolved_root,
             session_id=None,
             is_current=False,
+            runtime_boundary_summary=None,
             runtime_owner_type=None,
             runtime_owner_path=None,
             workflow_mode="execute",
             current_task=None,
+            verification_state_summary=None,
             total_entries=0,
             latest_policy_summary=None,
             latest_policy_supporting_evidence=[],
@@ -969,15 +1004,29 @@ def collect_workflow_timeline(
         accountability_only=accountability_only,
         limit=limit,
     )
+    dod = _load_dod(snapshot.active_dod_path, project_root=resolved_root)
+    recent_verification = _recent_verification_summaries(
+        timeline=snapshot.workflow_timeline,
+        evidence=dod.evidence if dod else [],
+        limit=1,
+    )
 
     return WorkflowTimelineSnapshot(
         project_root=resolved_root,
         session_id=snapshot.session_id,
         is_current=snapshot.session_id == current_session_id,
+        runtime_boundary_summary=_runtime_boundary_summary(
+            snapshot.runtime_owner_type,
+            snapshot.runtime_owner_path,
+        ),
         runtime_owner_type=snapshot.runtime_owner_type,
         runtime_owner_path=snapshot.runtime_owner_path,
         workflow_mode=snapshot.workflow_mode,
         current_task=snapshot.current_task,
+        verification_state_summary=_verification_state_summary(
+            recent_verification,
+            fallback_status=(dod.last_verification_result if dod is not None else None),
+        ),
         total_entries=projection.total_entries,
         latest_policy_summary=projection.latest_policy_summary,
         latest_policy_supporting_evidence=(
@@ -1656,6 +1705,32 @@ def _verification_summaries_from_evidence(
             )
         )
     return summaries
+
+
+def _runtime_boundary_summary(
+    owner_type: str | None,
+    owner_path: str | None,
+) -> str | None:
+    return format_runtime_boundary_label(owner_type, owner_path)
+
+
+def _verification_state_summary(
+    recent_verification: list[VerificationSummary],
+    *,
+    fallback_status: str | None = None,
+) -> str | None:
+    if recent_verification:
+        item = recent_verification[0]
+        parts = [item.status]
+        if item.attempt:
+            parts.append(f"({item.attempt})")
+        summary = " ".join(parts)
+        if item.command:
+            summary += f" for {item.command}"
+        return summary
+    if fallback_status:
+        return fallback_status
+    return None
 
 
 def _last_verification_result(

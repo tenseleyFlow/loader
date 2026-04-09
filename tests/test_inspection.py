@@ -732,6 +732,7 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.last_verification_result == "failed"
     assert snapshot.active_dod_path == dod_path
     assert snapshot.permission_mode == "prompt"
+    assert snapshot.runtime_boundary_summary == "runtime-first via runtime-handle (RuntimeHandle)"
     assert snapshot.runtime_owner_type == "RuntimeHandle"
     assert snapshot.runtime_owner_path == "runtime-handle"
     assert snapshot.permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
@@ -769,12 +770,16 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert [item.status for item in snapshot.recent_verification] == ["failed"]
     assert [item.command for item in snapshot.recent_verification] == ["pytest -q"]
     assert [item.detail for item in snapshot.recent_verification] == ["1 failed"]
+    assert snapshot.verification_state_summary == "failed for pytest -q"
 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
     assert sessions[0].is_current is True
     assert sessions[0].runtime_owner_type == "RuntimeHandle"
     assert sessions[0].runtime_owner_path == "runtime-handle"
+    assert sessions[0].runtime_boundary_summary == (
+        "runtime-first via runtime-handle (RuntimeHandle)"
+    )
     assert sessions[0].dod_status == "fixing"
     assert sessions[0].permission_prompting_enabled is True
     assert sessions[0].permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
@@ -799,6 +804,10 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert detail.is_current is True
     assert detail.snapshot.runtime_owner_type == "RuntimeHandle"
     assert detail.snapshot.runtime_owner_path == "runtime-handle"
+    assert detail.runtime_boundary_summary == (
+        "runtime-first via runtime-handle (RuntimeHandle)"
+    )
+    assert detail.verification_state_summary == "failed for pytest -q"
     assert detail.definition_of_done is not None
     assert detail.definition_of_done.status == "fixing"
     assert detail.snapshot.permission_rules_source == str(
@@ -830,8 +839,12 @@ def test_collect_workflow_timeline_reflects_persisted_history(temp_dir: Path) ->
     assert snapshot.is_current is True
     assert snapshot.runtime_owner_type == "RuntimeHandle"
     assert snapshot.runtime_owner_path == "runtime-handle"
+    assert snapshot.runtime_boundary_summary == (
+        "runtime-first via runtime-handle (RuntimeHandle)"
+    )
     assert snapshot.workflow_mode == "execute"
     assert snapshot.current_task == "Fix the failing tests"
+    assert snapshot.verification_state_summary == "failed for pytest -q"
     assert snapshot.total_entries == 2
     assert [entry.kind for entry in snapshot.entries] == ["handoff", "reentry"]
     assert snapshot.entries[-1].reason_code == "verification_failed_reentry"
@@ -939,6 +952,9 @@ def test_collect_status_snapshot_surfaces_pending_verification(
         "uv run pytest -q"
     ]
     assert [item.attempt for item in snapshot.recent_verification] == ["attempt 2"]
+    assert snapshot.verification_state_summary == (
+        "pending (attempt 2) for uv run pytest -q"
+    )
 
 
 def test_collect_status_snapshot_surfaces_planned_verification(
@@ -964,6 +980,9 @@ def test_collect_status_snapshot_surfaces_planned_verification(
     assert [item.detail for item in snapshot.recent_verification] == [
         "write changed src/loader/runtime/tool_batches.py"
     ]
+    assert snapshot.verification_state_summary == (
+        "planned (attempt 3) for uv run pytest -q"
+    )
 
 
 def test_collect_status_snapshot_surfaces_stale_verification(
@@ -991,6 +1010,9 @@ def test_collect_status_snapshot_surfaces_stale_verification(
     assert [item.detail for item in snapshot.recent_verification] == [
         "write changed src/loader/runtime/finalization.py"
     ]
+    assert snapshot.verification_state_summary == (
+        "stale (attempt 1 -> attempt 2) for uv run pytest -q"
+    )
 
 
 def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:
@@ -1051,7 +1073,9 @@ def test_status_and_session_commands_render_persisted_state(
     assert session_id in status_result.output
     assert "fixing" in status_result.output
     assert "Runtime Owner" in status_result.output
+    assert "Boundary" in status_result.output
     assert "runtime-handle (RuntimeHandle)" in status_result.output
+    assert "runtime-first via runtime-handle (RuntimeHandle)" in status_result.output
     assert "1 allow / 2 deny / 1 ask" in status_result.output
     assert "native" in status_result.output
     assert "Runtime Config, Workflow Context, Mode Guidance" in status_result.output
@@ -1066,11 +1090,15 @@ def test_status_and_session_commands_render_persisted_state(
     assert "What file did you mention?" in status_result.output
     assert "pytest -q" in status_result.output
     assert "1 failed" in status_result.output
+    assert "Verification State" in status_result.output
+    assert "failed for pytest -q" in status_result.output
 
     assert list_result.exit_code == 0
     assert session_id in list_result.output
     assert "Runtime Owner" in list_result.output
+    assert "Boundary" in list_result.output
     assert "runtime-handle (RuntimeHandle)" in list_result.output
+    assert "runtime-first via runtime-handle (RuntimeHandle)" in list_result.output
     assert "1 allow / 2 deny / 1 ask" in list_result.output
     assert "prompting enabled" in list_result.output
     assert "native" in list_result.output
@@ -1082,7 +1110,9 @@ def test_status_and_session_commands_render_persisted_state(
     assert show_result.exit_code == 0
     assert session_id in show_result.output
     assert "Runtime Owner" in show_result.output
+    assert "Boundary" in show_result.output
     assert "runtime-handle (RuntimeHandle)" in show_result.output
+    assert "runtime-first via runtime-handle (RuntimeHandle)" in show_result.output
     assert "Patch the broken parser" in show_result.output
     assert "1 allow / 2 deny / 1 ask" in show_result.output
     assert "enabled" in show_result.output
@@ -1092,6 +1122,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Completion Decision" in show_result.output
     assert "Completion Trace" in show_result.output
     assert "Recent Verification" in show_result.output
+    assert "Verification State" in show_result.output
+    assert "failed for pytest -q" in show_result.output
     assert "continuation_check" in show_result.output
     assert "completion -> finalize" in show_result.output
     assert "Finalizing completed turn" in show_result.output
@@ -1107,7 +1139,11 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Workflow Timeline" in workflow_result.output
     assert session_id in workflow_result.output
     assert "Runtime Owner" in workflow_result.output
+    assert "Boundary" in workflow_result.output
     assert "runtime-handle (RuntimeHandle)" in workflow_result.output
+    assert "runtime-first via runtime-handle (RuntimeHandle)" in workflow_result.output
+    assert "Verification State" in workflow_result.output
+    assert "failed for pytest -q" in workflow_result.output
     assert "handoff" in workflow_result.output
     assert "next=verify" in workflow_result.output
 
@@ -1170,6 +1206,8 @@ def test_workflow_command_renders_stale_verification_context(
     assert "verification_stale" in result.output
     assert "policy-outcome=stale" in result.output
     assert "Observed Verification" in result.output
+    assert "Verification State" in result.output
+    assert "stale (attempt 1 -> attempt 2) for uv run pytest -q" in result.output
     assert "uv run pytest -q" in result.output
     assert "new mutating work" in result.output
 
@@ -1193,6 +1231,8 @@ def test_workflow_command_renders_planned_verification_context(
     assert "verification_planned" in result.output
     assert "policy-outcome=planned" in result.output
     assert "Observed Verification" in result.output
+    assert "Verification State" in result.output
+    assert "planned (attempt 3) for uv run pytest -q" in result.output
     assert "verification planned for `uv run pytest -q`" in result.output
     assert "uv run pytest -q" in result.output
 

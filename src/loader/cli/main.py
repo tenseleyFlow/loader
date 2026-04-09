@@ -1398,6 +1398,8 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
             or "none"
         ),
     )
+    if snapshot.runtime_boundary_summary:
+        table.add_row("Boundary", snapshot.runtime_boundary_summary)
     table.add_row("Workflow", snapshot.workflow_mode)
     if snapshot.workflow_decision_kind:
         table.add_row("Decision Kind", snapshot.workflow_decision_kind)
@@ -1472,6 +1474,8 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("DoD", snapshot.dod_status or "none")
     table.add_row("Pending", str(snapshot.dod_pending_items_count))
     table.add_row("Last Verify", snapshot.last_verification_result or "none")
+    if snapshot.verification_state_summary:
+        table.add_row("Verification State", snapshot.verification_state_summary)
     if snapshot.usage:
         table.add_row(
             "Usage",
@@ -1592,6 +1596,8 @@ def _session_list_main() -> None:
                 or "none"
             ),
         )
+        if entry.runtime_boundary_summary:
+            table.add_row("Boundary", entry.runtime_boundary_summary)
         table.add_row("Workflow", entry.workflow_mode)
         if entry.workflow_decision_kind:
             table.add_row("Decision Kind", entry.workflow_decision_kind)
@@ -1657,6 +1663,8 @@ def _session_show_main(session_id: str) -> None:
             or "none"
         ),
     )
+    if detail.runtime_boundary_summary:
+        table.add_row("Boundary", detail.runtime_boundary_summary)
     table.add_row("Workflow", snapshot.workflow_mode)
     if snapshot.workflow_decision_kind:
         table.add_row("Decision Kind", snapshot.workflow_decision_kind)
@@ -1725,6 +1733,8 @@ def _session_show_main(session_id: str) -> None:
     table.add_row("Rules Source", snapshot.permission_rules_source or "none")
     table.add_row("Task", snapshot.current_task or "none")
     table.add_row("Active DoD", snapshot.active_dod_path or "none")
+    if detail.verification_state_summary:
+        table.add_row("Verification State", detail.verification_state_summary)
     if snapshot.usage:
         table.add_row(
             "Usage",
@@ -1848,8 +1858,12 @@ def _workflow_show_main(
             or "none"
         ),
     )
+    if snapshot.runtime_boundary_summary:
+        table.add_row("Boundary", snapshot.runtime_boundary_summary)
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Task", snapshot.current_task or "none")
+    if snapshot.verification_state_summary:
+        table.add_row("Verification State", snapshot.verification_state_summary)
     table.add_row("Entries", f"{len(snapshot.entries)} shown / {snapshot.total_entries} total")
     if snapshot.latest_policy_summary:
         table.add_row("Latest Policy", snapshot.latest_policy_summary)

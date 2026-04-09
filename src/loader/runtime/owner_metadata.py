@@ -62,6 +62,34 @@ def format_runtime_owner_label(
     return normalized_path or normalized_type
 
 
+def classify_runtime_owner_boundary(
+    owner_type: str | None,
+    owner_path: str | None,
+) -> str | None:
+    """Classify the persisted owner boundary for operator surfaces."""
+
+    normalized_type = normalize_runtime_owner_type(owner_type)
+    normalized_path = normalize_runtime_owner_path(owner_path, owner_type=normalized_type)
+    if normalized_path == "runtime-handle" or normalized_type == "RuntimeHandle":
+        return "runtime-first"
+    if normalized_path == "public-agent" or normalized_type == "Agent":
+        return "public-compat"
+    return None
+
+
+def format_runtime_boundary_label(
+    owner_type: str | None,
+    owner_path: str | None,
+) -> str | None:
+    """Render one concise operator-facing runtime boundary label."""
+
+    boundary = classify_runtime_owner_boundary(owner_type, owner_path)
+    owner = format_runtime_owner_label(owner_type, owner_path)
+    if boundary and owner:
+        return f"{boundary} via {owner}"
+    return boundary or owner
+
+
 def _camel_to_kebab(value: str) -> str:
     """Convert one CamelCase-ish class name into kebab-case."""
 
