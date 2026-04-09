@@ -20,10 +20,12 @@ from ..runtime.permissions import (
 from ..runtime.public_shell import (
     RuntimeSessionInstall,
     SteeringMailbox,
+    build_event_emitter,
     build_runtime_few_shot_examples,
     build_runtime_system_message,
     create_runtime_session_install,
     load_runtime_session_install,
+    refresh_runtime_capability_state,
 )
 from ..runtime.safeguards import RuntimeSafeguards
 from ..runtime.workflow import WorkflowMode
@@ -293,16 +295,14 @@ class Agent:
         self.workflow_mode = workflow_mode
         self._system_message = None
 
-    def _build_messages(self) -> list[Message]:
-        """Build the full message list for the LLM."""
-        return self.session.build_request_messages()
-
     def refresh_capability_profile(self) -> None:
         """Refresh the runtime capability profile from the current backend."""
-        previous_profile = self.capability_profile
-        refreshed_profile = resolve_backend_capability_profile(self.backend)
-        self.capability_profile = refreshed_profile
-        if refreshed_profile != previous_profile:
+        refresh = refresh_runtime_capability_state(
+            backend=self.backend,
+            current_profile=self.capability_profile,
+        )
+        self.capability_profile = refresh.capability_profile
+        if refresh.prompt_reset_required:
             self._system_message = None
         self._use_react = None
 
@@ -345,14 +345,7 @@ class Agent:
         Returns:
             The final response text
         """
-        import inspect
-
-        async def emit(event: AgentEvent) -> None:
-            if on_event:
-                result = on_event(event)
-                # Support both sync and async callbacks
-                if inspect.iscoroutine(result):
-                    await result
+        emit = build_event_emitter(on_event)
 
         # Mark agent as running (enables steering)
         self.steering.mark_running()
@@ -411,14 +404,7 @@ class Agent:
         fresh: bool = False,
     ) -> str:
         """Run one read-only explore query outside the main workflow runtime."""
-
-        import inspect
-
-        async def emit(event: AgentEvent) -> None:
-            if on_event:
-                result = on_event(event)
-                if inspect.iscoroutine(result):
-                    await result
+        emit = build_event_emitter(on_event)
 
         launcher = build_runtime_launcher(self.build_runtime_source())
         self.last_turn_summary = await launcher.run_explore(
