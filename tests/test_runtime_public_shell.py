@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from loader.agent.loop import Agent, AgentConfig
+from loader.agent.loop import AgentConfig
 from loader.llm.base import CompletionResponse, Message, Role, StreamChunk
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
@@ -34,6 +34,7 @@ from loader.runtime.public_shell import (
     set_runtime_shell_workflow_mode,
     stream_runtime_shell,
 )
+from loader.runtime.runtime_handle import RuntimeHandle
 from loader.runtime.session import ConversationSession
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -46,43 +47,48 @@ def _dummy_few_shots() -> list[Message]:
     return []
 
 
-def test_create_runtime_session_copies_public_shell_state(temp_dir: Path) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
+def _runtime_handle(
+    temp_dir: Path,
+    *,
+    backend: ScriptedBackend | None = None,
+    config: AgentConfig | None = None,
+) -> RuntimeHandle:
+    return RuntimeHandle(
+        backend=backend or ScriptedBackend(),
+        config=config or AgentConfig(auto_context=False),
         project_root=temp_dir,
     )
 
+
+def test_create_runtime_session_copies_public_shell_state(temp_dir: Path) -> None:
+    handle = _runtime_handle(temp_dir)
+
     session = create_runtime_session(
-        project_root=agent.project_root,
-        messages=agent.messages,
-        permission_policy=agent.permission_policy,
-        permission_config_status=agent.permission_config_status,
+        project_root=handle.project_root,
+        messages=handle.messages,
+        permission_policy=handle.permission_policy,
+        permission_config_status=handle.permission_config_status,
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context"],
         workflow_mode="execute",
-        rotate_after_bytes=agent.config.session_rotate_after_bytes,
+        rotate_after_bytes=handle.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
-            agent.config.session_auto_compaction_input_tokens_threshold
+            handle.config.session_auto_compaction_input_tokens_threshold
         ),
-        compaction_keep_last_messages=agent.config.session_compaction_keep_last_messages,
+        compaction_keep_last_messages=handle.config.session_compaction_keep_last_messages,
         system_message_factory=_dummy_system,
         few_shot_factory=_dummy_few_shots,
     )
 
-    assert session.permission_mode == agent.active_permission_mode
-    assert session.permission_prompting_enabled is agent.permission_policy.prompting_enabled
-    assert session.permission_rule_counts == agent.permission_policy.rule_counts()
+    assert session.permission_mode == handle.active_permission_mode
+    assert session.permission_prompting_enabled is handle.permission_policy.prompting_enabled
+    assert session.permission_rule_counts == handle.permission_policy.rule_counts()
     assert session.prompt_format == "native"
     assert session.prompt_sections == ["Runtime Config", "Workflow Context"]
 
 
 def test_build_runtime_system_message_updates_session_metadata(temp_dir: Path) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
+    handle = _runtime_handle(temp_dir)
     session = ConversationSession(
         system_message_factory=_dummy_system,
         few_shot_factory=_dummy_few_shots,
@@ -90,7 +96,7 @@ def test_build_runtime_system_message_updates_session_metadata(temp_dir: Path) -
     )
 
     prompt_state = build_runtime_system_message(
-        registry=agent.registry,
+        registry=handle.registry,
         use_react=False,
         project_context=None,
         workflow_mode="plan",
@@ -121,19 +127,18 @@ def test_build_runtime_few_shot_examples_switches_tool_format() -> None:
 def test_resolve_runtime_shell_use_react_respects_force_react_and_capabilities(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
+    handle = _runtime_handle(
+        temp_dir,
         backend=ScriptedBackend(supports_native_tools=True),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
     )
 
-    assert resolve_runtime_shell_use_react(agent) is False
-    assert agent._use_react is False
+    assert resolve_runtime_shell_use_react(handle) is False
+    assert handle._use_react is False
 
-    forced = Agent(
+    forced = _runtime_handle(
+        temp_dir,
         backend=ScriptedBackend(supports_native_tools=True),
         config=AgentConfig(auto_context=False, force_react=True),
-        project_root=temp_dir,
     )
 
     assert resolve_runtime_shell_use_react(forced) is True
@@ -143,58 +148,49 @@ def test_resolve_runtime_shell_use_react_respects_force_react_and_capabilities(
 def test_get_runtime_shell_system_message_caches_prompt_state_on_owner(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
+    handle = _runtime_handle(temp_dir)
 
-    first = get_runtime_shell_system_message(agent)
-    second = get_runtime_shell_system_message(agent)
+    first = get_runtime_shell_system_message(handle)
+    second = get_runtime_shell_system_message(handle)
 
     assert first is second
-    assert agent.prompt_format in {"native", "react"}
-    assert agent.prompt_sections
-    assert len(agent.session.prompt_history) == 1
+    assert handle.prompt_format in {"native", "react"}
+    assert handle.prompt_sections
+    assert len(handle.session.prompt_history) == 1
 
 
 def test_set_runtime_shell_workflow_mode_invalidates_prompt_cache(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
-    original = get_runtime_shell_system_message(agent)
+    handle = _runtime_handle(temp_dir)
+    original = get_runtime_shell_system_message(handle)
 
-    set_runtime_shell_workflow_mode(agent, "plan")
+    set_runtime_shell_workflow_mode(handle, "plan")
 
-    assert agent.workflow_mode == "plan"
-    assert agent._system_message is None
+    assert handle.workflow_mode == "plan"
+    assert handle._system_message is None
 
-    updated = get_runtime_shell_system_message(agent)
+    updated = get_runtime_shell_system_message(handle)
 
     assert updated is not original
-    assert agent.session.prompt_history[-1].workflow_mode == "plan"
+    assert handle.session.prompt_history[-1].workflow_mode == "plan"
 
 
 def test_get_runtime_shell_few_shot_examples_uses_owner_prompt_mode(
     temp_dir: Path,
 ) -> None:
-    native_agent = Agent(
+    native_handle = _runtime_handle(
+        temp_dir,
         backend=ScriptedBackend(supports_native_tools=True),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
     )
-    react_agent = Agent(
+    react_handle = _runtime_handle(
+        temp_dir,
         backend=ScriptedBackend(supports_native_tools=True),
         config=AgentConfig(auto_context=False, force_react=True),
-        project_root=temp_dir,
     )
 
-    native_examples = get_runtime_shell_few_shot_examples(native_agent)
-    react_examples = get_runtime_shell_few_shot_examples(react_agent)
+    native_examples = get_runtime_shell_few_shot_examples(native_handle)
+    react_examples = get_runtime_shell_few_shot_examples(react_handle)
 
     assert native_examples[1].content.startswith("[write:")
     assert "<tool_call>" in react_examples[1].content
@@ -224,30 +220,30 @@ async def test_build_event_emitter_supports_sync_and_async_callbacks() -> None:
 async def test_run_runtime_shell_uses_runtime_launcher_entrypoint(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
+    handle = _runtime_handle(
+        temp_dir,
         backend=ScriptedBackend(
             completions=[CompletionResponse(content="Runtime shell reply.")]
         ),
         config=AgentConfig(auto_context=False, stream=False),
-        project_root=temp_dir,
     )
-    agent.config.reasoning.completion_check = False
+    handle.config.reasoning.completion_check = False
     events = []
 
     async def capture(event) -> None:
         events.append(event)
 
     response = await run_runtime_shell(
-        agent,
+        handle,
         "Summarize the runtime shell state.",
         on_event=capture,
         use_plan=False,
     )
 
     assert response == "Runtime shell reply."
-    assert agent.last_turn_summary is not None
-    assert agent.last_turn_summary.final_response == "Runtime shell reply."
-    assert agent.steering.is_running is False
+    assert handle.last_turn_summary is not None
+    assert handle.last_turn_summary.final_response == "Runtime shell reply."
+    assert handle.steering.is_running is False
     assert any(event.type == "response" for event in events)
 
 
@@ -255,7 +251,8 @@ async def test_run_runtime_shell_uses_runtime_launcher_entrypoint(
 async def test_stream_runtime_shell_yields_streamed_events(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
+    handle = _runtime_handle(
+        temp_dir,
         backend=ScriptedBackend(
             streams=[
                 [
@@ -269,25 +266,24 @@ async def test_stream_runtime_shell_yields_streamed_events(
             ]
         ),
         config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
     )
 
-    events = [event async for event in stream_runtime_shell(agent, "thanks")]
+    events = [event async for event in stream_runtime_shell(handle, "thanks")]
 
     assert any(event.type == "response" and event.content == "Quick reply." for event in events)
-    assert agent.steering.is_running is False
+    assert handle.steering.is_running is False
 
 
 @pytest.mark.asyncio
 async def test_run_runtime_shell_explore_updates_last_turn_summary(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
+    handle = _runtime_handle(
+        temp_dir,
         backend=ScriptedBackend(
             completions=[CompletionResponse(content="Quick repo summary.")]
         ),
         config=AgentConfig(auto_context=False, stream=False),
-        project_root=temp_dir,
     )
     events = []
 
@@ -295,14 +291,14 @@ async def test_run_runtime_shell_explore_updates_last_turn_summary(
         events.append(event)
 
     response = await run_runtime_shell_explore(
-        agent,
+        handle,
         "Give me a quick repo summary.",
         on_event=capture,
     )
 
     assert response == "Quick repo summary."
-    assert agent.last_turn_summary is not None
-    assert agent.last_turn_summary.workflow_mode == "explore"
+    assert handle.last_turn_summary is not None
+    assert handle.last_turn_summary.workflow_mode == "explore"
     assert any(event.type == "response" for event in events)
 
 
@@ -347,82 +343,70 @@ def test_refresh_runtime_capability_state_reports_prompt_reset_requirement() -> 
     assert refresh.prompt_reset_required is True
 
 
-def test_refresh_runtime_shell_capability_profile_updates_agent_cache_state(
+def test_refresh_runtime_shell_capability_profile_updates_owner_cache_state(
     temp_dir: Path,
 ) -> None:
     backend = ScriptedBackend(supports_native_tools=True)
-    agent = Agent(
-        backend=backend,
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
-    agent._system_message = Message(role=Role.SYSTEM, content="cached")
-    agent._use_react = True
+    handle = _runtime_handle(temp_dir, backend=backend)
+    handle._system_message = Message(role=Role.SYSTEM, content="cached")
+    handle._use_react = True
     backend._supports_native_tools = False  # type: ignore[attr-defined]
 
-    refresh = refresh_runtime_shell_capability_profile(agent)
+    refresh = refresh_runtime_shell_capability_profile(handle)
 
     assert refresh.capability_profile.supports_native_tools is False
     assert refresh.prompt_reset_required is True
-    assert agent.capability_profile.supports_native_tools is False
-    assert agent._system_message is None
-    assert agent._use_react is None
+    assert handle.capability_profile.supports_native_tools is False
+    assert handle._system_message is None
+    assert handle._use_react is None
 
 
 def test_create_runtime_session_install_builds_restored_shell_state(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
+    handle = _runtime_handle(temp_dir)
 
     install = create_runtime_session_install(
-        project_root=agent.project_root,
-        messages=agent.messages,
-        permission_policy=agent.permission_policy,
-        permission_config_status=agent.permission_config_status,
+        project_root=handle.project_root,
+        messages=handle.messages,
+        permission_policy=handle.permission_policy,
+        permission_config_status=handle.permission_config_status,
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context"],
         workflow_mode="execute",
-        rotate_after_bytes=agent.config.session_rotate_after_bytes,
+        rotate_after_bytes=handle.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
-            agent.config.session_auto_compaction_input_tokens_threshold
+            handle.config.session_auto_compaction_input_tokens_threshold
         ),
-        compaction_keep_last_messages=agent.config.session_compaction_keep_last_messages,
+        compaction_keep_last_messages=handle.config.session_compaction_keep_last_messages,
         system_message_factory=_dummy_system,
         few_shot_factory=_dummy_few_shots,
     )
 
-    assert install.session.permission_mode == agent.active_permission_mode
+    assert install.session.permission_mode == handle.active_permission_mode
     assert install.restored.workflow_mode == "execute"
     assert install.restored.prompt_format == "native"
     assert install.restored.prompt_sections == ["Runtime Config", "Workflow Context"]
     assert install.restored.last_turn_summary is None
 
 
-def test_apply_runtime_session_install_updates_agent_shell_state(
+def test_apply_runtime_session_install_updates_owner_shell_state(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
+    handle = _runtime_handle(temp_dir)
     install = create_runtime_session_install(
-        project_root=agent.project_root,
+        project_root=handle.project_root,
         messages=[Message(role=Role.USER, content="Resume the runtime session.")],
-        permission_policy=agent.permission_policy,
-        permission_config_status=agent.permission_config_status,
+        permission_policy=handle.permission_policy,
+        permission_config_status=handle.permission_config_status,
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context"],
         workflow_mode="plan",
-        rotate_after_bytes=agent.config.session_rotate_after_bytes,
+        rotate_after_bytes=handle.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
-            agent.config.session_auto_compaction_input_tokens_threshold
+            handle.config.session_auto_compaction_input_tokens_threshold
         ),
-        compaction_keep_last_messages=agent.config.session_compaction_keep_last_messages,
+        compaction_keep_last_messages=handle.config.session_compaction_keep_last_messages,
         system_message_factory=_dummy_system,
         few_shot_factory=_dummy_few_shots,
     )
@@ -430,32 +414,28 @@ def test_apply_runtime_session_install_updates_agent_shell_state(
     install.restored.current_task = "Resume the runtime session."
     install.restored.permission_mode = "prompt"
 
-    apply_runtime_session_install(agent, install)
+    apply_runtime_session_install(handle, install)
 
-    assert agent.session is install.session
-    assert agent.messages[-1].content == "Resume the runtime session."
-    assert agent.current_task == "Resume the runtime session."
-    assert agent.workflow_mode == "plan"
-    assert agent.active_permission_mode == "prompt"
-    assert agent.prompt_format == "native"
-    assert agent.prompt_sections == ["Runtime Config", "Workflow Context"]
+    assert handle.session is install.session
+    assert handle.messages[-1].content == "Resume the runtime session."
+    assert handle.current_task == "Resume the runtime session."
+    assert handle.workflow_mode == "plan"
+    assert handle.active_permission_mode == "prompt"
+    assert handle.prompt_format == "native"
+    assert handle.prompt_sections == ["Runtime Config", "Workflow Context"]
 
 
-def test_build_fresh_runtime_session_install_uses_current_agent_shell_state(
+def test_build_fresh_runtime_session_install_uses_current_owner_shell_state(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
-    agent.current_task = "Keep the runtime shell tidy."
-    agent.prompt_format = "native"
-    agent.prompt_sections = ["Runtime Config", "Workflow Context"]
-    agent.set_workflow_mode("clarify")
+    handle = _runtime_handle(temp_dir)
+    handle.current_task = "Keep the runtime shell tidy."
+    handle.prompt_format = "native"
+    handle.prompt_sections = ["Runtime Config", "Workflow Context"]
+    handle.set_workflow_mode("clarify")
 
     install = build_fresh_runtime_session_install(
-        agent,
+        handle,
         messages=[Message(role=Role.USER, content="Fresh runtime task.")],
     )
 
@@ -551,7 +531,7 @@ def test_load_runtime_session_install_reconstructs_saved_shell_state(
     assert install.restored.messages[-1].content == "Resume the saved runtime session."
 
 
-def test_resume_runtime_shell_session_restores_saved_agent_state(
+def test_resume_runtime_shell_session_restores_saved_owner_state(
     temp_dir: Path,
 ) -> None:
     session = ConversationSession(
@@ -567,42 +547,34 @@ def test_resume_runtime_shell_session_restores_saved_agent_state(
     session.append(Message(role=Role.USER, content="Resume the saved runtime session."))
     session.persist()
 
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
+    handle = _runtime_handle(temp_dir)
 
-    assert resume_runtime_shell_session(agent, session_id=session.session_id) is True
-    assert agent.session.session_id == session.session_id
-    assert agent.current_task == "Resume the saved runtime session."
-    assert agent.workflow_mode == "plan"
-    assert agent.active_permission_mode == "prompt"
-    assert agent.prompt_format == "native"
+    assert resume_runtime_shell_session(handle, session_id=session.session_id) is True
+    assert handle.session.session_id == session.session_id
+    assert handle.current_task == "Resume the saved runtime session."
+    assert handle.workflow_mode == "plan"
+    assert handle.active_permission_mode == "prompt"
+    assert handle.prompt_format == "native"
 
 
-def test_clear_runtime_shell_history_resets_agent_shell_state(
+def test_clear_runtime_shell_history_resets_owner_shell_state(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
-        backend=ScriptedBackend(),
-        config=AgentConfig(auto_context=False),
-        project_root=temp_dir,
-    )
-    original_session_id = agent.session.session_id
-    agent.current_task = "Keep runtime state tidy."
-    agent.prompt_format = "native"
-    agent.prompt_sections = ["Runtime Config", "Workflow Context"]
-    agent.set_workflow_mode("clarify")
-    agent.queue_steering_message("Stay in runtime.")
+    handle = _runtime_handle(temp_dir)
+    original_session_id = handle.session.session_id
+    handle.current_task = "Keep runtime state tidy."
+    handle.prompt_format = "native"
+    handle.prompt_sections = ["Runtime Config", "Workflow Context"]
+    handle.set_workflow_mode("clarify")
+    handle.queue_steering_message("Stay in runtime.")
 
-    clear_runtime_shell_history(agent)
+    clear_runtime_shell_history(handle)
 
-    assert agent.session.session_id != original_session_id
-    assert agent.current_task is None
-    assert agent.workflow_mode == "execute"
-    assert agent.prompt_format is None
-    assert agent.prompt_sections == []
-    assert agent.messages == []
-    assert agent.last_turn_summary is None
-    assert agent.drain_steering_messages() == []
+    assert handle.session.session_id != original_session_id
+    assert handle.current_task is None
+    assert handle.workflow_mode == "execute"
+    assert handle.prompt_format is None
+    assert handle.prompt_sections == []
+    assert handle.messages == []
+    assert handle.last_turn_summary is None
+    assert handle.drain_steering_messages() == []
