@@ -157,3 +157,31 @@ The goal is to make Loader easier to audit after the fact, not simply more verbo
 - AST-aware semantic diffs
 - a broad visual workflow UI
 - rich permission-rule editing UX
+
+## Audit
+
+### Status
+
+- Sprint 21 is complete, and the audit is green. Loader now carries typed evidence provenance through canonical policy events, derives more of its operator/accountability story from one shared workflow-timeline read model, and has a real runtime-first internal owner below the public `Agent` facade.
+
+### Landed
+
+- evidence provenance is now a stronger first-class contract instead of a mostly flattened string path: `src/loader/runtime/evidence_provenance.py`, `src/loader/runtime/task_completion.py`, `src/loader/runtime/completion_policy.py`, `src/loader/runtime/turn_completion.py`, `src/loader/runtime/finalization.py`, `src/loader/runtime/policy_timeline.py`, and `src/loader/runtime/completion_trace.py` now preserve typed support/missing/contradiction context through canonical policy events and projected completion traces
+- canonical read-model duplication is lower: `src/loader/runtime/workflow_timeline_read_model.py` now owns shared policy projections, grouped evidence rollups, latest-policy summaries, and operator highlights instead of scattering that logic across inspection surfaces
+- the runtime-first internal API transition is real now, not just planned: `src/loader/runtime/runtime_handle.py` provides a runtime-owned owner below `Agent`, and runtime-oriented tests in `tests/test_runtime_handle.py`, `tests/test_runtime_launcher.py`, `tests/test_turn_preparation.py`, and `tests/test_runtime_public_shell.py` now exercise launcher/bootstrap/public-shell behavior without assuming the public compatibility facade is the only valid execution owner
+- operator visibility is sharper without adding new product surfaces: `src/loader/runtime/inspection.py` and `src/loader/cli/main.py` now show latest policy evidence rollups in `loader status`, `loader session show`, and `loader workflow show`, including concise “needed” vs “satisfied” evidence summaries derived from the canonical workflow timeline
+
+### Verification
+
+- `uv run pytest -q` is green: `380 passed`
+- `tests/test_evidence_provenance.py`, `tests/test_completion_policy.py`, `tests/test_turn_completion.py`, `tests/test_session_state.py`, and `tests/test_inspection.py` now pin typed provenance through completion/finalization plus persisted operator inspection
+- `tests/test_workflow_timeline_read_model.py` now covers grouped supporting/missing evidence rollups from canonical policy events
+- `tests/test_runtime_handle.py`, `tests/test_runtime_launcher.py`, `tests/test_turn_preparation.py`, and `tests/test_runtime_public_shell.py` now cover the new runtime-first owner seam directly
+- `tests/test_compat_boundaries.py` remains green, including the runtime import-boundary guard after the new handle landed
+
+### Residual debt
+
+- Loader now has a runtime-first internal owner, but the public `Agent` shell still exists as the outer compatibility API and is still used by many public-surface and end-to-end tests
+- evidence provenance is more structured and inspectable, but it is still runtime-authored and bounded; Loader still does not have OMX-style deeper verifier reasoning, richer artifact-derived proof, or model-assisted audit narratives
+- the workflow timeline read model is cleaner, but Loader still keeps compact derived surfaces like completion traces and latest-policy summaries because operators benefit from them
+- the new policy-evidence rollups make stop/continue decisions easier to inspect, but Loader still stops short of claw-code's fuller policy engine, richer rule surfaces, and OMX's deeper interview/verifier rigor
