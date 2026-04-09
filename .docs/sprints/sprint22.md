@@ -164,3 +164,28 @@ The goal is to make Loader easier to audit after the fact, not simply more verbo
 - AST-aware semantic diffs
 - a broad visual workflow UI
 - multi-agent or team orchestration
+
+## Audit
+
+### Status
+
+- Sprint 22 is complete on the verification-observation and accountability lane, and the audit is green. Loader now captures typed verification observations closer to execution, carries them through the canonical policy story, and exposes that observed verification state directly in the existing operator surfaces.
+- The planned runtime-first entry promotion beyond test-only use did not land in this sprint. That debt is now an explicit Sprint 23 carry-forward item, not an implied cleanup tail.
+
+### Landed
+
+- verification observations are now a first-class runtime contract instead of a reconstructed afterthought: `src/loader/runtime/verification_observations.py`, `src/loader/runtime/finalization.py`, `src/loader/runtime/workflow_policy.py`, `src/loader/runtime/policy_timeline.py`, `src/loader/runtime/completion_trace.py`, and `src/loader/runtime/turn_completion.py` now preserve typed observed verification state through the DoD gate, canonical policy events, and projected completion traces
+- stop/continue policy is more explicit about why Loader stopped: `src/loader/runtime/task_completion.py`, `src/loader/runtime/completion_policy.py`, and `src/loader/runtime/turn_completion.py` now use observed verification facts when they exist and preserve those facts on exhausted continuation failures instead of only falling back to generic missing-evidence language
+- operator inspection is sharper without multiplying surfaces: `src/loader/runtime/workflow_timeline_read_model.py`, `src/loader/runtime/inspection.py`, and `src/loader/cli/main.py` now surface observed verification in `loader status`, `loader session show`, and `loader workflow show`, including a unified `Recent Verification` view sourced from canonical policy observations first and DoD evidence second
+
+### Verification
+
+- `uv run pytest -q` is green: `388 passed`
+- `tests/test_verification_observations.py`, `tests/test_finalization.py`, `tests/test_completion_policy.py`, and `tests/test_turn_completion.py` now pin the verification-observation contract through finalization and completion stop policy
+- `tests/test_workflow_timeline_read_model.py` and `tests/test_inspection.py` now cover observed-verification rollups, the unified recent-verification view, and the operator-facing explanation strings sourced from canonical policy state
+
+### Residual debt
+
+- Sprint 22 intentionally did not complete Deliverable 1. Loader still has a runtime-first internal owner from Sprint 21, but this sprint did not promote additional real integration paths away from `Agent`
+- verification/accountability is more observed and audit-friendly now, but it is still bounded and runtime-authored; Loader still stops short of deeper OMX-style verifier reasoning, richer artifact-derived proof, or model-assisted audit narratives
+- the existing status/session/workflow surfaces are clearer now, but Loader still stops short of claw-code's fuller policy engine, narrower runtime-first public API, and richer rule/prompt accountability surfaces
