@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -266,6 +267,86 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     assert reloaded.workflow_timeline[0].route_score == pytest.approx(0.72)
     assert reloaded.workflow_timeline[0].unresolved_questions == [
         "Scope is still broad."
+    ]
+
+
+def test_session_prefers_canonical_workflow_timeline_for_completion_trace(
+    temp_dir: Path,
+) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+    )
+
+    session.update_runtime_state(
+        current_task="Explain why the turn stopped",
+        last_completion_decision_code="continuation_budget_exhausted",
+        last_completion_decision_summary=(
+            "stopped because the continuation budget was exhausted while "
+            "follow-through evidence was still missing"
+        ),
+    )
+    session.append_completion_trace_entry(
+        CompletionTraceEntry(
+            stage="definition_of_done",
+            outcome="complete",
+            decision_code="stale_completion_trace",
+            decision_summary="this legacy trace entry should be ignored",
+        )
+    )
+    session.append_workflow_timeline_entry(
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:00:00Z",
+            kind="completion_check",
+            mode="execute",
+            reason_code="premature_completion_nudge",
+            summary=(
+                "completion: requested one continuation because the non-mutating "
+                "response looked incomplete"
+            ),
+            decision_kind="forced",
+            policy_stage="continuation_check",
+            policy_outcome="continue",
+            evidence_summary=["showing the requested work was actually carried out"],
+        )
+    )
+    session.append_workflow_timeline_entry(
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:01:00Z",
+            kind="completion_finalize",
+            mode="execute",
+            reason_code="continuation_budget_exhausted",
+            summary=(
+                "completion: stopped because the continuation budget was exhausted "
+                "while follow-through evidence was still missing"
+            ),
+            decision_kind="forced",
+            policy_stage="continuation_check",
+            policy_outcome="finalize",
+            evidence_summary=["showing the requested work was actually carried out"],
+        )
+    )
+
+    persisted = json.loads(session.storage_path.read_text())
+    assert "completion_trace" not in persisted
+
+    reloaded = ConversationSession.load(
+        project_root=temp_dir,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        session_id=session.session_id,
+    )
+
+    assert reloaded is not None
+    assert [entry.decision_code for entry in reloaded.completion_trace] == [
+        "premature_completion_nudge",
+        "continuation_budget_exhausted",
+    ]
+    assert reloaded.completion_trace[-1].stage == "continuation_check"
+    assert reloaded.completion_trace[-1].outcome == "finalize"
+    assert reloaded.completion_trace[-1].evidence_summary == [
+        "showing the requested work was actually carried out"
     ]
 
 

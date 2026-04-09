@@ -18,12 +18,17 @@ from .compaction import (
     compact_session_messages,
     estimate_message_tokens,
 )
-from .completion_trace import CompletionTraceEntry, normalize_completion_trace
+from .completion_trace import (
+    CompletionTraceEntry,
+    completion_trace_from_workflow_timeline,
+    has_canonical_completion_trace,
+    normalize_completion_trace,
+)
 from .prompt_history import PromptSnapshot, normalize_prompt_history
 from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 
-SESSION_VERSION = 9
+SESSION_VERSION = 10
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -197,7 +202,7 @@ class SessionSnapshot:
     version: int = SESSION_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "version": self.version,
             "session_id": self.session_id,
             "created_at": self.created_at,
@@ -223,7 +228,6 @@ class SessionSnapshot:
             "workflow_scheduled_next_mode": self.workflow_scheduled_next_mode,
             "last_completion_decision_code": self.last_completion_decision_code,
             "last_completion_decision_summary": self.last_completion_decision_summary,
-            "completion_trace": [entry.to_dict() for entry in self.completion_trace],
             "last_turn_transition_summary": self.last_turn_transition_summary,
             "last_turn_transition_kind": self.last_turn_transition_kind,
             "last_turn_transition_reason_code": self.last_turn_transition_reason_code,
@@ -231,9 +235,24 @@ class SessionSnapshot:
             "workflow_ledger": self.workflow_ledger.to_dict(),
             "compaction": self.compaction.to_dict() if self.compaction else None,
         }
+        if self.completion_trace and not has_canonical_completion_trace(
+            self.workflow_timeline,
+            last_decision_code=self.last_completion_decision_code,
+        ):
+            data["completion_trace"] = [entry.to_dict() for entry in self.completion_trace]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SessionSnapshot:
+        workflow_timeline = normalize_workflow_timeline(data.get("workflow_timeline"))
+        last_completion_decision_code = normalize_optional_text(
+            data.get("last_completion_decision_code")
+        )
+        completion_trace = completion_trace_from_workflow_timeline(
+            workflow_timeline,
+            last_decision_code=last_completion_decision_code,
+            fallback=normalize_completion_trace(data.get("completion_trace")),
+        )
         return cls(
             version=int(data.get("version", SESSION_VERSION)),
             session_id=str(data["session_id"]),
@@ -277,13 +296,11 @@ class SessionSnapshot:
             workflow_scheduled_next_mode=normalize_optional_text(
                 data.get("workflow_scheduled_next_mode")
             ),
-            last_completion_decision_code=normalize_optional_text(
-                data.get("last_completion_decision_code")
-            ),
+            last_completion_decision_code=last_completion_decision_code,
             last_completion_decision_summary=normalize_optional_text(
                 data.get("last_completion_decision_summary")
             ),
-            completion_trace=normalize_completion_trace(data.get("completion_trace")),
+            completion_trace=completion_trace,
             last_turn_transition_summary=normalize_optional_text(
                 data.get("last_turn_transition_summary")
             ),
@@ -293,9 +310,7 @@ class SessionSnapshot:
             last_turn_transition_reason_code=normalize_optional_text(
                 data.get("last_turn_transition_reason_code")
             ),
-            workflow_timeline=normalize_workflow_timeline(
-                data.get("workflow_timeline")
-            ),
+            workflow_timeline=workflow_timeline,
             workflow_ledger=normalize_workflow_ledger(data.get("workflow_ledger")),
             compaction=(
                 SessionCompaction.from_dict(data["compaction"])
