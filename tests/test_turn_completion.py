@@ -10,6 +10,7 @@ from loader.agent.loop import Agent, AgentConfig
 from loader.runtime.conversation import ConversationRuntime
 from loader.runtime.phases import TurnPhase
 from loader.runtime.turn_completion import TurnCompletionAction
+from loader.runtime.verification_observations import VerificationObservationStatus
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -163,6 +164,17 @@ async def test_turn_completion_marks_non_mutating_response_done(
     assert policy_entries[-1].policy_stage == "definition_of_done"
     assert [item.summary for item in prepared.summary.completion_trace[-1].evidence_provenance] == [
         "verification was skipped because no mutating work required checks"
+    ]
+    assert [
+        item.status
+        for item in prepared.summary.completion_trace[-1].verification_observations
+    ] == [VerificationObservationStatus.SKIPPED.value]
+    assert [
+        item.summary
+        for item in prepared.summary.completion_trace[-1].verification_observations
+    ] == ["verification was skipped because no mutating work required checks"]
+    assert [item.status for item in policy_entries[-1].verification_observations] == [
+        VerificationObservationStatus.SKIPPED.value
     ]
     assert prepared.definition_of_done.status == "done"
     assert prepared.definition_of_done.last_verification_result == "skipped"

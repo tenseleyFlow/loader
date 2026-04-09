@@ -26,6 +26,10 @@ from .executor import ToolExecutor
 from .memory import MemoryStore
 from .session import normalize_usage
 from .tracing import RuntimeTracer
+from .verification_observations import (
+    VerificationObservation,
+    VerificationObservationStatus,
+)
 from .workflow import (
     ModeDecision,
     WorkflowDecisionKind,
@@ -51,6 +55,7 @@ class CompletionGateResult:
     reason_summary: str
     final_response: str
     evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
+    verification_observations: list[VerificationObservation] = field(default_factory=list)
 
 
 class TurnFinalizer:
@@ -140,6 +145,15 @@ class TurnFinalizer:
                     status=EvidenceProvenanceStatus.CONTEXT.value,
                 )
             ]
+            skip_observations = [
+                VerificationObservation(
+                    status=VerificationObservationStatus.SKIPPED.value,
+                    summary=(
+                        "verification was skipped because no mutating work "
+                        "required checks"
+                    ),
+                )
+            ]
             dod.status = "done"
             dod.last_verification_result = "skipped"
             summary.verification_status = "skipped"
@@ -156,6 +170,7 @@ class TurnFinalizer:
                     prompt_sections=self._prompt_sections,
                     evidence_summary=summarize_evidence_provenance(skip_provenance),
                     evidence_provenance=skip_provenance,
+                    verification_observations=skip_observations,
                 )
             )
             summary.workflow_timeline = list(self.context.session.workflow_timeline)
@@ -170,6 +185,7 @@ class TurnFinalizer:
                 ),
                 final_response=candidate_response,
                 evidence_provenance=skip_provenance,
+                verification_observations=skip_observations,
             )
 
         verify_item = "Collect verification evidence"
@@ -209,6 +225,10 @@ class TurnFinalizer:
             summary=summary,
             executor=executor,
         )
+        verification_observations = _verification_result_observations(
+            dod,
+            passed=verification_passed,
+        )
         if verification_passed:
             passed_provenance = _verification_result_provenance(dod, passed=True)
             if verify_item in dod.pending_items:
@@ -236,6 +256,7 @@ class TurnFinalizer:
                 reason_summary="accepted the response after verification evidence passed",
                 final_response=verified_response,
                 evidence_provenance=passed_provenance,
+                verification_observations=verification_observations,
             )
 
         dod.last_verification_result = "failed"
@@ -258,6 +279,7 @@ class TurnFinalizer:
                 reason_summary="stopped after verification retry budget was exhausted",
                 final_response=exhausted_response,
                 evidence_provenance=failed_provenance,
+                verification_observations=verification_observations,
             )
 
         dod.retry_count += 1
@@ -294,6 +316,7 @@ class TurnFinalizer:
             ),
             final_response="",
             evidence_provenance=failed_provenance,
+            verification_observations=verification_observations,
         )
 
     async def verify_definition_of_done(
@@ -462,7 +485,53 @@ def _verification_result_provenance(
             )
         )
     if entries:
+        observed_commands = {
+            evidence.command for evidence in dod.evidence if evidence.command
+        }
+        if not passed:
+            for command in dod.verification_commands:
+                if not command or command in observed_commands:
+                    continue
+                entries.append(
+                    EvidenceProvenance(
+                        category="verification",
+                        source="dod.verification_commands",
+                        summary=(
+                            "verification did not produce an observed result for "
+                            f"`{command}`"
+                        ),
+                        status=EvidenceProvenanceStatus.MISSING.value,
+                        subject=command,
+                    )
+                )
         return entries
+
+    if not passed:
+        for command in dod.verification_commands:
+            if not command:
+                continue
+            entries.append(
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.verification_commands",
+                    summary=(
+                        "verification did not produce an observed result for "
+                        f"`{command}`"
+                    ),
+                    status=EvidenceProvenanceStatus.MISSING.value,
+                    subject=command,
+                )
+            )
+        if entries:
+            return entries
+        return [
+            EvidenceProvenance(
+                category="verification",
+                source="dod.verification_commands",
+                summary="verification commands were still missing at execution time",
+                status=EvidenceProvenanceStatus.MISSING.value,
+            )
+        ]
 
     for command in dod.verification_commands:
         if not command:
@@ -481,6 +550,64 @@ def _verification_result_provenance(
             )
         )
     return entries
+
+
+def _verification_result_observations(
+    dod: DefinitionOfDone,
+    *,
+    passed: bool,
+) -> list[VerificationObservation]:
+    entries: list[VerificationObservation] = []
+    target_status = (
+        VerificationObservationStatus.PASSED.value
+        if passed
+        else VerificationObservationStatus.FAILED.value
+    )
+    observed_commands: set[str] = set()
+    for evidence in dod.evidence:
+        if evidence.passed != passed:
+            continue
+        command = evidence.command or "verification"
+        observed_commands.add(command)
+        entries.append(
+            VerificationObservation(
+                status=target_status,
+                summary=(
+                    f"verification passed for `{command}`"
+                    if passed
+                    else f"verification failed for `{command}`"
+                ),
+                command=evidence.command or None,
+                kind=evidence.kind,
+                exit_code=evidence.exit_code,
+                detail=_verification_detail(evidence),
+            )
+        )
+
+    if passed:
+        return entries
+
+    for command in dod.verification_commands:
+        if not command or command in observed_commands:
+            continue
+        entries.append(
+            VerificationObservation(
+                status=VerificationObservationStatus.MISSING.value,
+                summary=f"verification did not produce an observed result for `{command}`",
+                command=command,
+                kind=_classify_verification_kind(command),
+            )
+        )
+
+    if entries:
+        return entries
+
+    return [
+        VerificationObservation(
+            status=VerificationObservationStatus.MISSING.value,
+            summary="verification commands were still missing at execution time",
+        )
+    ]
 
 
 def _verification_detail(evidence: VerificationEvidence) -> str | None:

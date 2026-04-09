@@ -21,6 +21,7 @@ from .policy_timeline import (
 )
 from .repair import ResponseRepairer
 from .rollback import RollbackPlan
+from .verification_observations import VerificationObservation
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -86,6 +87,7 @@ class TurnCompletionController:
         decision_summary: str,
         evidence_summary: list[str] | None = None,
         evidence_provenance: list[EvidenceProvenance] | None = None,
+        verification_observations: list[VerificationObservation] | None = None,
     ) -> None:
         append_policy_timeline_entry(
             self.context,
@@ -97,6 +99,7 @@ class TurnCompletionController:
             policy_outcome=outcome,
             evidence_summary=evidence_summary,
             evidence_provenance=evidence_provenance,
+            verification_observations=verification_observations,
         )
 
     async def handle_text_response(
@@ -244,6 +247,7 @@ class TurnCompletionController:
             decision_code=gate_result.reason_code,
             decision_summary=gate_result.reason_summary,
             evidence_provenance=gate_result.evidence_provenance,
+            verification_observations=gate_result.verification_observations,
         )
         if gate_result.should_continue:
             self._record_completion_decision(
