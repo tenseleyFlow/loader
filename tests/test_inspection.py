@@ -715,6 +715,9 @@ def test_collect_status_snapshot_includes_latest_policy_summary(
     assert snapshot.latest_policy_summary is not None
     assert "verification_failed_reentry" in snapshot.latest_policy_summary
     assert "policy-stage=definition_of_done" in snapshot.latest_policy_summary
+    assert snapshot.latest_policy_blocking_evidence == [
+        "verification failed for `pytest -q`"
+    ]
 
 
 def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:
@@ -842,6 +845,8 @@ def test_workflow_command_renders_policy_accountability_context(
     assert "Repair path:" in result.output
     assert "Completion decision:" in result.output
     assert "verification_failed_reentry" in result.output
+    assert "Policy Evidence Needed" in result.output
+    assert "verification failed for `pytest -q`" in result.output
     assert "policy-stage=raw_text_tool_fallback" in result.output
     assert "policy-outcome=continue" in result.output
     assert "provenance=contradicts:verification@dod.evidence" in result.output
@@ -894,6 +899,8 @@ def test_session_show_renders_policy_timeline_preview(
     assert show_result.exit_code == 0
     assert "Latest Policy" in show_result.output
     assert "verification_failed_reentry" in show_result.output
+    assert "Policy Evidence Needed" in show_result.output
+    assert "verification failed for `pytest -q`" in show_result.output
     assert "Policy Timeline" in show_result.output
     assert "repair_retry" in show_result.output
     assert "completion:" in show_result.output
@@ -917,6 +924,8 @@ def test_status_command_renders_latest_policy_summary(
     assert session_id in result.output
     assert "Latest Policy" in result.output
     assert "verification_failed_reentry" in result.output
+    assert "Policy Evidence Needed" in result.output
+    assert "verification failed for `pytest -q`" in result.output
     assert "policy-stage=definition_of_done" in result.output
 
 

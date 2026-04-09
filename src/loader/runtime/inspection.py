@@ -187,6 +187,8 @@ class StatusSnapshot:
     dod_pending_items_count: int
     last_verification_result: str | None
     recent_verification: list[VerificationSummary]
+    latest_policy_supporting_evidence: list[str] = field(default_factory=list)
+    latest_policy_blocking_evidence: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     compaction_count: int = 0
     project_type: str = "unknown"
@@ -279,6 +281,9 @@ class WorkflowTimelineSnapshot:
     workflow_mode: str
     current_task: str | None
     total_entries: int = 0
+    latest_policy_summary: str | None = None
+    latest_policy_supporting_evidence: list[str] = field(default_factory=list)
+    latest_policy_blocking_evidence: list[str] = field(default_factory=list)
     selected_mode: str | None = None
     selected_kind: str | None = None
     selected_accountability_only: bool = False
@@ -452,6 +457,8 @@ def collect_status_snapshot(
             completion_decision_code=None,
             completion_decision_summary=None,
             latest_policy_summary=None,
+            latest_policy_supporting_evidence=[],
+            latest_policy_blocking_evidence=[],
             last_turn_transition_summary=None,
             last_turn_transition_kind=None,
             last_turn_transition_reason_code=None,
@@ -500,6 +507,7 @@ def collect_status_snapshot(
             or bool(rule_status.rules.ask)
         )
     )
+    projection = project_workflow_timeline(snapshot.workflow_timeline)
     return StatusSnapshot(
         project_root=resolved_root,
         model=resolved_model,
@@ -515,9 +523,17 @@ def collect_status_snapshot(
         active_turn_phase=snapshot.active_turn_phase,
         completion_decision_code=snapshot.last_completion_decision_code,
         completion_decision_summary=snapshot.last_completion_decision_summary,
-        latest_policy_summary=project_workflow_timeline(
-            snapshot.workflow_timeline
-        ).latest_policy_summary,
+        latest_policy_summary=projection.latest_policy_summary,
+        latest_policy_supporting_evidence=(
+            list(projection.latest_policy_evidence.supporting)
+            if projection.latest_policy_evidence is not None
+            else []
+        ),
+        latest_policy_blocking_evidence=(
+            list(projection.latest_policy_evidence.blocking)
+            if projection.latest_policy_evidence is not None
+            else []
+        ),
         last_turn_transition_summary=snapshot.last_turn_transition_summary,
         last_turn_transition_kind=snapshot.last_turn_transition_kind,
         last_turn_transition_reason_code=snapshot.last_turn_transition_reason_code,
@@ -895,6 +911,9 @@ def collect_workflow_timeline(
             workflow_mode="execute",
             current_task=None,
             total_entries=0,
+            latest_policy_summary=None,
+            latest_policy_supporting_evidence=[],
+            latest_policy_blocking_evidence=[],
             selected_mode=mode,
             selected_kind=kind,
             selected_accountability_only=accountability_only,
@@ -920,6 +939,17 @@ def collect_workflow_timeline(
         workflow_mode=snapshot.workflow_mode,
         current_task=snapshot.current_task,
         total_entries=projection.total_entries,
+        latest_policy_summary=projection.latest_policy_summary,
+        latest_policy_supporting_evidence=(
+            list(projection.latest_policy_evidence.supporting)
+            if projection.latest_policy_evidence is not None
+            else []
+        ),
+        latest_policy_blocking_evidence=(
+            list(projection.latest_policy_evidence.blocking)
+            if projection.latest_policy_evidence is not None
+            else []
+        ),
         selected_mode=mode,
         selected_kind=kind,
         selected_accountability_only=accountability_only,

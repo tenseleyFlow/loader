@@ -38,7 +38,10 @@ from ..runtime.inspection import (
     reset_explore_continuity,
 )
 from ..runtime.permissions import PermissionMode
-from ..runtime.workflow_timeline_read_model import format_evidence_provenance_brief
+from ..runtime.workflow_timeline_read_model import (
+    format_evidence_provenance_brief,
+    workflow_entry_evidence_rollup,
+)
 from .options import inject_resume_target
 from .rendering import (
     format_dod_status,
@@ -1392,6 +1395,16 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
         )
     if snapshot.latest_policy_summary:
         table.add_row("Latest Policy", snapshot.latest_policy_summary)
+    if snapshot.latest_policy_blocking_evidence:
+        table.add_row(
+            "Policy Evidence Needed",
+            _format_policy_evidence_items(snapshot.latest_policy_blocking_evidence),
+        )
+    if snapshot.latest_policy_supporting_evidence:
+        table.add_row(
+            "Policy Evidence Satisfied",
+            _format_policy_evidence_items(snapshot.latest_policy_supporting_evidence),
+        )
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -1485,6 +1498,11 @@ def _preview_text(text: str | None, *, width: int = 80) -> str:
     if len(normalized) <= width:
         return normalized
     return normalized[: width - 1].rstrip() + "..."
+
+
+def _format_policy_evidence_items(items: list[str], *, limit: int = 2) -> str:
+    visible = list(dict.fromkeys(items))[:limit]
+    return "; ".join(visible) if visible else "none"
 
 
 def _session_list_main() -> None:
@@ -1595,6 +1613,17 @@ def _session_show_main(session_id: str) -> None:
     )
     if projection.latest_policy_summary:
         table.add_row("Latest Policy", projection.latest_policy_summary)
+    latest_policy_evidence = projection.latest_policy_evidence
+    if latest_policy_evidence and latest_policy_evidence.blocking:
+        table.add_row(
+            "Policy Evidence Needed",
+            _format_policy_evidence_items(latest_policy_evidence.blocking),
+        )
+    if latest_policy_evidence and latest_policy_evidence.supporting:
+        table.add_row(
+            "Policy Evidence Satisfied",
+            _format_policy_evidence_items(latest_policy_evidence.supporting),
+        )
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -1701,6 +1730,18 @@ def _workflow_show_main(
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Task", snapshot.current_task or "none")
     table.add_row("Entries", f"{len(snapshot.entries)} shown / {snapshot.total_entries} total")
+    if snapshot.latest_policy_summary:
+        table.add_row("Latest Policy", snapshot.latest_policy_summary)
+    if snapshot.latest_policy_blocking_evidence:
+        table.add_row(
+            "Policy Evidence Needed",
+            _format_policy_evidence_items(snapshot.latest_policy_blocking_evidence),
+        )
+    if snapshot.latest_policy_supporting_evidence:
+        table.add_row(
+            "Policy Evidence Satisfied",
+            _format_policy_evidence_items(snapshot.latest_policy_supporting_evidence),
+        )
     table.add_row(
         "Filters",
         _format_workflow_filters(
@@ -2105,6 +2146,7 @@ def _print_workflow_timeline_entries(
 
 def _format_workflow_timeline_context(entry) -> str:
     parts: list[str] = []
+    evidence_rollup = workflow_entry_evidence_rollup(entry)
     if entry.reason_code:
         parts.append(f"code={entry.reason_code}")
     if entry.decision_kind:
@@ -2132,7 +2174,13 @@ def _format_workflow_timeline_context(entry) -> str:
     if entry.unresolved_questions:
         parts.append(f"open={len(entry.unresolved_questions)}")
         parts.append(f"next-question={entry.unresolved_questions[0]}")
-    if entry.evidence_summary:
+    if evidence_rollup.blocking:
+        parts.append(f"needs={_format_policy_evidence_items(evidence_rollup.blocking)}")
+    if evidence_rollup.supporting:
+        parts.append(
+            f"satisfied={_format_policy_evidence_items(evidence_rollup.supporting)}"
+        )
+    if entry.evidence_summary and not evidence_rollup.blocking and not evidence_rollup.supporting:
         parts.append(f"evidence={'; '.join(entry.evidence_summary[:2])}")
     if entry.evidence_provenance:
         parts.append(
@@ -2235,6 +2283,15 @@ def _print_completion_trace_entries(entries) -> None:
     table.add_column("Evidence", style="white")
     for entry in entries:
         evidence_parts: list[str] = []
+        evidence_rollup = workflow_entry_evidence_rollup(entry)
+        if evidence_rollup.blocking:
+            evidence_parts.append(
+                "needed=" + _format_policy_evidence_items(evidence_rollup.blocking)
+            )
+        if evidence_rollup.supporting:
+            evidence_parts.append(
+                "satisfied=" + _format_policy_evidence_items(evidence_rollup.supporting)
+            )
         if entry.evidence_summary:
             evidence_parts.append("; ".join(entry.evidence_summary[:2]))
         if entry.evidence_provenance:
