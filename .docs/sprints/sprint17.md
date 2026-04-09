@@ -158,3 +158,33 @@ Implementation targets:
 - AST-aware or LSP-aware semantic artifact diffs
 - a full visual explore workflow
 - a broad rule editor or policy authoring UI
+
+## Audit
+
+### Status
+
+- Sprint 17 is complete, and the audit is green. Loader now starts the public runtime from an explicit runtime-shaped bootstrap view, `agent/loop.py` is materially thinner again, one more rescue-style repair path was converted into an honest failure contract, and explore continuity has a small operator surface instead of being invisible state.
+
+### Landed
+
+- the public runtime boundary is no longer “raw `Agent` by convention”: `src/loader/runtime/bootstrap.py` now exposes an explicit `RuntimeBootstrapView`, `src/loader/runtime/launcher.py` stores that narrowed source directly, and both `src/loader/runtime/conversation.py` and `src/loader/runtime/explore.py` now construct from that runtime-shaped contract rather than from `Agent`-typed ownership
+- prompt/session shell behavior moved into runtime-owned helpers under `src/loader/runtime/public_shell.py`: session creation, session restore, prompt construction, prompt snapshot persistence, and few-shot example selection no longer live inline inside `src/loader/agent/loop.py`
+- `src/loader/agent/loop.py` has shrunk again, now down to 437 lines; its remaining weight is much closer to what Sprint 17 intended: public entrypoints, resume/clear lifecycle, capability refresh, steering, and UI-facing wrapper behavior
+- the repair contract tightened in a useful audit-aligned place: when raw-text tool recovery exhausts its budget, `src/loader/runtime/repair.py` now stops with an explicit honest failure instead of appending another soft “let me know if you'd like me to continue” rescue line
+- explore continuity now has a real operator surface while staying workflow-light: `src/loader/runtime/explore_state.py` persists whether the last lookup ran `fresh` or `continue`, `src/loader/runtime/inspection.py` exposes that continuity directly, and `src/loader/cli/main.py` now supports `loader explore --status` and `loader explore --reset` alongside the existing read-only lookup flow
+
+### Verification
+
+- `uv run pytest -q` is green: `336 passed`
+- `tests/test_runtime_bootstrap.py`, `tests/test_runtime_launcher.py`, and `tests/test_runtime_context.py` now pin the narrowed bootstrap boundary directly and assert that the launcher/runtime contract is a `RuntimeBootstrapView` rather than a raw `Agent`
+- `tests/test_runtime_public_shell.py` now covers runtime-owned prompt/session shell helpers directly, including prompt-contract persistence, session creation metadata, and restored last-turn summary state
+- `tests/test_repair.py` and `tests/test_runtime_repair_flows.py` now cover honest raw-text tool recovery failure once the recovery budget is exhausted
+- `tests/test_explore_runtime.py` and `tests/test_inspection.py` now cover persisted explore history mode (`fresh` vs `continue`), explore continuity inspection, and explore reset behavior from the CLI
+
+### Residual debt
+
+- `src/loader/agent/loop.py` is much closer to a public facade than it was at Sprint 16, but it still owns resume/clear lifecycle, steering plumbing, capability refresh, and UI/event wrapper behavior; it is thin enough to be honest, not yet minimal
+- the public runtime boundary is now explicitly runtime-shaped, but `Agent` still constructs and supplies that boundary; Loader has not yet decided whether later sprints should narrow the public shell further or treat that as stable product architecture
+- the repair path is more honest than it was, but some completion/continuation heuristics still remain in `src/loader/runtime/completion_policy.py` and `src/loader/runtime/turn_completion.py`; those paths are now the right place to look for any future audit-driven deletions
+- explore continuity is now inspectable and resettable, but it is still intentionally narrow: no richer browse/navigation UX, no multi-step explore workflow, and no broader product surface than the single-command lookup lane plus the new operator flags
+- Loader is in a healthier public-boundary shape after Sprint 17, but it still stops short of claw-code’s tighter policy seams, OMX’s deeper planning/interview rigor, and richer operator tooling around policy, rules, and explore workflows
