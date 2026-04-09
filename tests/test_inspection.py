@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 import loader.cli.main as cli_main_module
 from loader.llm.base import Message, Role
+from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.explore_state import ExploreSnapshot, ExploreStateStore
 from loader.runtime.inspection import (
@@ -176,6 +177,20 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         last_completion_decision_summary=(
             "continued after verification failed and the runtime re-entered execute mode"
         ),
+        completion_trace=[
+            CompletionTraceEntry(
+                stage="continuation_check",
+                outcome="accept",
+                decision_code="completion_response_accepted",
+                decision_summary="accepted the response because completion heuristics found no missing follow-through",
+            ),
+            CompletionTraceEntry(
+                stage="definition_of_done",
+                outcome="continue",
+                decision_code="verification_failed_reentry",
+                decision_summary="continued after verification failed and the runtime re-entered execute mode",
+            ),
+        ],
         last_turn_transition_summary="completion -> finalize [terminal] Finalizing completed turn",
         last_turn_transition_kind="terminal",
         last_turn_transition_reason_code="turn_complete",
@@ -540,6 +555,10 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert detail.snapshot.last_completion_decision_code == (
         "verification_failed_reentry"
     )
+    assert [entry.decision_code for entry in detail.snapshot.completion_trace] == [
+        "completion_response_accepted",
+        "verification_failed_reentry",
+    ]
     assert detail.snapshot.last_turn_transition_reason_code == "turn_complete"
     assert len(detail.snapshot.workflow_timeline) == 2
     assert detail.snapshot.workflow_timeline[-1].scheduled_next_mode == "verify"
@@ -684,6 +703,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Rules Source" in show_result.output
     assert "verification failed; returning to execute for fixes" in show_result.output
     assert "Completion Decision" in show_result.output
+    assert "Completion Trace" in show_result.output
+    assert "continuation_check" in show_result.output
     assert "completion -> finalize" in show_result.output
     assert "Finalizing completed turn" in show_result.output
     assert "Workflow Timeline" in show_result.output

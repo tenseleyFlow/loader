@@ -1623,6 +1623,10 @@ def _session_show_main(session_id: str) -> None:
         )
         console.print(dod_table)
 
+    if snapshot.completion_trace:
+        console.print()
+        _print_completion_trace_entries(snapshot.completion_trace)
+
     if snapshot.workflow_timeline:
         console.print()
         _print_workflow_timeline_entries(
@@ -2172,6 +2176,29 @@ def _format_completion_decision(*, summary: str | None, code: str | None) -> str
     if summary and code:
         return f"{summary} ({code})"
     return summary or code or "none"
+
+
+def _print_completion_trace_entries(entries) -> None:
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Stage", style="white")
+    table.add_column("Outcome", style="white")
+    table.add_column("Decision", style="white")
+    for entry in entries:
+        table.add_row(
+            entry.stage,
+            entry.outcome,
+            _format_completion_decision(
+                summary=entry.decision_summary,
+                code=entry.decision_code,
+            ),
+        )
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Completion Trace[/bold blue]",
+            border_style="blue",
+        )
+    )
 
 
 def _coerce_permission_check_arguments(
