@@ -120,10 +120,11 @@ class ResponseRepairer:
                     extracted_iterations=next_extracted_iterations,
                     should_stop=True,
                     final_response=(
-                        normalized_content
-                        + "\n\nLet me know if you'd like me to continue or make changes."
+                        "I couldn't safely continue because the model kept emitting "
+                        "raw-text tool calls instead of proper tool invocations. "
+                        "Please try again or switch to a different backend/model."
                     ),
-                    failure="raw tool extraction exceeded iteration budget",
+                    failure="raw-text tool recovery budget exhausted",
                 )
 
         return ToolCallAnalysis(
