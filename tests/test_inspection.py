@@ -529,6 +529,50 @@ def _persist_session_with_pending_verification(temp_dir: Path) -> str:
     return snapshot.session_id
 
 
+def _persist_session_with_planned_verification(temp_dir: Path) -> str:
+    snapshot = SessionSnapshot(
+        session_id="20260406T160430Z-plan1234",
+        created_at="2026-04-06T16:04:30Z",
+        updated_at="2026-04-06T16:04:50Z",
+        messages=[
+            Message(role=Role.USER, content="Keep editing the runtime"),
+            Message(role=Role.ASSISTANT, content="Verification will run after execution."),
+        ],
+        current_task="Keep editing the runtime",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
+        workflow_mode="execute",
+        permission_mode="workspace-write",
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+        workflow_timeline=[
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T16:04:50Z",
+                kind="verify_observation",
+                mode="execute",
+                reason_code="verification_planned",
+                summary="verify: verification is planned after new mutating work",
+                decision_kind="forced",
+                policy_stage="verification",
+                policy_outcome="planned",
+                verification_observations=[
+                    VerificationObservation(
+                        status="planned",
+                        summary="verification planned for `uv run pytest -q`",
+                        command="uv run pytest -q",
+                        kind="runtime",
+                        detail="write changed src/loader/runtime/tool_batches.py",
+                    )
+                ],
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            )
+        ],
+    )
+    SessionStore(temp_dir).save(snapshot)
+    return snapshot.session_id
+
+
 def _persist_session_with_stale_verification(temp_dir: Path) -> str:
     snapshot = SessionSnapshot(
         session_id="20260406T160700Z-stale1234",
@@ -889,6 +933,30 @@ def test_collect_status_snapshot_surfaces_pending_verification(
     ]
 
 
+def test_collect_status_snapshot_surfaces_planned_verification(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_planned_verification(temp_dir)
+
+    snapshot = collect_status_snapshot(temp_dir)
+
+    assert snapshot.latest_policy_summary is not None
+    assert "verification_planned" in snapshot.latest_policy_summary
+    assert "policy-outcome=planned" in snapshot.latest_policy_summary
+    assert snapshot.latest_policy_observed_verification == [
+        "verification planned for `uv run pytest -q` [write changed src/loader/runtime/tool_batches.py]"
+    ]
+    assert [item.status for item in snapshot.recent_verification] == ["planned"]
+    assert [item.command for item in snapshot.recent_verification] == [
+        "uv run pytest -q"
+    ]
+    assert [item.detail for item in snapshot.recent_verification] == [
+        "write changed src/loader/runtime/tool_batches.py"
+    ]
+
+
 def test_collect_status_snapshot_surfaces_stale_verification(
     temp_dir: Path,
 ) -> None:
@@ -1092,6 +1160,29 @@ def test_workflow_command_renders_stale_verification_context(
     assert "Observed Verification" in result.output
     assert "uv run pytest -q" in result.output
     assert "new mutating work" in result.output
+
+
+def test_workflow_command_renders_planned_verification_context(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_planned_verification(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(cli_main_module.workflow_cli, ["show"])
+
+    assert result.exit_code == 0
+    assert session_id in result.output
+    assert "Verify planned:" in result.output
+    assert "verification_planned" in result.output
+    assert "policy-outcome=planned" in result.output
+    assert "Observed Verification" in result.output
+    assert "verification planned for `uv run pytest -q`" in result.output
+    assert "uv run pytest -q" in result.output
 
 
 def test_collect_workflow_timeline_can_focus_on_policy_accountability(

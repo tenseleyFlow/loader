@@ -156,6 +156,8 @@ def workflow_timeline_highlights(
     if verify_entry is not None:
         if verify_entry.kind == "verify_skip":
             prefix = "Skipped verify:"
+        elif verify_entry.policy_outcome == "planned":
+            prefix = "Verify planned:"
         elif verify_entry.policy_outcome == "pending":
             prefix = "Verify pending:"
         elif verify_entry.policy_outcome == "stale":

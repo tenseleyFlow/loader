@@ -159,6 +159,39 @@ def test_project_workflow_timeline_highlights_pending_verification() -> None:
     assert any(item.startswith("Verify pending:") for item in projection.highlights)
 
 
+def test_project_workflow_timeline_highlights_planned_verification() -> None:
+    entries = [
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:02:00Z",
+            kind="verify_observation",
+            mode="execute",
+            reason_code="verification_planned",
+            summary="verify: verification is planned after new mutating work",
+            decision_kind="forced",
+            policy_stage="verification",
+            policy_outcome="planned",
+            verification_observations=[
+                VerificationObservation(
+                    status="planned",
+                    summary="verification planned for `pytest -q`",
+                    command="pytest -q",
+                    kind="runtime",
+                    detail="write changed README.md",
+                )
+            ],
+        )
+    ]
+
+    projection = project_workflow_timeline(entries, accountability_only=True)
+
+    assert projection.latest_policy_summary is not None
+    assert "policy-outcome=planned" in projection.latest_policy_summary
+    assert "observed=verification planned for `pytest -q` [write changed README.md]" in (
+        projection.latest_policy_summary
+    )
+    assert any(item.startswith("Verify planned:") for item in projection.highlights)
+
+
 def test_project_workflow_timeline_highlights_stale_verification() -> None:
     entries = [
         WorkflowTimelineEntry(
