@@ -6,6 +6,7 @@ import pytest
 
 from loader.agent.loop import Agent, AgentConfig
 from loader.llm.base import CompletionResponse, ToolCall
+from loader.runtime.explore_state import ExploreStateStore
 from loader.runtime.permissions import PermissionMode
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -192,3 +193,78 @@ async def test_explore_mode_ignores_global_allow_rules(temp_dir) -> None:
     assert "read-only" in "\n".join(tool_results).lower()
     assert "cannot make that change" in response.lower()
     assert not (temp_dir / "new.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_explore_mode_persists_recent_history_for_follow_up_queries(temp_dir) -> None:
+    first_agent = Agent(
+        backend=ScriptedBackend(
+            completions=[CompletionResponse(content="Start with README.md.")]
+        ),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+
+    first_response = await first_agent.run_explore("Where should I start?")
+
+    assert first_response == "Start with README.md."
+
+    follow_up_backend = ScriptedBackend(
+        completions=[CompletionResponse(content="I mentioned README.md.")]
+    )
+    second_agent = Agent(
+        backend=follow_up_backend,
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+
+    follow_up_response = await second_agent.run_explore("What file did you mention?")
+
+    assert follow_up_response == "I mentioned README.md."
+    messages = follow_up_backend.invocations[0].messages
+    assert messages[1].content == "Where should I start?"
+    assert messages[2].content == "Start with README.md."
+    assert messages[3].content == "What file did you mention?"
+
+    snapshot = ExploreStateStore(temp_dir).load()
+    assert snapshot is not None
+    assert snapshot.turn_count == 2
+    assert snapshot.last_query == "What file did you mention?"
+    assert snapshot.last_response == "I mentioned README.md."
+
+
+@pytest.mark.asyncio
+async def test_explore_mode_fresh_query_ignores_persisted_history(temp_dir) -> None:
+    first_agent = Agent(
+        backend=ScriptedBackend(
+            completions=[CompletionResponse(content="Start with README.md.")]
+        ),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+    await first_agent.run_explore("Where should I start?")
+
+    fresh_backend = ScriptedBackend(
+        completions=[CompletionResponse(content="Fresh answer only.")]
+    )
+    second_agent = Agent(
+        backend=fresh_backend,
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+
+    response = await second_agent.run_explore(
+        "Ignore the previous lookup.",
+        fresh=True,
+    )
+
+    assert response == "Fresh answer only."
+    messages = fresh_backend.invocations[0].messages
+    assert len(messages) == 2
+    assert messages[1].content == "Ignore the previous lookup."
+
+    snapshot = ExploreStateStore(temp_dir).load()
+    assert snapshot is not None
+    assert snapshot.turn_count == 1
+    assert snapshot.last_query == "Ignore the previous lookup."
+    assert snapshot.last_response == "Fresh answer only."

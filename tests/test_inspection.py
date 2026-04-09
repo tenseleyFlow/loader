@@ -11,6 +11,7 @@ from click.testing import CliRunner
 import loader.cli.main as cli_main_module
 from loader.llm.base import Message, Role
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
+from loader.runtime.explore_state import ExploreSnapshot, ExploreStateStore
 from loader.runtime.inspection import (
     CheckStatus,
     collect_doctor_report,
@@ -178,6 +179,23 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
     )
     SessionStore(temp_dir).save(snapshot)
     return snapshot.session_id, str(dod_path)
+
+
+def _persist_explore_snapshot(temp_dir: Path) -> None:
+    ExploreStateStore(temp_dir).save(
+        ExploreSnapshot(
+            turn_count=2,
+            model_name="llama3.1:8b",
+            messages=[
+                Message(role=Role.USER, content="Where should I start?"),
+                Message(role=Role.ASSISTANT, content="Start with README.md."),
+                Message(role=Role.USER, content="What file did you mention?"),
+                Message(role=Role.ASSISTANT, content="I mentioned README.md."),
+            ],
+            last_query="What file did you mention?",
+            last_response="I mentioned README.md.",
+        )
+    )
 
 
 def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
@@ -435,6 +453,7 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     _write_python_workspace(temp_dir)
     _ensure_loader_dirs(temp_dir)
     session_id, dod_path = _persist_session_with_dod(temp_dir)
+    _persist_explore_snapshot(temp_dir)
 
     snapshot = collect_status_snapshot(
         temp_dir,
@@ -471,6 +490,11 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.last_turn_transition_summary == (
         "completion -> finalize [terminal] Finalizing completed turn"
     )
+    assert snapshot.explore_turn_count == 2
+    assert snapshot.explore_message_count == 4
+    assert snapshot.explore_last_query == "What file did you mention?"
+    assert snapshot.explore_last_response == "I mentioned README.md."
+    assert snapshot.explore_updated_at is not None
 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
@@ -598,6 +622,7 @@ def test_status_and_session_commands_render_persisted_state(
     _write_python_workspace(temp_dir)
     _ensure_loader_dirs(temp_dir)
     session_id, _ = _persist_session_with_dod(temp_dir)
+    _persist_explore_snapshot(temp_dir)
     runner = CliRunner()
 
     monkeypatch.chdir(temp_dir)
@@ -617,6 +642,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "verification failed; returning to execute for fixes" in status_result.output
     assert "completion -> finalize" in status_result.output
     assert "Finalizing completed turn" in status_result.output
+    assert "Explore Turns" in status_result.output
+    assert "What file did you mention?" in status_result.output
 
     assert list_result.exit_code == 0
     assert session_id in list_result.output
