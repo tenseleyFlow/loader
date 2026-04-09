@@ -200,6 +200,8 @@ class StatusSnapshot:
     explore_history_mode: str | None = None
     explore_last_query: str | None = None
     explore_last_response: str | None = None
+    runtime_owner_type: str | None = None
+    runtime_owner_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -242,6 +244,8 @@ class SessionSummary:
     active_dod_path: str | None
     dod_status: str | None
     is_current: bool = False
+    runtime_owner_type: str | None = None
+    runtime_owner_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -295,6 +299,8 @@ class WorkflowTimelineSnapshot:
     highlights: list[str] = field(default_factory=list)
     entries: list[WorkflowTimelineEntry] = field(default_factory=list)
     workflow_ledger: WorkflowLedger = field(default_factory=WorkflowLedger)
+    runtime_owner_type: str | None = None
+    runtime_owner_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -450,6 +456,8 @@ def collect_status_snapshot(
             model=resolved_model,
             capability_profile=capability_profile,
             active_session_id=None,
+            runtime_owner_type=None,
+            runtime_owner_path=None,
             workflow_mode="execute",
             workflow_reason_code=None,
             workflow_reason_summary=None,
@@ -522,6 +530,8 @@ def collect_status_snapshot(
         model=resolved_model,
         capability_profile=capability_profile,
         active_session_id=snapshot.session_id,
+        runtime_owner_type=snapshot.runtime_owner_type,
+        runtime_owner_path=snapshot.runtime_owner_path,
         workflow_mode=snapshot.workflow_mode,
         workflow_reason_code=snapshot.workflow_reason_code,
         workflow_reason_summary=snapshot.workflow_reason_summary,
@@ -633,6 +643,8 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                 session_id=snapshot.session_id,
                 created_at=snapshot.created_at,
                 updated_at=snapshot.updated_at,
+                runtime_owner_type=snapshot.runtime_owner_type,
+                runtime_owner_path=snapshot.runtime_owner_path,
                 message_count=len(snapshot.messages),
                 workflow_mode=snapshot.workflow_mode,
                 workflow_reason_code=snapshot.workflow_reason_code,
@@ -926,6 +938,8 @@ def collect_workflow_timeline(
             project_root=resolved_root,
             session_id=None,
             is_current=False,
+            runtime_owner_type=None,
+            runtime_owner_path=None,
             workflow_mode="execute",
             current_task=None,
             total_entries=0,
@@ -955,6 +969,8 @@ def collect_workflow_timeline(
         project_root=resolved_root,
         session_id=snapshot.session_id,
         is_current=snapshot.session_id == current_session_id,
+        runtime_owner_type=snapshot.runtime_owner_type,
+        runtime_owner_path=snapshot.runtime_owner_path,
         workflow_mode=snapshot.workflow_mode,
         current_task=snapshot.current_task,
         total_entries=projection.total_entries,

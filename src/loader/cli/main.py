@@ -37,6 +37,7 @@ from ..runtime.inspection import (
     project_workflow_timeline,
     reset_explore_continuity,
 )
+from ..runtime.owner_metadata import format_runtime_owner_label
 from ..runtime.permissions import PermissionMode
 from ..runtime.workflow_timeline_read_model import (
     format_evidence_provenance_brief,
@@ -1405,6 +1406,16 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Model", snapshot.model)
     table.add_row("Capabilities", f"{snapshot.capability_profile.preferred_tool_call_format} / {snapshot.capability_profile.verification_strictness}")
     table.add_row("Session", snapshot.active_session_id or "none")
+    table.add_row(
+        "Runtime Owner",
+        (
+            format_runtime_owner_label(
+                snapshot.runtime_owner_type,
+                snapshot.runtime_owner_path,
+            )
+            or "none"
+        ),
+    )
     table.add_row("Workflow", snapshot.workflow_mode)
     if snapshot.workflow_decision_kind:
         table.add_row("Decision Kind", snapshot.workflow_decision_kind)
@@ -1579,6 +1590,16 @@ def _session_list_main() -> None:
         table.add_row("Created", entry.created_at)
         table.add_row("Updated", entry.updated_at)
         table.add_row("Messages", str(entry.message_count))
+        table.add_row(
+            "Runtime Owner",
+            (
+                format_runtime_owner_label(
+                    entry.runtime_owner_type,
+                    entry.runtime_owner_path,
+                )
+                or "none"
+            ),
+        )
         table.add_row("Workflow", entry.workflow_mode)
         if entry.workflow_decision_kind:
             table.add_row("Decision Kind", entry.workflow_decision_kind)
@@ -1634,6 +1655,16 @@ def _session_show_main(session_id: str) -> None:
     table.add_row("Created", snapshot.created_at)
     table.add_row("Updated", snapshot.updated_at)
     table.add_row("Messages", str(len(snapshot.messages)))
+    table.add_row(
+        "Runtime Owner",
+        (
+            format_runtime_owner_label(
+                snapshot.runtime_owner_type,
+                snapshot.runtime_owner_path,
+            )
+            or "none"
+        ),
+    )
     table.add_row("Workflow", snapshot.workflow_mode)
     if snapshot.workflow_decision_kind:
         table.add_row("Decision Kind", snapshot.workflow_decision_kind)
@@ -1805,6 +1836,16 @@ def _workflow_show_main(
     table.add_row("Workspace", str(snapshot.project_root))
     table.add_row("Session", snapshot.session_id or "none")
     table.add_row("Current", "yes" if snapshot.is_current else "no")
+    table.add_row(
+        "Runtime Owner",
+        (
+            format_runtime_owner_label(
+                snapshot.runtime_owner_type,
+                snapshot.runtime_owner_path,
+            )
+            or "none"
+        ),
+    )
     table.add_row("Workflow", snapshot.workflow_mode)
     table.add_row("Task", snapshot.current_task or "none")
     table.add_row("Entries", f"{len(snapshot.entries)} shown / {snapshot.total_entries} total")

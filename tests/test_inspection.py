@@ -156,6 +156,8 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         usage={"turns": 1, "tool_calls": 2},
         active_dod_path=str(dod_path),
         current_task="Fix the failing tests",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
         workflow_mode="execute",
         permission_mode="prompt",
         permission_prompting_enabled=True,
@@ -285,6 +287,8 @@ def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
         ],
         active_dod_path=str(dod_path),
         current_task="Tighten Loader workflow behavior",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
         workflow_mode="execute",
         permission_mode="prompt",
         permission_prompting_enabled=True,
@@ -415,6 +419,8 @@ def _persist_session_with_policy_accountability(temp_dir: Path) -> str:
             Message(role=Role.ASSISTANT, content="The runtime tracked repair and completion decisions."),
         ],
         current_task="Explain Loader policy accountability",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
         workflow_mode="execute",
         permission_mode="workspace-write",
         prompt_format="native",
@@ -585,6 +591,8 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.last_verification_result == "failed"
     assert snapshot.active_dod_path == dod_path
     assert snapshot.permission_mode == "prompt"
+    assert snapshot.runtime_owner_type == "RuntimeHandle"
+    assert snapshot.runtime_owner_path == "runtime-handle"
     assert snapshot.permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
     assert snapshot.permission_prompting_enabled is True
     assert snapshot.permission_rules_valid is True
@@ -624,6 +632,8 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
     assert sessions[0].is_current is True
+    assert sessions[0].runtime_owner_type == "RuntimeHandle"
+    assert sessions[0].runtime_owner_path == "runtime-handle"
     assert sessions[0].dod_status == "fixing"
     assert sessions[0].permission_prompting_enabled is True
     assert sessions[0].permission_rule_counts == {"allow": 1, "deny": 2, "ask": 1}
@@ -646,6 +656,8 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
 
     assert detail.snapshot.session_id == session_id
     assert detail.is_current is True
+    assert detail.snapshot.runtime_owner_type == "RuntimeHandle"
+    assert detail.snapshot.runtime_owner_path == "runtime-handle"
     assert detail.definition_of_done is not None
     assert detail.definition_of_done.status == "fixing"
     assert detail.snapshot.permission_rules_source == str(
@@ -675,6 +687,8 @@ def test_collect_workflow_timeline_reflects_persisted_history(temp_dir: Path) ->
 
     assert snapshot.session_id == session_id
     assert snapshot.is_current is True
+    assert snapshot.runtime_owner_type == "RuntimeHandle"
+    assert snapshot.runtime_owner_path == "runtime-handle"
     assert snapshot.workflow_mode == "execute"
     assert snapshot.current_task == "Fix the failing tests"
     assert snapshot.total_entries == 2
@@ -821,6 +835,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert status_result.exit_code == 0
     assert session_id in status_result.output
     assert "fixing" in status_result.output
+    assert "Runtime Owner" in status_result.output
+    assert "runtime-handle (RuntimeHandle)" in status_result.output
     assert "1 allow / 2 deny / 1 ask" in status_result.output
     assert "native" in status_result.output
     assert "Runtime Config, Workflow Context, Mode Guidance" in status_result.output
@@ -838,6 +854,8 @@ def test_status_and_session_commands_render_persisted_state(
 
     assert list_result.exit_code == 0
     assert session_id in list_result.output
+    assert "Runtime Owner" in list_result.output
+    assert "runtime-handle (RuntimeHandle)" in list_result.output
     assert "1 allow / 2 deny / 1 ask" in list_result.output
     assert "prompting enabled" in list_result.output
     assert "native" in list_result.output
@@ -848,6 +866,8 @@ def test_status_and_session_commands_render_persisted_state(
 
     assert show_result.exit_code == 0
     assert session_id in show_result.output
+    assert "Runtime Owner" in show_result.output
+    assert "runtime-handle (RuntimeHandle)" in show_result.output
     assert "Patch the broken parser" in show_result.output
     assert "1 allow / 2 deny / 1 ask" in show_result.output
     assert "enabled" in show_result.output
@@ -871,6 +891,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Loader Workflow" in workflow_result.output
     assert "Workflow Timeline" in workflow_result.output
     assert session_id in workflow_result.output
+    assert "Runtime Owner" in workflow_result.output
+    assert "runtime-handle (RuntimeHandle)" in workflow_result.output
     assert "handoff" in workflow_result.output
     assert "next=verify" in workflow_result.output
 
