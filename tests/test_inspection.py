@@ -486,6 +486,49 @@ def _persist_session_with_policy_accountability(temp_dir: Path) -> str:
     return snapshot.session_id
 
 
+def _persist_session_with_pending_verification(temp_dir: Path) -> str:
+    snapshot = SessionSnapshot(
+        session_id="20260406T160500Z-pending123",
+        created_at="2026-04-06T16:05:00Z",
+        updated_at="2026-04-06T16:05:30Z",
+        messages=[
+            Message(role=Role.USER, content="Verify the runtime changes"),
+            Message(role=Role.ASSISTANT, content="Entering verification."),
+        ],
+        current_task="Verify the runtime changes",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
+        workflow_mode="verify",
+        permission_mode="workspace-write",
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+        workflow_timeline=[
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T16:05:30Z",
+                kind="verify_observation",
+                mode="verify",
+                reason_code="verification_pending",
+                summary="verify: verification is pending for the active command set",
+                decision_kind="forced",
+                policy_stage="verification",
+                policy_outcome="pending",
+                verification_observations=[
+                    VerificationObservation(
+                        status="pending",
+                        summary="verification pending for `uv run pytest -q`",
+                        command="uv run pytest -q",
+                        kind="test",
+                    )
+                ],
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            )
+        ],
+    )
+    SessionStore(temp_dir).save(snapshot)
+    return snapshot.session_id
+
+
 @pytest.mark.asyncio
 async def test_collect_doctor_report_passes_for_healthy_workspace(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
@@ -776,6 +819,27 @@ def test_collect_status_snapshot_includes_latest_policy_summary(
     assert [item.status for item in snapshot.recent_verification] == ["failed"]
     assert [item.command for item in snapshot.recent_verification] == ["pytest -q"]
     assert [item.detail for item in snapshot.recent_verification] == ["1 failed"]
+
+
+def test_collect_status_snapshot_surfaces_pending_verification(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_pending_verification(temp_dir)
+
+    snapshot = collect_status_snapshot(temp_dir)
+
+    assert snapshot.latest_policy_summary is not None
+    assert "verification_pending" in snapshot.latest_policy_summary
+    assert "policy-outcome=pending" in snapshot.latest_policy_summary
+    assert snapshot.latest_policy_observed_verification == [
+        "verification pending for `uv run pytest -q`"
+    ]
+    assert [item.status for item in snapshot.recent_verification] == ["pending"]
+    assert [item.command for item in snapshot.recent_verification] == [
+        "uv run pytest -q"
+    ]
 
 
 def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:

@@ -154,11 +154,12 @@ def workflow_timeline_highlights(
         or "verify_skip" in entry.reason_code,
     )
     if verify_entry is not None:
-        prefix = (
-            "Skipped verify:"
-            if verify_entry.kind == "verify_skip"
-            else "Verify observed:"
-        )
+        if verify_entry.kind == "verify_skip":
+            prefix = "Skipped verify:"
+        elif verify_entry.policy_outcome == "pending":
+            prefix = "Verify pending:"
+        else:
+            prefix = "Verify observed:"
         highlights.append(prefix + " " + workflow_entry_explanation(verify_entry))
 
     return list(dict.fromkeys(highlights))

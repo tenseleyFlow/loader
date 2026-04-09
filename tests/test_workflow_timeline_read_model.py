@@ -127,6 +127,38 @@ def test_project_workflow_timeline_treats_verify_observation_as_accountability()
     assert any(item.startswith("Verify observed:") for item in projection.highlights)
 
 
+def test_project_workflow_timeline_highlights_pending_verification() -> None:
+    entries = [
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:03:00Z",
+            kind="verify_observation",
+            mode="verify",
+            reason_code="verification_pending",
+            summary="verify: verification is pending for the active command set",
+            decision_kind="forced",
+            policy_stage="verification",
+            policy_outcome="pending",
+            verification_observations=[
+                VerificationObservation(
+                    status="pending",
+                    summary="verification pending for `pytest -q`",
+                    command="pytest -q",
+                    kind="test",
+                )
+            ],
+        )
+    ]
+
+    projection = project_workflow_timeline(entries, accountability_only=True)
+
+    assert projection.latest_policy_summary is not None
+    assert "policy-outcome=pending" in projection.latest_policy_summary
+    assert "observed=verification pending for `pytest -q`" in (
+        projection.latest_policy_summary
+    )
+    assert any(item.startswith("Verify pending:") for item in projection.highlights)
+
+
 def test_project_workflow_timeline_applies_policy_filters_and_limits() -> None:
     entries = [
         WorkflowTimelineEntry(

@@ -1512,6 +1512,7 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
         evidence.add_column("Detail", style="dim")
         for item in snapshot.recent_verification:
             result = {
+                "pending": "[cyan]pending[/cyan]",
                 "passed": "[green]pass[/green]",
                 "failed": "[red]fail[/red]",
                 "skipped": "[yellow]skip[/yellow]",
@@ -1770,6 +1771,7 @@ def _session_show_main(session_id: str) -> None:
         verification.add_column("Detail", style="dim")
         for item in detail.recent_verification:
             result = {
+                "pending": "[cyan]pending[/cyan]",
                 "passed": "[green]pass[/green]",
                 "failed": "[red]fail[/red]",
                 "skipped": "[yellow]skip[/yellow]",
