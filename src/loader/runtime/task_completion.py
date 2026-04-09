@@ -8,6 +8,10 @@ from dataclasses import dataclass, field
 from .dod import DefinitionOfDone
 from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .reasoning_types import TaskCompletionCheck
+from .verification_observations import (
+    VerificationObservation,
+    VerificationObservationStatus,
+)
 
 _ACTION_VERBS = ("create", "write", "make", "edit", "fix", "add", "delete", "run")
 _COMPLEX_INDICATORS = (
@@ -126,6 +130,7 @@ class CompletionAssessment:
 
     check: TaskCompletionCheck
     evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
+    verification_observations: list[VerificationObservation] = field(default_factory=list)
 
 
 def detect_premature_completion(
@@ -197,6 +202,11 @@ def assess_completion_follow_through_with_provenance(
         requires_verification=requires_verification,
         dod=dod,
     )
+    verification_observations = _observed_completion_verification(
+        dod=dod,
+        verification_command=facts.verification_command,
+        requires_verification=requires_verification,
+    )
 
     accomplished = list(facts.accomplished)
     required_evidence = _required_evidence(
@@ -228,6 +238,7 @@ def assess_completion_follow_through_with_provenance(
                 ),
             ),
             evidence_provenance=evidence_provenance,
+            verification_observations=verification_observations,
         )
 
     if facts.pending_items:
@@ -421,6 +432,7 @@ def assess_completion_follow_through_with_provenance(
             ),
         ),
         evidence_provenance=evidence_provenance,
+        verification_observations=verification_observations,
     )
 
 
@@ -880,6 +892,71 @@ def _verification_provenance(
             subject=verification_command,
         )
     ]
+
+
+def _observed_completion_verification(
+    *,
+    dod: DefinitionOfDone | None,
+    verification_command: str | None,
+    requires_verification: bool,
+) -> list[VerificationObservation]:
+    if dod is None or not requires_verification:
+        return []
+
+    observations: list[VerificationObservation] = []
+    observed_commands: set[str] = set()
+    for evidence in dod.evidence:
+        command = evidence.command or verification_command
+        if command:
+            observed_commands.add(command)
+        observations.append(
+            VerificationObservation(
+                status=(
+                    VerificationObservationStatus.PASSED.value
+                    if evidence.passed
+                    else VerificationObservationStatus.FAILED.value
+                ),
+                summary=(
+                    f"verification passed for `{command}`"
+                    if evidence.passed and command
+                    else "verification passed"
+                    if evidence.passed
+                    else f"verification failed for `{command}`"
+                    if command
+                    else "verification was still failing"
+                ),
+                command=command,
+                kind=evidence.kind,
+                exit_code=evidence.exit_code,
+                detail=_verification_detail(evidence),
+            )
+        )
+
+    if observations:
+        for command in dod.verification_commands:
+            if not command or command in observed_commands:
+                continue
+            observations.append(
+                VerificationObservation(
+                    status=VerificationObservationStatus.MISSING.value,
+                    summary=f"verification did not produce an observed result for `{command}`",
+                    command=command,
+                )
+            )
+        return observations
+
+    if verification_command:
+        return [
+            VerificationObservation(
+                status=VerificationObservationStatus.MISSING.value,
+                summary=(
+                    "verification did not produce an observed result for "
+                    f"`{verification_command}`"
+                ),
+                command=verification_command,
+            )
+        ]
+    return []
 
 
 def _verification_detail(evidence) -> str | None:

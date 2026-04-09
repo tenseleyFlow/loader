@@ -8,6 +8,7 @@ import pytest
 
 from loader.agent.loop import Agent, AgentConfig
 from loader.runtime.conversation import ConversationRuntime
+from loader.runtime.dod import VerificationEvidence
 from loader.runtime.phases import TurnPhase
 from loader.runtime.turn_completion import TurnCompletionAction
 from loader.runtime.verification_observations import VerificationObservationStatus
@@ -447,3 +448,82 @@ async def test_turn_completion_finalizes_when_follow_through_budget_is_exhausted
         "error",
         "response",
     ]
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_uses_observed_verification_for_budget_exhaustion(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    agent = Agent(
+        backend=backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task="Run pytest -q and make sure it works.",
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+    prepared.definition_of_done.verification_commands = ["pytest -q"]
+    prepared.definition_of_done.evidence = [
+        VerificationEvidence(
+            command="pytest -q",
+            passed=False,
+            stderr="1 failed",
+            kind="test",
+        )
+    ]
+    prepared.definition_of_done.last_verification_result = "failed"
+    await runtime.phase_tracker.enter(
+        TurnPhase.ASSISTANT,
+        capture,
+        detail="Requesting assistant response",
+        reason_code="request_assistant_response",
+    )
+
+    decision = await runtime.turn_completion.handle_text_response(
+        content="The tests are done.",
+        response_content="The tests are done.",
+        task=prepared.task,
+        effective_task=prepared.effective_task,
+        iterations=1,
+        max_iterations=agent.config.max_iterations,
+        actions_taken=[],
+        continuation_count=agent.config.reasoning.max_continuation_prompts,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        executor=prepared.executor,
+        rollback_plan=prepared.rollback_plan,
+    )
+
+    assert decision.action == TurnCompletionAction.FINALIZE
+    assert decision.finalize_reason_code == "continuation_budget_exhausted"
+    assert prepared.summary.final_response == (
+        "I stopped because the continuation budget was exhausted and observed "
+        "verification still showed: verification failed for `pytest -q` [1 failed]."
+    )
+    assert prepared.summary.completion_trace[-1].decision_code == (
+        "continuation_budget_exhausted"
+    )
+    assert [
+        item.status
+        for item in prepared.summary.completion_trace[-1].verification_observations
+    ] == [VerificationObservationStatus.FAILED.value]
+    assert [
+        item.summary
+        for item in prepared.summary.completion_trace[-1].verification_observations
+    ] == ["verification failed for `pytest -q`"]
+    assert [
+        item.status
+        for item in prepared.summary.workflow_timeline[-1].verification_observations
+    ] == [VerificationObservationStatus.FAILED.value]

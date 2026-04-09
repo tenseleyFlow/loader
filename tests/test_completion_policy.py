@@ -24,6 +24,7 @@ from loader.runtime.task_completion import (
     detect_premature_completion,
     get_continuation_prompt,
 )
+from loader.runtime.verification_observations import VerificationObservationStatus
 from loader.tools.base import create_default_registry
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -416,15 +417,72 @@ async def test_completion_policy_finalizes_with_concrete_failed_verification_gap
     assert decision.should_continue is False
     assert decision.should_finalize is True
     assert decision.decision_code == "continuation_budget_exhausted"
+    assert decision.decision_summary == (
+        "stopped because the continuation budget was exhausted while observed "
+        "verification still showed verification failed for `pytest -q` [1 failed]"
+    )
     assert decision.completion_check is not None
     assert decision.completion_check.missing_evidence == [
         "a passing verification result from `pytest -q` (current verification is still failing)"
     ]
-    assert "pytest -q" in decision.final_response
+    assert decision.final_response == (
+        "I stopped because the continuation budget was exhausted and observed "
+        "verification still showed: verification failed for `pytest -q` [1 failed]."
+    )
     assert events[0].type == "completion_check"
     assert [item.status for item in decision.evidence_provenance] == [
         EvidenceProvenanceStatus.CONTRADICTS.value
     ]
+    assert [item.status for item in decision.verification_observations] == [
+        VerificationObservationStatus.FAILED.value
+    ]
+
+
+@pytest.mark.asyncio
+async def test_completion_policy_uses_missing_observed_verification_when_budget_is_exhausted(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir,
+        safeguards=FakeSafeguards(),
+        max_continuation_prompts=1,
+    )
+    policy = CompletionPolicy(context)
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.last_verification_result = "failed"
+    events = []
+
+    async def emit(event) -> None:
+        events.append(event)
+
+    decision = await policy.maybe_continue_for_completion(
+        content="The tests are done.",
+        response_content="The tests are done.",
+        task="Run pytest -q and make sure it works.",
+        actions_taken=[],
+        continuation_count=1,
+        emit=emit,
+        dod=dod,
+    )
+
+    assert decision.should_continue is False
+    assert decision.should_finalize is True
+    assert decision.decision_code == "continuation_budget_exhausted"
+    assert decision.decision_summary == (
+        "stopped because the continuation budget was exhausted while observed "
+        "verification still showed verification did not produce an observed "
+        "result for `pytest -q`"
+    )
+    assert decision.final_response == (
+        "I stopped because the continuation budget was exhausted and observed "
+        "verification still showed: verification did not produce an observed "
+        "result for `pytest -q`."
+    )
+    assert [item.status for item in decision.verification_observations] == [
+        VerificationObservationStatus.MISSING.value
+    ]
+    assert events[0].type == "completion_check"
 
 
 @pytest.mark.asyncio
@@ -459,4 +517,5 @@ async def test_completion_policy_finalizes_when_budget_is_exhausted(
         "showing the requested work was actually carried out"
     ]
     assert "Missing evidence" in decision.final_response
+    assert decision.verification_observations == []
     assert events[0].type == "completion_check"

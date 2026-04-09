@@ -12,6 +12,7 @@ from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance
 from .reasoning_types import TaskCompletionCheck
 from .task_completion import assess_completion_follow_through_with_provenance
+from .verification_observations import VerificationObservation, VerificationObservationStatus
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -35,6 +36,7 @@ class ContinuationDecision:
     decision_summary: str
     completion_check: TaskCompletionCheck | None = None
     evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
+    verification_observations: list[VerificationObservation] = field(default_factory=list)
     should_finalize: bool = False
     final_response: str = ""
     failure: str | None = None
@@ -124,9 +126,19 @@ class CompletionPolicy:
                 evidence_provenance=(
                     list(assessment.evidence_provenance) if assessment is not None else []
                 ),
+                verification_observations=(
+                    list(assessment.verification_observations)
+                    if assessment is not None
+                    else []
+                ),
             )
 
         if continuation_count >= cfg.max_continuation_prompts:
+            verification_observations = (
+                list(assessment.verification_observations)
+                if assessment is not None
+                else []
+            )
             await emit(
                 AgentEvent(
                     type="completion_check",
@@ -138,15 +150,19 @@ class CompletionPolicy:
                 should_continue=False,
                 should_finalize=True,
                 decision_code="continuation_budget_exhausted",
-                decision_summary=(
-                    "stopped because the continuation budget was exhausted while "
-                    "follow-through evidence was still missing"
+                decision_summary=self._budget_exhausted_summary(
+                    completion_check=completion_check,
+                    verification_observations=verification_observations,
                 ),
                 completion_check=completion_check,
                 evidence_provenance=(
                     list(assessment.evidence_provenance) if assessment is not None else []
                 ),
-                final_response=self._format_budget_exhausted_response(completion_check),
+                verification_observations=verification_observations,
+                final_response=self._format_budget_exhausted_response(
+                    completion_check,
+                    verification_observations=verification_observations,
+                ),
                 failure="missing follow-through evidence after continuation budget exhaustion",
             )
 
@@ -172,6 +188,11 @@ class CompletionPolicy:
             evidence_provenance=(
                 list(assessment.evidence_provenance) if assessment is not None else []
             ),
+            verification_observations=(
+                list(assessment.verification_observations)
+                if assessment is not None
+                else []
+            ),
         )
 
     @staticmethod
@@ -188,7 +209,17 @@ class CompletionPolicy:
     @staticmethod
     def _format_budget_exhausted_response(
         completion_check: TaskCompletionCheck | None,
+        *,
+        verification_observations: list[VerificationObservation] | None = None,
     ) -> str:
+        observed = CompletionPolicy._observed_verification_summary(
+            verification_observations or []
+        )
+        if observed:
+            return (
+                "I stopped because the continuation budget was exhausted and observed "
+                f"verification still showed: {observed}."
+            )
         if completion_check is None or not completion_check.missing_evidence:
             return (
                 "I stopped because the continuation budget was exhausted before I could "
@@ -199,3 +230,53 @@ class CompletionPolicy:
             "I stopped because I still could not show enough evidence that the task "
             f"was complete. Missing evidence: {missing}."
         )
+
+    @staticmethod
+    def _budget_exhausted_summary(
+        *,
+        completion_check: TaskCompletionCheck | None,
+        verification_observations: list[VerificationObservation],
+    ) -> str:
+        observed = CompletionPolicy._observed_verification_summary(
+            verification_observations
+        )
+        if observed:
+            return (
+                "stopped because the continuation budget was exhausted while "
+                f"observed verification still showed {observed}"
+            )
+        if completion_check is None or not completion_check.missing_evidence:
+            return (
+                "stopped because the continuation budget was exhausted before "
+                "follow-through evidence was established"
+            )
+        return (
+            "stopped because the continuation budget was exhausted while "
+            "follow-through evidence was still missing"
+        )
+
+    @staticmethod
+    def _observed_verification_summary(
+        verification_observations: list[VerificationObservation],
+    ) -> str | None:
+        if not verification_observations:
+            return None
+        for entry in verification_observations:
+            if entry.status == VerificationObservationStatus.FAILED.value:
+                return CompletionPolicy._render_observation(entry)
+        for entry in verification_observations:
+            if entry.status == VerificationObservationStatus.MISSING.value:
+                return CompletionPolicy._render_observation(entry)
+        for entry in verification_observations:
+            if entry.status == VerificationObservationStatus.PASSED.value:
+                return CompletionPolicy._render_observation(entry)
+        return CompletionPolicy._render_observation(verification_observations[0])
+
+    @staticmethod
+    def _render_observation(entry: VerificationObservation) -> str:
+        summary = entry.summary.strip()
+        if entry.detail:
+            detail = entry.detail.strip()
+            if detail and detail not in summary:
+                return f"{summary} [{detail}]"
+        return summary

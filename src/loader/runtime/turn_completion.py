@@ -186,6 +186,7 @@ class TurnCompletionController:
                     else None
                 ),
                 evidence_provenance=continuation_decision.evidence_provenance,
+                verification_observations=continuation_decision.verification_observations,
             )
             if continuation_decision.should_continue:
                 self._record_completion_decision(
