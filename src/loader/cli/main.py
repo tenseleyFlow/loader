@@ -1468,9 +1468,20 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
         evidence.add_column("Command", style="white")
         evidence.add_column("Detail", style="dim")
         for item in snapshot.recent_verification:
-            result = "[green]pass[/green]" if item.passed else "[red]fail[/red]"
+            result = {
+                "passed": "[green]pass[/green]",
+                "failed": "[red]fail[/red]",
+                "skipped": "[yellow]skip[/yellow]",
+                "missing": "[magenta]missing[/magenta]",
+            }.get(item.status, item.status)
             evidence.add_row(result, item.kind, item.command, item.detail or "-")
-        console.print(evidence)
+        console.print(
+            Panel.fit(
+                evidence,
+                title="[bold blue]Recent Verification[/bold blue]",
+                border_style="blue",
+            )
+        )
 
 
 def _print_explore_continuity_snapshot(snapshot: ExploreContinuitySnapshot) -> None:
@@ -1686,6 +1697,29 @@ def _session_show_main(session_id: str) -> None:
             detail.definition_of_done.last_verification_result or "none",
         )
         console.print(dod_table)
+
+    if detail.recent_verification:
+        console.print()
+        verification = Table(show_header=True, header_style="bold cyan")
+        verification.add_column("Result", width=8)
+        verification.add_column("Kind", width=10)
+        verification.add_column("Command", style="white")
+        verification.add_column("Detail", style="dim")
+        for item in detail.recent_verification:
+            result = {
+                "passed": "[green]pass[/green]",
+                "failed": "[red]fail[/red]",
+                "skipped": "[yellow]skip[/yellow]",
+                "missing": "[magenta]missing[/magenta]",
+            }.get(item.status, item.status)
+            verification.add_row(result, item.kind, item.command, item.detail or "-")
+        console.print(
+            Panel.fit(
+                verification,
+                title="[bold blue]Recent Verification[/bold blue]",
+                border_style="blue",
+            )
+        )
 
     if snapshot.completion_trace:
         console.print()

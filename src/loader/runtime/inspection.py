@@ -29,6 +29,7 @@ from .permissions import (
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
 from .session import SessionSnapshot, SessionStore
+from .verification_observations import VerificationObservation, VerificationObservationStatus
 from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 from .workflow_timeline_read_model import (
@@ -146,7 +147,7 @@ class VerificationSummary:
     """Compact view of one verification evidence item."""
 
     command: str
-    passed: bool
+    status: str
     kind: str
     detail: str
 
@@ -250,6 +251,7 @@ class SessionDetail:
     snapshot: SessionSnapshot
     is_current: bool
     definition_of_done: DefinitionOfDone | None
+    recent_verification: list[VerificationSummary] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -511,6 +513,10 @@ def collect_status_snapshot(
         )
     )
     projection = project_workflow_timeline(snapshot.workflow_timeline)
+    recent_verification = _recent_verification_summaries(
+        timeline=snapshot.workflow_timeline,
+        evidence=dod.evidence if dod else [],
+    )
     return StatusSnapshot(
         project_root=resolved_root,
         model=resolved_model,
@@ -557,10 +563,11 @@ def collect_status_snapshot(
         active_dod_path=snapshot.active_dod_path,
         dod_status=dod.status if dod else None,
         dod_pending_items_count=len(dod.pending_items) if dod else 0,
-        last_verification_result=(
-            dod.last_verification_result if dod else None
+        last_verification_result=_last_verification_result(
+            dod=dod,
+            recent_verification=recent_verification,
         ),
-        recent_verification=_verification_summaries(dod.evidence if dod else []),
+        recent_verification=recent_verification,
         usage=dict(snapshot.usage),
         compaction_count=(snapshot.compaction.count if snapshot.compaction else 0),
         project_type=project_context.project_type,
@@ -664,10 +671,15 @@ def load_session_detail(
     store = SessionStore(resolved_root)
     snapshot = store.load(session_id)
     current_session_id = _current_session_id(store)
+    dod = _load_dod(snapshot.active_dod_path, project_root=resolved_root)
     return SessionDetail(
         snapshot=snapshot,
         is_current=snapshot.session_id == current_session_id,
-        definition_of_done=_load_dod(snapshot.active_dod_path, project_root=resolved_root),
+        definition_of_done=dod,
+        recent_verification=_recent_verification_summaries(
+            timeline=snapshot.workflow_timeline,
+            evidence=dod.evidence if dod else [],
+        ),
     )
 
 
@@ -1553,7 +1565,55 @@ def _load_dod(active_dod_path: str | None, *, project_root: Path) -> DefinitionO
     return DefinitionOfDoneStore(project_root).load(path)
 
 
-def _verification_summaries(
+def _recent_verification_summaries(
+    *,
+    timeline: list[WorkflowTimelineEntry],
+    evidence: list[VerificationEvidence],
+    limit: int = 3,
+) -> list[VerificationSummary]:
+    observed = _verification_summaries_from_timeline(timeline, limit=limit)
+    if observed:
+        return observed
+    return _verification_summaries_from_evidence(evidence, limit=limit)
+
+
+def _verification_summaries_from_timeline(
+    timeline: list[WorkflowTimelineEntry],
+    *,
+    limit: int = 3,
+) -> list[VerificationSummary]:
+    summaries: list[VerificationSummary] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for entry in reversed(timeline):
+        for observation in reversed(entry.verification_observations):
+            summary = _verification_summary_from_observation(observation)
+            key = (
+                summary.command,
+                summary.status,
+                summary.kind,
+                summary.detail,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            summaries.append(summary)
+            if len(summaries) >= limit:
+                return summaries
+    return summaries
+
+
+def _verification_summary_from_observation(
+    observation: VerificationObservation,
+) -> VerificationSummary:
+    return VerificationSummary(
+        command=observation.command or observation.summary,
+        status=observation.status,
+        kind=observation.kind or "runtime",
+        detail=observation.detail or "",
+    )
+
+
+def _verification_summaries_from_evidence(
     evidence: list[VerificationEvidence],
     *,
     limit: int = 3,
@@ -1564,12 +1624,28 @@ def _verification_summaries(
         summaries.append(
             VerificationSummary(
                 command=item.command,
-                passed=item.passed,
+                status=(
+                    VerificationObservationStatus.PASSED.value
+                    if item.passed
+                    else VerificationObservationStatus.FAILED.value
+                ),
                 kind=item.kind,
                 detail=detail,
             )
         )
     return summaries
+
+
+def _last_verification_result(
+    *,
+    dod: DefinitionOfDone | None,
+    recent_verification: list[VerificationSummary],
+) -> str | None:
+    if dod is not None and dod.last_verification_result:
+        return dod.last_verification_result
+    if recent_verification:
+        return recent_verification[0].status
+    return None
 
 
 def _first_detail_line(item: VerificationEvidence) -> str:

@@ -11,7 +11,11 @@ from click.testing import CliRunner
 import loader.cli.main as cli_main_module
 from loader.llm.base import Message, Role
 from loader.runtime.completion_trace import CompletionTraceEntry
-from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
+from loader.runtime.dod import (
+    DefinitionOfDoneStore,
+    VerificationEvidence,
+    create_definition_of_done,
+)
 from loader.runtime.evidence_provenance import EvidenceProvenance
 from loader.runtime.explore_state import ExploreSnapshot, ExploreStateStore
 from loader.runtime.inspection import (
@@ -95,7 +99,14 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
     dod.pending_items = ["Re-run pytest"]
     dod.completed_items = ["Patch the broken parser"]
     dod.last_verification_result = "failed"
-    dod.evidence = []
+    dod.evidence = [
+        VerificationEvidence(
+            command="pytest -q",
+            passed=False,
+            stderr="1 failed",
+            kind="test",
+        )
+    ]
     dod_path = DefinitionOfDoneStore(temp_dir).save(dod)
     workflow_timeline = [
         WorkflowTimelineEntry(
@@ -119,6 +130,15 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
             scheduled_next_mode="verify",
             runner_up_mode="verify",
             runner_up_score=0.52,
+            verification_observations=[
+                VerificationObservation(
+                    status="failed",
+                    summary="verification failed for `pytest -q`",
+                    command="pytest -q",
+                    kind="test",
+                    detail="1 failed",
+                )
+            ],
             prompt_format="native",
             prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
             artifact_paths=[str(temp_dir / ".loader" / "plans" / "fix-tests.md")],
@@ -597,6 +617,9 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.explore_last_query == "What file did you mention?"
     assert snapshot.explore_last_response == "I mentioned README.md."
     assert snapshot.explore_updated_at is not None
+    assert [item.status for item in snapshot.recent_verification] == ["failed"]
+    assert [item.command for item in snapshot.recent_verification] == ["pytest -q"]
+    assert [item.detail for item in snapshot.recent_verification] == ["1 failed"]
 
     assert len(sessions) == 1
     assert sessions[0].session_id == session_id
@@ -636,6 +659,8 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
         "completion_response_accepted",
         "verification_failed_reentry",
     ]
+    assert [item.status for item in detail.recent_verification] == ["failed"]
+    assert [item.command for item in detail.recent_verification] == ["pytest -q"]
     assert detail.snapshot.last_turn_transition_reason_code == "turn_complete"
     assert len(detail.snapshot.workflow_timeline) == 2
     assert detail.snapshot.workflow_timeline[-1].scheduled_next_mode == "verify"
@@ -734,6 +759,9 @@ def test_collect_status_snapshot_includes_latest_policy_summary(
     assert snapshot.latest_policy_observed_verification == [
         "verification failed for `pytest -q` [1 failed]"
     ]
+    assert [item.status for item in snapshot.recent_verification] == ["failed"]
+    assert [item.command for item in snapshot.recent_verification] == ["pytest -q"]
+    assert [item.detail for item in snapshot.recent_verification] == ["1 failed"]
 
 
 def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:
@@ -805,6 +833,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Explore Turns" in status_result.output
     assert "Explore History" in status_result.output
     assert "What file did you mention?" in status_result.output
+    assert "pytest -q" in status_result.output
+    assert "1 failed" in status_result.output
 
     assert list_result.exit_code == 0
     assert session_id in list_result.output
@@ -826,6 +856,7 @@ def test_status_and_session_commands_render_persisted_state(
     assert "verification failed; returning to execute for fixes" in show_result.output
     assert "Completion Decision" in show_result.output
     assert "Completion Trace" in show_result.output
+    assert "Recent Verification" in show_result.output
     assert "continuation_check" in show_result.output
     assert "completion -> finalize" in show_result.output
     assert "Finalizing completed turn" in show_result.output
@@ -833,6 +864,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Workflow Timeline" in show_result.output
     assert "handoff" in show_result.output
     assert "next=verify" in show_result.output
+    assert "pytest -q" in show_result.output
+    assert "1 failed" in show_result.output
 
     assert workflow_result.exit_code == 0
     assert "Loader Workflow" in workflow_result.output
@@ -949,6 +982,7 @@ def test_status_command_renders_latest_policy_summary(
     assert "verification failed for `pytest -q`" in result.output
     assert "Observed Verification" in result.output
     assert "verification failed for `pytest -q` [1 failed]" in result.output
+    assert "Recent Verification" in result.output
     assert "policy-stage=definition_of_done" in result.output
 
 
