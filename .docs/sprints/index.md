@@ -71,6 +71,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 18](sprint18.md) — Shell Minimalism, Completion Contract, and Runtime Policy Trace
 
+## Phase 17: Facade Finalization and Policy Accountability
+
+- [Sprint 19](sprint19.md) — Facade Finalization, Continuation Hardening, and Unified Policy Timeline
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
