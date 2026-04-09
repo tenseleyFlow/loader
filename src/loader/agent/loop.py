@@ -1,4 +1,14 @@
-"""The main agent loop."""
+"""Public Loader agent facade.
+
+The long-term shell boundary is now intentional:
+
+- `Agent` owns public construction, workspace/config bootstrap, and compatibility
+  properties used by the CLI, UI, and tests.
+- `Agent` delegates prompt/session lifecycle plus runtime entrypoints to
+  `loader.runtime.public_shell`.
+- `Agent` does not directly own turn orchestration, workflow routing, completion
+  policy, or explore runtime behavior.
+"""
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -91,7 +101,7 @@ class AgentConfig:
 
 
 class Agent:
-    """The main agent that orchestrates the LLM and tools."""
+    """Thin public facade over the runtime-owned shell and launcher."""
 
     def __init__(
         self,
