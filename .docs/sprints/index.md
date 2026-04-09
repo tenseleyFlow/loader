@@ -99,6 +99,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 25](sprint25.md) — Public Runtime API, Verification Attempts, and Boundary Narrowing
 
+## Phase 24: Attempt Histories and Runtime API Delamination
+
+- [Sprint 26](sprint26.md) — Verification Attempt Timelines and Public Facade Delamination
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
