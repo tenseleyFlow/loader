@@ -20,6 +20,11 @@ from .evidence_provenance import (
     normalize_evidence_provenance,
     summarize_evidence_provenance,
 )
+from .verification_observations import (
+    VerificationObservation,
+    normalize_verification_observations,
+    summarize_verification_observations,
+)
 from .workflow_signals import WorkflowSignalExtractor, WorkflowSignalPacket
 
 
@@ -299,6 +304,7 @@ class WorkflowTimelineEntry:
     signal_summary: list[str] = field(default_factory=list)
     evidence_summary: list[str] = field(default_factory=list)
     evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
+    verification_observations: list[VerificationObservation] = field(default_factory=list)
     clarify_stage: str | None = None
     clarify_pressure_kind: str | None = None
     pressure_pass_complete: bool = False
@@ -326,6 +332,9 @@ class WorkflowTimelineEntry:
             "evidence_summary": list(self.evidence_summary),
             "evidence_provenance": [
                 item.to_dict() for item in self.evidence_provenance
+            ],
+            "verification_observations": [
+                item.to_dict() for item in self.verification_observations
             ],
             "clarify_stage": self.clarify_stage,
             "clarify_pressure_kind": self.clarify_pressure_kind,
@@ -356,6 +365,9 @@ class WorkflowTimelineEntry:
             evidence_summary=_string_list(data.get("evidence_summary")),
             evidence_provenance=normalize_evidence_provenance(
                 data.get("evidence_provenance")
+            ),
+            verification_observations=normalize_verification_observations(
+                data.get("verification_observations")
             ),
             clarify_stage=_optional_text(data.get("clarify_stage")),
             clarify_pressure_kind=_optional_text(data.get("clarify_pressure_kind")),
@@ -427,6 +439,7 @@ class WorkflowTimelineEntry:
         signal_summary: list[str] | None = None,
         evidence_summary: list[str] | None = None,
         evidence_provenance: list[EvidenceProvenance] | None = None,
+        verification_observations: list[VerificationObservation] | None = None,
         artifact_paths: list[str] | None = None,
     ) -> WorkflowTimelineEntry:
         """Build one typed non-routing accountability entry."""
@@ -439,6 +452,14 @@ class WorkflowTimelineEntry:
         else:
             resolved_decision_kind = str(decision_kind)
         resolved_provenance = list(evidence_provenance or [])
+        resolved_observations = list(verification_observations or [])
+        resolved_evidence_summary = list(
+            evidence_summary or summarize_evidence_provenance(resolved_provenance)
+        )
+        if not resolved_evidence_summary and resolved_observations:
+            resolved_evidence_summary = summarize_verification_observations(
+                resolved_observations
+            )
         return cls(
             timestamp=_utc_now(),
             kind=kind.value,
@@ -447,10 +468,9 @@ class WorkflowTimelineEntry:
             summary=summary,
             decision_kind=resolved_decision_kind,
             signal_summary=list(signal_summary or []),
-            evidence_summary=list(
-                evidence_summary or summarize_evidence_provenance(resolved_provenance)
-            ),
+            evidence_summary=resolved_evidence_summary,
             evidence_provenance=resolved_provenance,
+            verification_observations=resolved_observations,
             policy_stage=policy_stage,
             policy_outcome=policy_outcome,
             prompt_format=prompt_format,

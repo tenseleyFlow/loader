@@ -10,6 +10,11 @@ from .evidence_provenance import (
     normalize_evidence_provenance,
     summarize_evidence_provenance,
 )
+from .verification_observations import (
+    VerificationObservation,
+    normalize_verification_observations,
+    summarize_verification_observations,
+)
 from .workflow_policy import WorkflowTimelineEntry
 
 
@@ -23,6 +28,7 @@ class CompletionTraceEntry:
     decision_summary: str
     evidence_summary: list[str] = field(default_factory=list)
     evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
+    verification_observations: list[VerificationObservation] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the entry into persisted session state."""
@@ -34,6 +40,9 @@ class CompletionTraceEntry:
             "decision_summary": self.decision_summary,
             "evidence_summary": list(self.evidence_summary),
             "evidence_provenance": [item.to_dict() for item in self.evidence_provenance],
+            "verification_observations": [
+                item.to_dict() for item in self.verification_observations
+            ],
         }
 
     @classmethod
@@ -52,6 +61,9 @@ class CompletionTraceEntry:
             ],
             evidence_provenance=normalize_evidence_provenance(
                 data.get("evidence_provenance")
+            ),
+            verification_observations=normalize_verification_observations(
+                data.get("verification_observations")
             ),
         )
 
@@ -138,8 +150,10 @@ def _completion_trace_entry_from_timeline_entry(
         evidence_summary=list(
             entry.evidence_summary
             or summarize_evidence_provenance(entry.evidence_provenance)
+            or summarize_verification_observations(entry.verification_observations)
         ),
         evidence_provenance=list(entry.evidence_provenance),
+        verification_observations=list(entry.verification_observations),
     )
 
 
