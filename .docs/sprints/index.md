@@ -95,6 +95,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 24](sprint24.md) — TUI Runtime Convergence, Verification Lifecycle, and Facade Narrowing
 
+## Phase 23: External Runtime Boundary and Verification Attempt Semantics
+
+- [Sprint 25](sprint25.md) — Public Runtime API, Verification Attempts, and Boundary Narrowing
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
