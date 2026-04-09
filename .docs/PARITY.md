@@ -2,7 +2,7 @@
 
 Date: 2026-04-09
 
-Deterministic baseline: `uv run pytest -q` → `388 passed`
+Deterministic baseline: `uv run pytest -q` → `397 passed`
 
 This file tracks the current deterministic runtime baseline for Loader. It stays intentionally narrow and operational: what the runtime can do today, what remains weak, and what scenarios we measure with repeatable tests.
 
@@ -87,10 +87,13 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - completion stop/continue policy now cites observed verification facts when available, and exhausted continuation failures preserve those observed verification results in the canonical accountability story instead of only reporting generic missing evidence
 - `loader status`, `loader session show`, and `loader workflow show` now surface observed verification directly, and `Recent Verification` is unified from canonical policy observations first with DoD evidence only as a fallback
 - Loader now has a runtime-owned internal execution handle in `src/loader/runtime/runtime_handle.py`, and runtime-oriented launcher/bootstrap/public-shell tests no longer need to treat `Agent` as the only valid runtime owner
+- non-TUI CLI paths, `loader explore`, and the scripted runtime harness now default to the runtime-first owner seam below `Agent`, so Loader uses `RuntimeHandle` in real internal integrations instead of reserving it for tests
+- persisted session state now records the active runtime-owner path, and `loader status`, `loader session list/show`, and `loader workflow show` surface that runtime-owner provenance directly
+- verification now emits per-command `verify_observation` events into the canonical workflow timeline while the verification loop is running, and workflow/policy read models project those entries as first-class accountability state
 
 ## Known weak spots
 
-- the public runtime boundary is now explicit and runtime-shaped, and Loader now also has a runtime-first internal owner, but `Agent` still constructs and supplies the main public boundary instead of collapsing to a narrower runtime-first external API; Sprint 22 also did not yet promote additional real integration paths to that runtime-first seam
+- the public runtime boundary is now explicit and runtime-shaped, and Loader now also has real runtime-first internal integrations through `RuntimeHandle`, but `Agent` still constructs and supplies the main public boundary and the TUI still routes through that public shell instead of a narrower runtime-first external API
 - [`src/loader/agent/loop.py`](../src/loader/agent/loop.py) is down to 267 lines and much closer to a public facade than the pre-Sprint-15 shell, but it still owns the compatibility shell and remaining launcher/UI glue instead of disappearing entirely
 - [`src/loader/agent/reasoning.py`](../src/loader/agent/reasoning.py) and [`src/loader/agent/safeguards.py`](../src/loader/agent/safeguards.py) are now compatibility shims rather than primary implementations, but they still remain as export layers until Loader narrows its external compatibility surface further
 - [`src/loader/runtime/tool_batches.py`](../src/loader/runtime/tool_batches.py) and parts of [`src/loader/runtime/workflow_lanes.py`](../src/loader/runtime/workflow_lanes.py) are narrower and more directly tested than before, but they still carry more heuristic policy than the tightest reference seams in `refs/claw-code`
@@ -160,7 +163,7 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-09:
 
-- `uv run pytest -q`: 380 passed
+- `uv run pytest -q`: 397 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_prompt_builder.py` covers section rendering, native-vs-ReAct formatting, and prompt metadata persistence
 - `tests/test_turn_state_machine.py` covers allowed/disallowed turn transitions and terminal transition metadata
@@ -197,11 +200,13 @@ As of 2026-04-09:
 - `tests/test_verification_observations.py` covers typed verification-observation serialization and normalization
 - `tests/test_workflow_timeline_read_model.py` covers grouped supporting/missing policy-evidence rollups, latest-policy derivation, and observed-verification read models from the canonical workflow timeline
 - `tests/test_runtime_handle.py` covers the runtime-owned internal handle below `Agent`, including direct launcher/context/runtime construction without depending on the public compatibility facade
+- `tests/test_cli_runtime_owner.py` covers runtime-first CLI owner selection for non-TUI and explore paths
 - `tests/test_explore_runtime.py` covers the direct explore lane contract, forced read-only behavior, persisted follow-up continuity, persisted `fresh` vs `continue` visibility, and `fresh` explore resets outside the parity harness
 - `tests/test_expanded_tools.py` covers structured patch application, read-only git helpers, `notepad_append`, and richer structured user questions
 - `tests/test_permissions.py` covers prompt/allow mode parsing, rule precedence, policy-backed prompting behavior, and hook lifecycle ordering
 - `tests/test_tool_safety.py` covers workspace boundaries, binary/oversize guards, patch metadata, and shell truncation/classification
 - `tests/test_status_surfaces.py` covers the CLI/TUI DoD, workflow-mode, permission-mode, capability-profile, and session-id formatting helpers
+- `tests/test_runtime_public_shell.py`, `tests/test_session_state.py`, and `tests/test_inspection.py` now also cover persisted runtime-owner metadata plus its status/session/workflow rendering
 - native and extracted tool calls now record the same executor trace events, with source-specific metadata
 - turn startup can refine backend capability profiles before the first request, `run_streaming()` delegates into the main runtime path, mutating tasks route through persisted evidence-backed completion, workflow artifacts and workflow-ledger state survive across turns, sessions compact safely, explore queries bypass DoD/router overhead safely, policy rules are enforced deterministically, operators can inspect/dry-run policy decisions without live turns, prompt construction is sectioned and persisted, prompt snapshots and artifact diffs are inspectable after the fact, explicit turn phases are visible while a turn runs, session inspection preserves effective policy state, typed workflow signals now feed routing directly, semantic invalidation can force targeted refresh vs full re-plan, brownfield clarify can ask evidence-backed questions from repo facts, and the turn runtime now avoids the older synthetic repair/no-tool puppeting while routing assistant outcomes through dedicated controllers instead of a single conversation-loop monolith
 
@@ -231,3 +236,4 @@ As of 2026-04-09:
 - Sprint 20 is complete: Loader now treats the workflow timeline as the canonical policy/accountability artifact even for live completion-trace projection, grounds more follow-through decisions in DoD verification state and tracked runtime evidence, exposes latest-policy rollups in the existing status/session surfaces, and explicitly settles the remaining `Agent` shell as a documented public facade guarded by boundary tests, but it still stops short of claw-code's fuller policy engine, a narrower runtime-first external API, and OMX's deeper verifier/interview rigor.
 - Sprint 21 is complete: Loader now carries typed evidence provenance through canonical policy events, derives grouped policy-evidence rollups from one shared workflow-timeline read model, exposes “needed” vs “satisfied” evidence in `loader status` / `loader session show` / `loader workflow show`, and provides a runtime-owned internal handle so runtime-oriented code and tests no longer need to treat `Agent` as the only valid execution owner, but it still stops short of claw-code's fuller policy engine, a narrower runtime-first external API, and OMX's deeper verifier/interview rigor.
 - Sprint 22 is complete on the verification-observation lane: Loader now captures typed verification observations closer to execution, carries those observations through canonical policy events and completion-stop decisions, and surfaces observed verification plus a unified `Recent Verification` view in `loader status` / `loader session show` / `loader workflow show`, but the planned runtime-first entry promotion beyond tests did not land and rolls forward as Sprint 23 debt alongside Loader's remaining gap to claw-code's fuller policy engine and OMX's deeper verifier/interview rigor.
+- Sprint 23 is complete: Loader now uses the runtime-first seam in real internal integrations through `RuntimeHandle`, emits per-command `verify_observation` events while the verification loop runs, and surfaces persisted runtime-owner provenance in the existing operator views, but it still stops short of a narrower runtime-first public API, TUI migration away from the public shell, claw-code's fuller policy engine, and OMX's deeper verifier/interview rigor.

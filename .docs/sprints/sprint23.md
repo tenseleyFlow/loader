@@ -156,3 +156,28 @@ The goal is to make Loader easier to audit after the fact, not simply more verbo
 - AST-aware semantic diffs
 - a broad visual workflow UI
 - multi-agent or team orchestration
+
+## Audit
+
+### Status
+
+- Sprint 23 is complete, and the audit is green. Loader now uses the runtime-first seam in real internal integrations, captures verification observations closer to the moment verification runs, and exposes runtime-owner provenance in the same operator surfaces that already carry policy and workflow accountability.
+
+### Landed
+
+- runtime-first ownership is now materially real outside tests: `src/loader/runtime/runtime_handle.py` now owns direct `run` / `run_streaming` / `run_explore` entrypoints, `src/loader/cli/main.py` routes non-TUI CLI and `loader explore` through that runtime-first owner by default, and `tests/helpers/runtime_harness.py` now uses `RuntimeHandle` for scripted runtime scenarios instead of instantiating `Agent` by habit
+- verification observations now enter the canonical accountability story closer to execution: `src/loader/runtime/finalization.py`, `src/loader/runtime/workflow_policy.py`, `src/loader/runtime/policy_timeline.py`, and `src/loader/runtime/workflow_timeline_read_model.py` now persist and project per-command `verify_observation` entries, so Loader can explain what verification actually ran and what it observed instead of only summarizing that state later
+- runtime-owner provenance is now part of persisted session state and inspection: `src/loader/runtime/owner_metadata.py`, `src/loader/runtime/bootstrap.py`, `src/loader/runtime/public_shell.py`, and `src/loader/runtime/session.py` now persist owner-path metadata, while `src/loader/runtime/inspection.py` and `src/loader/cli/main.py` surface that metadata in `loader status`, `loader session list/show`, and `loader workflow show`
+
+### Verification
+
+- `uv run pytest -q` is green: `397 passed`
+- `tests/test_runtime_handle.py`, `tests/test_cli_runtime_owner.py`, and `tests/helpers/runtime_harness.py` now pin real runtime-first integration paths below `Agent`
+- `tests/test_finalization.py` and `tests/test_workflow_timeline_read_model.py` now pin per-command verification-observation entries and their projection into workflow/policy views
+- `tests/test_session_state.py`, `tests/test_runtime_public_shell.py`, `tests/test_runtime_bootstrap.py`, `tests/test_runtime_launcher.py`, and `tests/test_inspection.py` now cover persisted runtime-owner metadata plus its status/session/workflow rendering
+
+### Residual debt
+
+- Loader now has real runtime-first internal integrations, but the TUI still routes through the public `Agent` facade and the public shell still remains the outermost construction contract for external integrations
+- verification observations are now closer to execution, but they are still strongest around the verification loop/finalization path; Loader still does not yet emit a richer lifecycle story for planned, pending, or stale verification outside that bounded lane
+- the new owner-path visibility makes runtime-first adoption auditable, but Loader still stops short of a narrower public runtime API, claw-code's fuller policy engine, and OMX's deeper verifier/interview rigor
