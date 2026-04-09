@@ -24,6 +24,7 @@ from .evidence_provenance import (
 )
 from .executor import ToolExecutor
 from .memory import MemoryStore
+from .policy_timeline import append_verification_timeline_entry
 from .session import normalize_usage
 from .tracing import RuntimeTracer
 from .verification_observations import (
@@ -334,6 +335,16 @@ class TurnFinalizer:
         await self.emit_dod_status(emit, dod)
 
         if not dod.verification_commands:
+            missing_provenance = _missing_verification_provenance()
+            missing_observations = _missing_verification_observations()
+            append_verification_timeline_entry(
+                self.context,
+                summary,
+                reason_code="verification_commands_missing",
+                reason_summary="verification commands were still missing at execution time",
+                evidence_provenance=missing_provenance,
+                verification_observations=missing_observations,
+            )
             summary.verification_status = "failed"
             return False
 
@@ -383,6 +394,24 @@ class TurnFinalizer:
                 kind=_classify_verification_kind(command),
             )
             dod.evidence.append(evidence)
+            observation = _verification_observation_from_evidence(evidence)
+            provenance = _verification_provenance_from_evidence(evidence)
+            append_verification_timeline_entry(
+                self.context,
+                summary,
+                reason_code=(
+                    "verification_command_passed"
+                    if evidence.passed
+                    else "verification_command_failed"
+                ),
+                reason_summary=(
+                    f"verification passed for `{command}`"
+                    if evidence.passed
+                    else f"verification failed for `{command}`"
+                ),
+                evidence_provenance=provenance,
+                verification_observations=[observation],
+            )
             all_passed = all_passed and evidence.passed
             summary.tool_result_messages.append(outcome.message)
             self.context.session.append(outcome.message)
@@ -606,6 +635,72 @@ def _verification_result_observations(
         VerificationObservation(
             status=VerificationObservationStatus.MISSING.value,
             summary="verification commands were still missing at execution time",
+        )
+    ]
+
+
+def _verification_observation_from_evidence(
+    evidence: VerificationEvidence,
+) -> VerificationObservation:
+    command = evidence.command or "verification"
+    return VerificationObservation(
+        status=(
+            VerificationObservationStatus.PASSED.value
+            if evidence.passed
+            else VerificationObservationStatus.FAILED.value
+        ),
+        summary=(
+            f"verification passed for `{command}`"
+            if evidence.passed
+            else f"verification failed for `{command}`"
+        ),
+        command=evidence.command or None,
+        kind=evidence.kind,
+        exit_code=evidence.exit_code,
+        detail=_verification_detail(evidence),
+    )
+
+
+def _verification_provenance_from_evidence(
+    evidence: VerificationEvidence,
+) -> list[EvidenceProvenance]:
+    command = evidence.command or "verification"
+    return [
+        EvidenceProvenance(
+            category="verification",
+            source="dod.evidence",
+            summary=(
+                f"verification passed for `{command}`"
+                if evidence.passed
+                else f"verification failed for `{command}`"
+            ),
+            status=(
+                EvidenceProvenanceStatus.SUPPORTS.value
+                if evidence.passed
+                else EvidenceProvenanceStatus.CONTRADICTS.value
+            ),
+            subject=command,
+            detail=_verification_detail(evidence),
+        )
+    ]
+
+
+def _missing_verification_observations() -> list[VerificationObservation]:
+    return [
+        VerificationObservation(
+            status=VerificationObservationStatus.MISSING.value,
+            summary="verification commands were still missing at execution time",
+        )
+    ]
+
+
+def _missing_verification_provenance() -> list[EvidenceProvenance]:
+    return [
+        EvidenceProvenance(
+            category="verification",
+            source="dod.verification_commands",
+            summary="verification commands were still missing at execution time",
+            status=EvidenceProvenanceStatus.MISSING.value,
         )
     ]
 

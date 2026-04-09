@@ -67,6 +67,7 @@ class WorkflowTimelineEntryKind(StrEnum):
     CLARIFY_CONTINUE = "clarify_continue"
     CLARIFY_EXIT = "clarify_exit"
     PLAN_REFRESH = "plan_refresh"
+    VERIFY_OBSERVATION = "verify_observation"
     VERIFY_SKIP = "verify_skip"
     COMPLETION_CHECK = "completion_check"
     COMPLETION_CONTINUE = "completion_continue"

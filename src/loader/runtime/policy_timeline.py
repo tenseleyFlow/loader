@@ -48,6 +48,38 @@ def append_policy_timeline_entry(
     return entry
 
 
+def append_verification_timeline_entry(
+    context: RuntimeContext,
+    summary: TurnSummary,
+    *,
+    reason_code: str,
+    reason_summary: str,
+    evidence_summary: list[str] | None = None,
+    evidence_provenance: list[EvidenceProvenance] | None = None,
+    verification_observations: list[VerificationObservation] | None = None,
+) -> WorkflowTimelineEntry:
+    """Append one verification-observation accountability event."""
+
+    observations = list(verification_observations or [])
+    policy_outcome = observations[0].status if observations else None
+    entry = WorkflowTimelineEntry.accountability(
+        kind=WorkflowTimelineEntryKind.VERIFY_OBSERVATION,
+        mode=context.workflow_mode,
+        reason_code=reason_code,
+        summary=f"verify: {reason_summary}",
+        policy_stage="verification",
+        policy_outcome=policy_outcome,
+        prompt_format=context.prompt_format,
+        prompt_sections=context.prompt_sections,
+        evidence_summary=evidence_summary,
+        evidence_provenance=evidence_provenance,
+        verification_observations=observations,
+    )
+    context.session.append_workflow_timeline_entry(entry)
+    summary.workflow_timeline = list(context.session.workflow_timeline)
+    return entry
+
+
 def completion_timeline_kind(
     *,
     stage: str,

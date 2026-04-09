@@ -339,6 +339,11 @@ async def test_turn_finalizer_records_passed_verification_observation(
     assert result.verification_observations[0].command == "uv run pytest -q"
     assert result.verification_observations[0].detail == "219 passed"
     assert summary.verification_status == "passed"
+    assert session.workflow_timeline[-1].kind == "verify_observation"
+    assert session.workflow_timeline[-1].reason_code == "verification_command_passed"
+    assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
+        VerificationObservationStatus.PASSED.value
+    ]
 
 
 @pytest.mark.asyncio
@@ -377,5 +382,10 @@ async def test_turn_finalizer_records_missing_verification_observation(
         "verification commands were still missing at execution time"
     ]
     assert summary.verification_status == "failed"
+    assert session.workflow_timeline[-1].kind == "verify_observation"
+    assert session.workflow_timeline[-1].reason_code == "verification_commands_missing"
+    assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
+        VerificationObservationStatus.MISSING.value
+    ]
     assert session.messages[-1].role == Role.USER
     assert session.messages[-1].content.startswith("[DEFINITION OF DONE CHECK FAILED]")
