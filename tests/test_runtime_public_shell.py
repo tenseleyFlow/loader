@@ -23,6 +23,7 @@ from loader.runtime.public_shell import (
     create_runtime_session_install,
     load_runtime_session_install,
     refresh_runtime_capability_state,
+    refresh_runtime_shell_capability_profile,
     restore_runtime_session_state,
     resume_runtime_shell_session,
 )
@@ -169,6 +170,28 @@ def test_refresh_runtime_capability_state_reports_prompt_reset_requirement() -> 
 
     assert refresh.capability_profile.supports_native_tools is False
     assert refresh.prompt_reset_required is True
+
+
+def test_refresh_runtime_shell_capability_profile_updates_agent_cache_state(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend(supports_native_tools=True)
+    agent = Agent(
+        backend=backend,
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+    agent._system_message = Message(role=Role.SYSTEM, content="cached")
+    agent._use_react = True
+    backend._supports_native_tools = False  # type: ignore[attr-defined]
+
+    refresh = refresh_runtime_shell_capability_profile(agent)
+
+    assert refresh.capability_profile.supports_native_tools is False
+    assert refresh.prompt_reset_required is True
+    assert agent.capability_profile.supports_native_tools is False
+    assert agent._system_message is None
+    assert agent._use_react is None
 
 
 def test_create_runtime_session_install_builds_restored_shell_state(

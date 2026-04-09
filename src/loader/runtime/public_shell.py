@@ -423,6 +423,22 @@ def refresh_runtime_capability_state(
     )
 
 
+def refresh_runtime_shell_capability_profile(
+    owner: RuntimeShellOwner,
+) -> CapabilityRefresh:
+    """Refresh backend capabilities and invalidate prompt caches as needed."""
+
+    refresh = refresh_runtime_capability_state(
+        backend=owner.backend,
+        current_profile=owner.capability_profile,
+    )
+    owner.capability_profile = refresh.capability_profile
+    if refresh.prompt_reset_required:
+        owner._system_message = None
+    owner._use_react = None
+    return refresh
+
+
 def build_runtime_system_message(
     *,
     registry: ToolRegistry,
