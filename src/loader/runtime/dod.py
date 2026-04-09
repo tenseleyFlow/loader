@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from ..llm.base import ToolCall
 from ..tools.shell_tools import BashTool
+from .verification_observations import VerificationAttempt, verification_attempt_id
 
 TaskSize = Literal["small", "standard", "large"]
 DoDStatus = Literal["draft", "in_progress", "verifying", "fixing", "done", "failed"]
@@ -53,6 +54,9 @@ class DefinitionOfDone:
     line_changes: int = 0
     storage_path: str | None = None
     last_verification_result: str | None = None
+    verification_attempt_counter: int = 0
+    active_verification_attempt_id: str | None = None
+    active_verification_attempt_number: int | None = None
     current_mode: str = "execute"
     mode_history: list[str] = field(default_factory=list)
     clarify_brief: str | None = None
@@ -88,6 +92,13 @@ class DefinitionOfDone:
             line_changes=int(data.get("line_changes", 0)),
             storage_path=data.get("storage_path"),
             last_verification_result=data.get("last_verification_result"),
+            verification_attempt_counter=int(data.get("verification_attempt_counter", 0)),
+            active_verification_attempt_id=data.get("active_verification_attempt_id"),
+            active_verification_attempt_number=(
+                int(data["active_verification_attempt_number"])
+                if data.get("active_verification_attempt_number") is not None
+                else None
+            ),
             current_mode=data.get("current_mode", "execute"),
             mode_history=list(data.get("mode_history", [])),
             clarify_brief=data.get("clarify_brief"),
@@ -253,6 +264,46 @@ def build_verification_summary(evidence: list[VerificationEvidence]) -> str:
         else:
             lines.append(f"- `{item.command}`: {status}")
     return "\n".join(lines)
+
+
+def ensure_active_verification_attempt(dod: DefinitionOfDone) -> VerificationAttempt:
+    """Return the current verification attempt, synthesizing one if needed."""
+
+    if (
+        dod.active_verification_attempt_id
+        and dod.active_verification_attempt_number is not None
+    ):
+        return VerificationAttempt(
+            attempt_id=dod.active_verification_attempt_id,
+            attempt_number=dod.active_verification_attempt_number,
+        )
+
+    next_number = max(int(dod.verification_attempt_counter or 0), 1)
+    dod.verification_attempt_counter = next_number
+    dod.active_verification_attempt_number = next_number
+    dod.active_verification_attempt_id = verification_attempt_id(next_number)
+    return VerificationAttempt(
+        attempt_id=dod.active_verification_attempt_id,
+        attempt_number=next_number,
+    )
+
+
+def begin_new_verification_attempt(
+    dod: DefinitionOfDone,
+    *,
+    supersedes_attempt_id: str | None = None,
+) -> VerificationAttempt:
+    """Start the next verification attempt and mark it as active."""
+
+    next_number = max(int(dod.verification_attempt_counter or 0), 0) + 1
+    dod.verification_attempt_counter = next_number
+    dod.active_verification_attempt_number = next_number
+    dod.active_verification_attempt_id = verification_attempt_id(next_number)
+    return VerificationAttempt(
+        attempt_id=dod.active_verification_attempt_id,
+        attempt_number=next_number,
+        supersedes_attempt_id=supersedes_attempt_id,
+    )
 
 
 class DefinitionOfDoneStore:

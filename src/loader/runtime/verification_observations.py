@@ -7,6 +7,15 @@ from enum import StrEnum
 from typing import Any
 
 
+@dataclass(slots=True, frozen=True)
+class VerificationAttempt:
+    """Identity for one verification attempt across lifecycle events."""
+
+    attempt_id: str
+    attempt_number: int
+    supersedes_attempt_id: str | None = None
+
+
 class VerificationObservationStatus(StrEnum):
     """How one verification observation resolved at runtime."""
 
@@ -29,6 +38,9 @@ class VerificationObservation:
     kind: str | None = None
     exit_code: int | None = None
     detail: str | None = None
+    attempt_id: str | None = None
+    attempt_number: int | None = None
+    supersedes_attempt_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize one observation for persisted runtime state."""
@@ -40,6 +52,9 @@ class VerificationObservation:
             "kind": self.kind,
             "exit_code": self.exit_code,
             "detail": self.detail,
+            "attempt_id": self.attempt_id,
+            "attempt_number": self.attempt_number,
+            "supersedes_attempt_id": self.supersedes_attempt_id,
         }
 
     @classmethod
@@ -53,7 +68,16 @@ class VerificationObservation:
             kind=_optional_text(data.get("kind")),
             exit_code=_optional_int(data.get("exit_code")),
             detail=_optional_text(data.get("detail")),
+            attempt_id=_optional_text(data.get("attempt_id")),
+            attempt_number=_optional_int(data.get("attempt_number")),
+            supersedes_attempt_id=_optional_text(data.get("supersedes_attempt_id")),
         )
+
+
+def verification_attempt_id(attempt_number: int) -> str:
+    """Build the canonical persisted verification-attempt identifier."""
+
+    return f"verification-attempt-{attempt_number}"
 
 
 def normalize_verification_observation_status(value: Any) -> str:

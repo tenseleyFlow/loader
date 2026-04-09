@@ -27,6 +27,9 @@ def test_normalize_verification_observations_round_trips_entries() -> None:
                 "kind": "test",
                 "exit_code": 0,
                 "detail": "219 passed",
+                "attempt_id": "verification-attempt-3",
+                "attempt_number": 3,
+                "supersedes_attempt_id": "verification-attempt-2",
             }
         ]
     )
@@ -39,6 +42,9 @@ def test_normalize_verification_observations_round_trips_entries() -> None:
             kind="test",
             exit_code=0,
             detail="219 passed",
+            attempt_id="verification-attempt-3",
+            attempt_number=3,
+            supersedes_attempt_id="verification-attempt-2",
         )
     ]
 

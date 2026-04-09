@@ -336,6 +336,8 @@ async def test_turn_finalizer_records_passed_verification_observation(
     assert [item.status for item in result.verification_observations] == [
         VerificationObservationStatus.PASSED.value
     ]
+    assert result.verification_observations[0].attempt_id == "verification-attempt-1"
+    assert result.verification_observations[0].attempt_number == 1
     assert result.verification_observations[0].command == "uv run pytest -q"
     assert result.verification_observations[0].detail == "219 passed"
     assert summary.verification_status == "passed"
@@ -346,6 +348,10 @@ async def test_turn_finalizer_records_passed_verification_observation(
     assert [item.status for item in session.workflow_timeline[-2].verification_observations] == [
         VerificationObservationStatus.PENDING.value
     ]
+    assert (
+        session.workflow_timeline[-2].verification_observations[0].attempt_id
+        == "verification-attempt-1"
+    )
     assert session.workflow_timeline[-2].verification_observations[0].command == (
         "uv run pytest -q"
     )
@@ -354,6 +360,10 @@ async def test_turn_finalizer_records_passed_verification_observation(
     assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
         VerificationObservationStatus.PASSED.value
     ]
+    assert (
+        session.workflow_timeline[-1].verification_observations[0].attempt_id
+        == "verification-attempt-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -388,6 +398,8 @@ async def test_turn_finalizer_records_missing_verification_observation(
     assert [item.status for item in result.verification_observations] == [
         VerificationObservationStatus.MISSING.value
     ]
+    assert result.verification_observations[0].attempt_id == "verification-attempt-1"
+    assert result.verification_observations[0].attempt_number == 1
     assert [item.summary for item in result.verification_observations] == [
         "verification commands were still missing at execution time"
     ]
@@ -397,5 +409,9 @@ async def test_turn_finalizer_records_missing_verification_observation(
     assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
         VerificationObservationStatus.MISSING.value
     ]
+    assert (
+        session.workflow_timeline[-1].verification_observations[0].attempt_id
+        == "verification-attempt-1"
+    )
     assert session.messages[-1].role == Role.USER
     assert session.messages[-1].content.startswith("[DEFINITION OF DONE CHECK FAILED]")

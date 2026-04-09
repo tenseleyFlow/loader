@@ -10,7 +10,9 @@ from .context import RuntimeContext
 from .dod import (
     DefinitionOfDone,
     DefinitionOfDoneStore,
+    begin_new_verification_attempt,
     derive_verification_commands,
+    ensure_active_verification_attempt,
     is_state_mutating_tool_call,
     record_successful_tool_call,
 )
@@ -238,6 +240,11 @@ def _mark_verification_stale(
     tool_call: ToolCall,
 ) -> None:
     detail = _stale_verification_detail(tool_call)
+    stale_attempt = ensure_active_verification_attempt(dod)
+    next_attempt = begin_new_verification_attempt(
+        dod,
+        supersedes_attempt_id=stale_attempt.attempt_id,
+    )
     append_verification_timeline_entry(
         context,
         summary,
@@ -248,6 +255,9 @@ def _mark_verification_stale(
         verification_observations=_stale_verification_observations(
             dod,
             detail=detail,
+            stale_attempt_id=stale_attempt.attempt_id,
+            stale_attempt_number=stale_attempt.attempt_number,
+            superseded_by_attempt_id=next_attempt.attempt_id,
         ),
     )
     dod.last_verification_result = VerificationObservationStatus.STALE.value
@@ -281,6 +291,7 @@ def _mark_verification_planned(
     if not commands:
         return
 
+    attempt = begin_new_verification_attempt(dod)
     detail = _stale_verification_detail(tool_call)
     append_verification_timeline_entry(
         context,
@@ -306,6 +317,8 @@ def _mark_verification_planned(
                 command=command,
                 kind="runtime",
                 detail=detail,
+                attempt_id=attempt.attempt_id,
+                attempt_number=attempt.attempt_number,
             )
             for command in commands
         ],
@@ -321,6 +334,9 @@ def _stale_verification_observations(
     dod: DefinitionOfDone,
     *,
     detail: str,
+    stale_attempt_id: str,
+    stale_attempt_number: int,
+    superseded_by_attempt_id: str,
 ) -> list[VerificationObservation]:
     return [
         VerificationObservation(
@@ -329,6 +345,9 @@ def _stale_verification_observations(
             command=command,
             kind="runtime",
             detail=detail,
+            attempt_id=stale_attempt_id,
+            attempt_number=stale_attempt_number,
+            supersedes_attempt_id=superseded_by_attempt_id,
         )
         for command in _stale_verification_commands(dod)
     ]

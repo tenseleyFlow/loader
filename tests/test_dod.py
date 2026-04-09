@@ -5,9 +5,11 @@ from pathlib import Path
 from loader.llm.base import ToolCall
 from loader.runtime.dod import (
     DefinitionOfDoneStore,
+    begin_new_verification_attempt,
     create_definition_of_done,
     derive_verification_commands,
     determine_task_size,
+    ensure_active_verification_attempt,
     record_successful_tool_call,
 )
 
@@ -31,6 +33,7 @@ def test_definition_of_done_round_trip(tmp_path: Path) -> None:
     dod.retry_count = 1
     dod.verification_commands = ["python hello.py"]
     dod.touched_files = [str(tmp_path / "hello.py")]
+    attempt = begin_new_verification_attempt(dod)
     saved_path = store.save(dod)
 
     reloaded = store.load(saved_path)
@@ -40,6 +43,20 @@ def test_definition_of_done_round_trip(tmp_path: Path) -> None:
     assert reloaded.retry_count == 1
     assert reloaded.verification_commands == ["python hello.py"]
     assert reloaded.touched_files == [str(tmp_path / "hello.py")]
+    assert reloaded.active_verification_attempt_id == attempt.attempt_id
+    assert reloaded.active_verification_attempt_number == attempt.attempt_number
+
+
+def test_ensure_active_verification_attempt_rehydrates_missing_active_attempt() -> None:
+    dod = create_definition_of_done("Verify the runtime output.")
+    dod.verification_attempt_counter = 2
+
+    attempt = ensure_active_verification_attempt(dod)
+
+    assert attempt.attempt_id == "verification-attempt-2"
+    assert attempt.attempt_number == 2
+    assert dod.active_verification_attempt_id == "verification-attempt-2"
+    assert dod.active_verification_attempt_number == 2
 
 
 def test_verification_command_derivation_prefers_runtime_evidence(tmp_path: Path) -> None:

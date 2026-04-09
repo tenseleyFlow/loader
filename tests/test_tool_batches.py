@@ -396,9 +396,18 @@ async def test_tool_batch_runner_marks_verification_planned_after_new_mutation(
     assert dod.last_verification_result == "planned"
     assert dod.verification_commands
     assert "Collect verification evidence" in dod.pending_items
+    assert dod.active_verification_attempt_id == "verification-attempt-1"
+    assert dod.active_verification_attempt_number == 1
     assert summary.workflow_timeline[-1].reason_code == "verification_planned"
     assert summary.workflow_timeline[-1].policy_outcome == "planned"
     assert summary.workflow_timeline[-1].verification_observations[0].status == "planned"
+    assert (
+        summary.workflow_timeline[-1].verification_observations[0].attempt_id
+        == "verification-attempt-1"
+    )
+    assert (
+        summary.workflow_timeline[-1].verification_observations[0].attempt_number == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -440,6 +449,9 @@ async def test_tool_batch_runner_marks_passed_verification_stale_after_new_mutat
     dod = create_definition_of_done("Update README and verify it still works.")
     dod.verification_commands = ["uv run pytest -q"]
     dod.last_verification_result = "passed"
+    dod.verification_attempt_counter = 1
+    dod.active_verification_attempt_id = "verification-attempt-1"
+    dod.active_verification_attempt_number = 1
     dod.evidence = [
         VerificationEvidence(
             command="uv run pytest -q",
@@ -472,9 +484,22 @@ async def test_tool_batch_runner_marks_passed_verification_stale_after_new_mutat
     assert dod.evidence == []
     assert "Collect verification evidence" in dod.pending_items
     assert "Collect verification evidence" not in dod.completed_items
+    assert dod.active_verification_attempt_id == "verification-attempt-2"
+    assert dod.active_verification_attempt_number == 2
     assert summary.workflow_timeline[-1].reason_code == "verification_stale"
     assert summary.workflow_timeline[-1].policy_outcome == "stale"
     assert summary.workflow_timeline[-1].verification_observations[0].status == "stale"
+    assert (
+        summary.workflow_timeline[-1].verification_observations[0].attempt_id
+        == "verification-attempt-1"
+    )
+    assert (
+        summary.workflow_timeline[-1].verification_observations[0].attempt_number == 1
+    )
+    assert (
+        summary.workflow_timeline[-1].verification_observations[0].supersedes_attempt_id
+        == "verification-attempt-2"
+    )
     assert (
         summary.workflow_timeline[-1].verification_observations[0].command
         == "uv run pytest -q"

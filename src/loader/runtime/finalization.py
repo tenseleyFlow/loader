@@ -15,6 +15,7 @@ from .dod import (
     VerificationEvidence,
     build_verification_summary,
     derive_verification_commands,
+    ensure_active_verification_attempt,
 )
 from .events import AgentEvent, TurnSummary
 from .evidence_provenance import (
@@ -221,6 +222,7 @@ class TurnFinalizer:
             summary=summary,
         )
         if dod.verification_commands:
+            attempt = ensure_active_verification_attempt(dod)
             dod.last_verification_result = VerificationObservationStatus.PENDING.value
             self.dod_store.save(dod)
             append_verification_timeline_entry(
@@ -235,7 +237,11 @@ class TurnFinalizer:
                     for command in dod.verification_commands[:2]
                 ],
                 evidence_provenance=_pending_verification_provenance(dod),
-                verification_observations=_pending_verification_observations(dod),
+                verification_observations=_pending_verification_observations(
+                    dod,
+                    attempt_id=attempt.attempt_id,
+                    attempt_number=attempt.attempt_number,
+                ),
             )
         verification_passed = await self.verify_definition_of_done(
             dod=dod,
@@ -246,6 +252,8 @@ class TurnFinalizer:
         verification_observations = _verification_result_observations(
             dod,
             passed=verification_passed,
+            attempt_id=dod.active_verification_attempt_id,
+            attempt_number=dod.active_verification_attempt_number,
         )
         if verification_passed:
             passed_provenance = _verification_result_provenance(dod, passed=True)
@@ -350,10 +358,14 @@ class TurnFinalizer:
         dod.status = "verifying"
         self.dod_store.save(dod)
         await self.emit_dod_status(emit, dod)
+        attempt = ensure_active_verification_attempt(dod)
 
         if not dod.verification_commands:
             missing_provenance = _missing_verification_provenance()
-            missing_observations = _missing_verification_observations()
+            missing_observations = _missing_verification_observations(
+                attempt_id=attempt.attempt_id,
+                attempt_number=attempt.attempt_number,
+            )
             append_verification_timeline_entry(
                 self.context,
                 summary,
@@ -411,7 +423,11 @@ class TurnFinalizer:
                 kind=_classify_verification_kind(command),
             )
             dod.evidence.append(evidence)
-            observation = _verification_observation_from_evidence(evidence)
+            observation = _verification_observation_from_evidence(
+                evidence,
+                attempt_id=attempt.attempt_id,
+                attempt_number=attempt.attempt_number,
+            )
             provenance = _verification_provenance_from_evidence(evidence)
             append_verification_timeline_entry(
                 self.context,
@@ -602,6 +618,8 @@ def _verification_result_observations(
     dod: DefinitionOfDone,
     *,
     passed: bool,
+    attempt_id: str | None,
+    attempt_number: int | None,
 ) -> list[VerificationObservation]:
     entries: list[VerificationObservation] = []
     target_status = (
@@ -627,6 +645,8 @@ def _verification_result_observations(
                 kind=evidence.kind,
                 exit_code=evidence.exit_code,
                 detail=_verification_detail(evidence),
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
             )
         )
 
@@ -642,6 +662,8 @@ def _verification_result_observations(
                 summary=f"verification did not produce an observed result for `{command}`",
                 command=command,
                 kind=_classify_verification_kind(command),
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
             )
         )
 
@@ -652,12 +674,17 @@ def _verification_result_observations(
         VerificationObservation(
             status=VerificationObservationStatus.MISSING.value,
             summary="verification commands were still missing at execution time",
+            attempt_id=attempt_id,
+            attempt_number=attempt_number,
         )
     ]
 
 
 def _verification_observation_from_evidence(
     evidence: VerificationEvidence,
+    *,
+    attempt_id: str | None,
+    attempt_number: int | None,
 ) -> VerificationObservation:
     command = evidence.command or "verification"
     return VerificationObservation(
@@ -675,6 +702,8 @@ def _verification_observation_from_evidence(
         kind=evidence.kind,
         exit_code=evidence.exit_code,
         detail=_verification_detail(evidence),
+        attempt_id=attempt_id,
+        attempt_number=attempt_number,
     )
 
 
@@ -702,11 +731,17 @@ def _verification_provenance_from_evidence(
     ]
 
 
-def _missing_verification_observations() -> list[VerificationObservation]:
+def _missing_verification_observations(
+    *,
+    attempt_id: str | None,
+    attempt_number: int | None,
+) -> list[VerificationObservation]:
     return [
         VerificationObservation(
             status=VerificationObservationStatus.MISSING.value,
             summary="verification commands were still missing at execution time",
+            attempt_id=attempt_id,
+            attempt_number=attempt_number,
         )
     ]
 
@@ -724,6 +759,9 @@ def _missing_verification_provenance() -> list[EvidenceProvenance]:
 
 def _pending_verification_observations(
     dod: DefinitionOfDone,
+    *,
+    attempt_id: str | None,
+    attempt_number: int | None,
 ) -> list[VerificationObservation]:
     observations: list[VerificationObservation] = []
     for command in dod.verification_commands:
@@ -732,6 +770,8 @@ def _pending_verification_observations(
                 status=VerificationObservationStatus.PENDING.value,
                 summary=f"verification pending for `{command}`",
                 command=command,
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
             )
         )
     return observations
