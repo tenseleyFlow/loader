@@ -16,13 +16,15 @@ from ..runtime.permissions import (
 from ..runtime.public_shell import (
     SteeringMailbox,
     build_fresh_runtime_session_install,
-    build_runtime_few_shot_examples,
-    build_runtime_system_message,
     clear_runtime_shell_history,
+    get_runtime_shell_few_shot_examples,
+    get_runtime_shell_system_message,
     refresh_runtime_shell_capability_profile,
+    resolve_runtime_shell_use_react,
     resume_runtime_shell_session,
     run_runtime_shell,
     run_runtime_shell_explore,
+    set_runtime_shell_workflow_mode,
     stream_runtime_shell,
 )
 from ..runtime.safeguards import RuntimeSafeguards
@@ -180,42 +182,15 @@ class Agent:
     @property
     def use_react(self) -> bool:
         """Determine whether to use ReAct prompting or native tools."""
-        if self._use_react is not None:
-            return self._use_react
-
-        if self.config.force_react:
-            self._use_react = True
-            return True
-
-        self._use_react = not self.capability_profile.supports_native_tools
-
-        return self._use_react
+        return resolve_runtime_shell_use_react(self)
 
     def _get_system_message(self) -> Message:
         """Get the system message with current context."""
-        if self._system_message is None:
-            prompt_state = build_runtime_system_message(
-                registry=self.registry,
-                use_react=self.use_react,
-                project_context=self.project_context,
-                workflow_mode=self.workflow_mode,
-                permission_mode=self.active_permission_mode,
-                cwd=self.project_root,
-                current_task=self._current_task,
-                session=self.session,
-            )
-            self.prompt_format = prompt_state.prompt_format
-            self.prompt_sections = list(prompt_state.prompt_sections)
-            self._system_message = prompt_state.system_message
-        return self._system_message
+        return get_runtime_shell_system_message(self)
 
     def set_workflow_mode(self, workflow_mode: str) -> None:
         """Update the active workflow mode used by the system prompt."""
-
-        if workflow_mode == self.workflow_mode:
-            return
-        self.workflow_mode = workflow_mode
-        self._system_message = None
+        set_runtime_shell_workflow_mode(self, workflow_mode)
 
     def refresh_capability_profile(self) -> None:
         """Refresh the runtime capability profile from the current backend."""
@@ -233,7 +208,7 @@ class Agent:
 
     def _get_few_shot_examples(self) -> list[Message]:
         """Get few-shot examples demonstrating proper tool use."""
-        return build_runtime_few_shot_examples(use_react=self.use_react)
+        return get_runtime_shell_few_shot_examples(self)
 
     async def run(
         self,

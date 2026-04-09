@@ -117,6 +117,7 @@ class SteeringMailbox:
 class RuntimeShellConfigProtocol(Protocol):
     """Typed view of shell config used for session lifecycle helpers."""
 
+    force_react: bool
     session_rotate_after_bytes: int
     session_auto_compaction_input_tokens_threshold: int
     session_compaction_keep_last_messages: int
@@ -406,6 +407,60 @@ def clear_runtime_shell_history(owner: RuntimeShellOwner) -> None:
     )
     owner._system_message = None
     owner.safeguards.reset()
+
+
+def resolve_runtime_shell_use_react(owner: RuntimeShellOwner) -> bool:
+    """Resolve the active prompt/tool format for the public shell."""
+
+    if owner._use_react is not None:
+        return owner._use_react
+
+    if owner.config.force_react:
+        owner._use_react = True
+        return True
+
+    owner._use_react = not owner.capability_profile.supports_native_tools
+    return owner._use_react
+
+
+def set_runtime_shell_workflow_mode(
+    owner: RuntimeShellOwner,
+    workflow_mode: str,
+) -> None:
+    """Update workflow mode and invalidate prompt state when it changes."""
+
+    if workflow_mode == owner.workflow_mode:
+        return
+    owner.workflow_mode = workflow_mode
+    owner._system_message = None
+
+
+def get_runtime_shell_system_message(owner: RuntimeShellOwner) -> Message:
+    """Build or reuse the cached runtime system message for the public shell."""
+
+    if owner._system_message is None:
+        prompt_state = build_runtime_system_message(
+            registry=owner.registry,
+            use_react=resolve_runtime_shell_use_react(owner),
+            project_context=owner.project_context,
+            workflow_mode=owner.workflow_mode,
+            permission_mode=owner.permission_policy.active_mode.as_str(),
+            cwd=owner.project_root,
+            current_task=owner.current_task,
+            session=owner.session,
+        )
+        owner.prompt_format = prompt_state.prompt_format
+        owner.prompt_sections = list(prompt_state.prompt_sections)
+        owner._system_message = prompt_state.system_message
+    return owner._system_message
+
+
+def get_runtime_shell_few_shot_examples(owner: RuntimeShellOwner) -> list[Message]:
+    """Return few-shot examples for the owner's active shell tool format."""
+
+    return build_runtime_few_shot_examples(
+        use_react=resolve_runtime_shell_use_react(owner)
+    )
 
 
 def build_event_emitter(
