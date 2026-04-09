@@ -40,6 +40,7 @@ from ..runtime.inspection import (
 from ..runtime.permissions import PermissionMode
 from ..runtime.workflow_timeline_read_model import (
     format_evidence_provenance_brief,
+    summarize_observed_verification,
     workflow_entry_evidence_rollup,
 )
 from .options import inject_resume_target
@@ -1405,6 +1406,11 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
             "Policy Evidence Satisfied",
             _format_policy_evidence_items(snapshot.latest_policy_supporting_evidence),
         )
+    if snapshot.latest_policy_observed_verification:
+        table.add_row(
+            "Observed Verification",
+            _format_policy_evidence_items(snapshot.latest_policy_observed_verification),
+        )
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -1624,6 +1630,11 @@ def _session_show_main(session_id: str) -> None:
             "Policy Evidence Satisfied",
             _format_policy_evidence_items(latest_policy_evidence.supporting),
         )
+    if projection.latest_policy_observed_verification:
+        table.add_row(
+            "Observed Verification",
+            _format_policy_evidence_items(projection.latest_policy_observed_verification),
+        )
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -1741,6 +1752,11 @@ def _workflow_show_main(
         table.add_row(
             "Policy Evidence Satisfied",
             _format_policy_evidence_items(snapshot.latest_policy_supporting_evidence),
+        )
+    if snapshot.latest_policy_observed_verification:
+        table.add_row(
+            "Observed Verification",
+            _format_policy_evidence_items(snapshot.latest_policy_observed_verification),
         )
     table.add_row(
         "Filters",
@@ -2187,6 +2203,9 @@ def _format_workflow_timeline_context(entry) -> str:
             "provenance="
             + format_evidence_provenance_brief(entry.evidence_provenance)
         )
+    observed = summarize_observed_verification(entry.verification_observations)
+    if observed:
+        parts.append(f"observed={_format_policy_evidence_items(observed)}")
     if entry.signal_summary:
         parts.append(f"signals={'; '.join(entry.signal_summary[:2])}")
     if entry.artifact_paths:
@@ -2298,6 +2317,11 @@ def _print_completion_trace_entries(entries) -> None:
             evidence_parts.append(
                 "provenance="
                 + format_evidence_provenance_brief(entry.evidence_provenance)
+            )
+        observed = summarize_observed_verification(entry.verification_observations)
+        if observed:
+            evidence_parts.append(
+                "observed=" + _format_policy_evidence_items(observed)
             )
         table.add_row(
             entry.stage,

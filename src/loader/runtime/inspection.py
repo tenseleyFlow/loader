@@ -189,6 +189,7 @@ class StatusSnapshot:
     recent_verification: list[VerificationSummary]
     latest_policy_supporting_evidence: list[str] = field(default_factory=list)
     latest_policy_blocking_evidence: list[str] = field(default_factory=list)
+    latest_policy_observed_verification: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     compaction_count: int = 0
     project_type: str = "unknown"
@@ -284,6 +285,7 @@ class WorkflowTimelineSnapshot:
     latest_policy_summary: str | None = None
     latest_policy_supporting_evidence: list[str] = field(default_factory=list)
     latest_policy_blocking_evidence: list[str] = field(default_factory=list)
+    latest_policy_observed_verification: list[str] = field(default_factory=list)
     selected_mode: str | None = None
     selected_kind: str | None = None
     selected_accountability_only: bool = False
@@ -459,6 +461,7 @@ def collect_status_snapshot(
             latest_policy_summary=None,
             latest_policy_supporting_evidence=[],
             latest_policy_blocking_evidence=[],
+            latest_policy_observed_verification=[],
             last_turn_transition_summary=None,
             last_turn_transition_kind=None,
             last_turn_transition_reason_code=None,
@@ -533,6 +536,9 @@ def collect_status_snapshot(
             list(projection.latest_policy_evidence.blocking)
             if projection.latest_policy_evidence is not None
             else []
+        ),
+        latest_policy_observed_verification=list(
+            projection.latest_policy_observed_verification
         ),
         last_turn_transition_summary=snapshot.last_turn_transition_summary,
         last_turn_transition_kind=snapshot.last_turn_transition_kind,
@@ -914,6 +920,7 @@ def collect_workflow_timeline(
             latest_policy_summary=None,
             latest_policy_supporting_evidence=[],
             latest_policy_blocking_evidence=[],
+            latest_policy_observed_verification=[],
             selected_mode=mode,
             selected_kind=kind,
             selected_accountability_only=accountability_only,
@@ -949,6 +956,9 @@ def collect_workflow_timeline(
             list(projection.latest_policy_evidence.blocking)
             if projection.latest_policy_evidence is not None
             else []
+        ),
+        latest_policy_observed_verification=list(
+            projection.latest_policy_observed_verification
         ),
         selected_mode=mode,
         selected_kind=kind,

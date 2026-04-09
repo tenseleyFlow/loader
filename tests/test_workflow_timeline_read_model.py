@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from loader.runtime.evidence_provenance import EvidenceProvenance
+from loader.runtime.verification_observations import VerificationObservation
 from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
 from loader.runtime.workflow_policy import WorkflowTimelineEntry
 from loader.runtime.workflow_timeline_read_model import project_workflow_timeline
@@ -38,6 +39,15 @@ def test_project_workflow_timeline_builds_policy_views_and_highlights() -> None:
                     subject="pytest -q",
                 )
             ],
+            verification_observations=[
+                VerificationObservation(
+                    status="failed",
+                    summary="verification failed for `pytest -q`",
+                    command="pytest -q",
+                    kind="test",
+                    detail="1 failed",
+                )
+            ],
         ),
     ]
     ledger = WorkflowLedger(
@@ -64,9 +74,15 @@ def test_project_workflow_timeline_builds_policy_views_and_highlights() -> None:
     assert "provenance=contradicts:verification@dod.evidence(pytest -q)" in (
         projection.latest_policy_summary
     )
+    assert "observed=verification failed for `pytest -q` [1 failed]" in (
+        projection.latest_policy_summary
+    )
     assert projection.latest_policy_evidence is not None
     assert projection.latest_policy_evidence.blocking == [
         "verification failed for `pytest -q`"
+    ]
+    assert projection.latest_policy_observed_verification == [
+        "verification failed for `pytest -q` [1 failed]"
     ]
     assert any(item.startswith("Repair path:") for item in projection.highlights)
     assert any(item.startswith("Completion decision:") for item in projection.highlights)

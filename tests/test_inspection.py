@@ -29,6 +29,7 @@ from loader.runtime.inspection import (
 )
 from loader.runtime.prompt_history import PromptSnapshot
 from loader.runtime.session import SessionSnapshot, SessionStore
+from loader.runtime.verification_observations import VerificationObservation
 from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
 from loader.runtime.workflow_policy import WorkflowTimelineEntry
 
@@ -441,6 +442,15 @@ def _persist_session_with_policy_accountability(temp_dir: Path) -> str:
                         subject="pytest -q",
                     )
                 ],
+                verification_observations=[
+                    VerificationObservation(
+                        status="failed",
+                        summary="verification failed for `pytest -q`",
+                        command="pytest -q",
+                        kind="test",
+                        detail="1 failed",
+                    )
+                ],
                 prompt_format="native",
                 prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
             ),
@@ -714,9 +724,15 @@ def test_collect_status_snapshot_includes_latest_policy_summary(
 
     assert snapshot.latest_policy_summary is not None
     assert "verification_failed_reentry" in snapshot.latest_policy_summary
+    assert "observed=verification failed for `pytest -q` [1 failed]" in (
+        snapshot.latest_policy_summary
+    )
     assert "policy-stage=definition_of_done" in snapshot.latest_policy_summary
     assert snapshot.latest_policy_blocking_evidence == [
         "verification failed for `pytest -q`"
+    ]
+    assert snapshot.latest_policy_observed_verification == [
+        "verification failed for `pytest -q` [1 failed]"
     ]
 
 
@@ -847,9 +863,12 @@ def test_workflow_command_renders_policy_accountability_context(
     assert "verification_failed_reentry" in result.output
     assert "Policy Evidence Needed" in result.output
     assert "verification failed for `pytest -q`" in result.output
+    assert "Observed Verification" in result.output
+    assert "verification failed for `pytest -q` [1 failed]" in result.output
     assert "policy-stage=raw_text_tool_fallback" in result.output
     assert "policy-outcome=continue" in result.output
     assert "provenance=contradicts:verification@dod.evidence" in result.output
+    assert "observed=verification failed for `pytest -q` [1 failed]" in result.output
 
     policy_result = runner.invoke(cli_main_module.workflow_cli, ["show", "--policy"])
 
@@ -901,6 +920,8 @@ def test_session_show_renders_policy_timeline_preview(
     assert "verification_failed_reentry" in show_result.output
     assert "Policy Evidence Needed" in show_result.output
     assert "verification failed for `pytest -q`" in show_result.output
+    assert "Observed Verification" in show_result.output
+    assert "verification failed for `pytest -q` [1 failed]" in show_result.output
     assert "Policy Timeline" in show_result.output
     assert "repair_retry" in show_result.output
     assert "completion:" in show_result.output
@@ -926,6 +947,8 @@ def test_status_command_renders_latest_policy_summary(
     assert "verification_failed_reentry" in result.output
     assert "Policy Evidence Needed" in result.output
     assert "verification failed for `pytest -q`" in result.output
+    assert "Observed Verification" in result.output
+    assert "verification failed for `pytest -q` [1 failed]" in result.output
     assert "policy-stage=definition_of_done" in result.output
 
 

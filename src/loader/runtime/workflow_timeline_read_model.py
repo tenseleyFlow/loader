@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .evidence_provenance import EvidenceProvenanceRollup, rollup_evidence_provenance
+from .verification_observations import VerificationObservation
 from .workflow_ledger import WorkflowLedger, workflow_ledger_highlights
 from .workflow_policy import WorkflowTimelineEntry
 
@@ -19,6 +20,7 @@ class WorkflowTimelineProjection:
     latest_policy_entry: WorkflowTimelineEntry | None = None
     latest_policy_summary: str | None = None
     latest_policy_evidence: EvidenceProvenanceRollup | None = None
+    latest_policy_observed_verification: list[str] = field(default_factory=list)
     highlights: list[str] = field(default_factory=list)
 
 
@@ -62,6 +64,13 @@ def project_workflow_timeline(
             workflow_entry_evidence_rollup(latest_policy_entry)
             if latest_policy_entry is not None
             else None
+        ),
+        latest_policy_observed_verification=(
+            summarize_observed_verification(
+                latest_policy_entry.verification_observations,
+            )
+            if latest_policy_entry is not None
+            else []
         ),
         highlights=list(dict.fromkeys(highlights)),
     )
@@ -185,6 +194,9 @@ def workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
         parts.append(
             "provenance=" + format_evidence_provenance_brief(entry.evidence_provenance)
         )
+    observed = summarize_observed_verification(entry.verification_observations)
+    if observed:
+        parts.append("observed=" + "; ".join(observed))
     if entry.signal_summary:
         parts.append("; ".join(entry.signal_summary[:2]))
     return " | ".join(part for part in parts if part)
@@ -209,6 +221,25 @@ def format_evidence_provenance_brief(entries, *, max_entries: int = 2) -> str:
         subject = f"({entry.subject})" if entry.subject else ""
         parts.append(f"{entry.status}:{entry.category}{source}{subject}")
     return "; ".join(parts)
+
+
+def summarize_observed_verification(
+    entries: list[VerificationObservation],
+    *,
+    max_items: int = 2,
+) -> list[str]:
+    """Render observed verification facts for operator-facing inspection surfaces."""
+
+    summaries: list[str] = []
+    for entry in entries[:max_items]:
+        summary = entry.summary.strip()
+        if entry.detail:
+            detail = entry.detail.strip()
+            if detail and detail not in summary:
+                summary = f"{summary} [{detail}]"
+        if summary and summary not in summaries:
+            summaries.append(summary)
+    return summaries
 
 
 def workflow_entry_evidence_rollup(
