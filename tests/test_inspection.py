@@ -383,6 +383,63 @@ def _persist_session_with_rich_workflow(temp_dir: Path) -> str:
     return snapshot.session_id
 
 
+def _persist_session_with_policy_accountability(temp_dir: Path) -> str:
+    snapshot = SessionSnapshot(
+        session_id="20260406T160000Z-abcd1234",
+        created_at="2026-04-06T16:00:00Z",
+        updated_at="2026-04-06T16:03:00Z",
+        messages=[
+            Message(role=Role.USER, content="Explain Loader policy accountability"),
+            Message(role=Role.ASSISTANT, content="The runtime tracked repair and completion decisions."),
+        ],
+        current_task="Explain Loader policy accountability",
+        workflow_mode="execute",
+        permission_mode="workspace-write",
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+        workflow_timeline=[
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T16:01:00Z",
+                kind="repair_retry",
+                mode="execute",
+                reason_code="raw_text_tool_recovered",
+                summary="repair: recovered raw-text tool calls into executable tool invocations",
+                decision_kind="forced",
+                policy_stage="raw_text_tool_fallback",
+                policy_outcome="retry",
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            ),
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T16:02:00Z",
+                kind="completion_check",
+                mode="execute",
+                reason_code="completion_response_accepted",
+                summary="completion: accepted the response because completion heuristics found no missing follow-through",
+                decision_kind="forced",
+                policy_stage="continuation_check",
+                policy_outcome="accept",
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            ),
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T16:03:00Z",
+                kind="completion_continue",
+                mode="execute",
+                reason_code="verification_failed_reentry",
+                summary="completion: continued after verification failed and the runtime re-entered execute mode",
+                decision_kind="forced",
+                policy_stage="definition_of_done",
+                policy_outcome="continue",
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            ),
+        ],
+    )
+    SessionStore(temp_dir).save(snapshot)
+    return snapshot.session_id
+
+
 @pytest.mark.asyncio
 async def test_collect_doctor_report_passes_for_healthy_workspace(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
@@ -614,6 +671,28 @@ def test_collect_workflow_timeline_supports_filters_and_highlights(
     )
 
 
+def test_collect_workflow_timeline_highlights_policy_accountability(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_policy_accountability(temp_dir)
+
+    snapshot = collect_workflow_timeline(project_root=temp_dir)
+
+    assert snapshot.session_id == session_id
+    assert [entry.kind for entry in snapshot.entries] == [
+        "repair_retry",
+        "completion_check",
+        "completion_continue",
+    ]
+    assert any(item.startswith("Repair path:") for item in snapshot.highlights)
+    assert any(item.startswith("Completion decision:") for item in snapshot.highlights)
+    assert any(
+        "policy-stage=definition_of_done" in item for item in snapshot.highlights
+    )
+
+
 def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
     _ensure_loader_dirs(temp_dir)
@@ -717,6 +796,29 @@ def test_status_and_session_commands_render_persisted_state(
     assert session_id in workflow_result.output
     assert "handoff" in workflow_result.output
     assert "next=verify" in workflow_result.output
+
+
+def test_workflow_command_renders_policy_accountability_context(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_policy_accountability(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(cli_main_module.workflow_cli, ["show"])
+
+    assert result.exit_code == 0
+    assert session_id in result.output
+    assert "repair_retry" in result.output
+    assert "Repair path:" in result.output
+    assert "Completion decision:" in result.output
+    assert "verification_failed_reentry" in result.output
+    assert "policy-stage=raw_text_tool_fallback" in result.output
+    assert "policy-outcome=continue" in result.output
 
 
 def test_workflow_show_renders_workflow_ledger(

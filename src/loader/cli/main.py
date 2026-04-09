@@ -2076,6 +2076,10 @@ def _format_workflow_timeline_context(entry) -> str:
         parts.append(f"stage={entry.clarify_stage}")
     if entry.clarify_pressure_kind:
         parts.append(f"pressure={entry.clarify_pressure_kind}")
+    if entry.policy_stage:
+        parts.append(f"policy-stage={entry.policy_stage}")
+    if entry.policy_outcome:
+        parts.append(f"policy-outcome={entry.policy_outcome}")
     if entry.pressure_pass_complete:
         parts.append("pressure-pass=done")
     if entry.missing_readiness_gates:
