@@ -123,9 +123,21 @@ class LoaderApp(App):
         status.mode = self.mode
         status.capability_profile = self.capability_profile
         status.session_id = self.session_id
+        status.runtime_owner = self.shell_owner.session.runtime_owner_path or ""
         status.workflow_mode = self.workflow_mode
         status.turn_phase = self.turn_phase
         status.permission_mode = self.permission_mode
+        if (
+            self.shell_owner.last_turn_summary is not None
+            and self.shell_owner.last_turn_summary.definition_of_done is not None
+        ):
+            dod = self.shell_owner.last_turn_summary.definition_of_done
+            status.update_definition_of_done(
+                dod.status,
+                len(dod.pending_items),
+                dod.last_verification_result,
+                _definition_of_done_verification_attempt(dod),
+            )
 
         # Focus input
         self.query_one(InputArea).focus_input()
@@ -692,6 +704,7 @@ class LoaderApp(App):
             message.dod_status,
             message.pending_items_count,
             message.last_verification_result,
+            message.verification_attempt,
         )
 
     def on_workflow_mode_changed(self, message: WorkflowModeChanged) -> None:
@@ -860,6 +873,10 @@ class LoaderApp(App):
         msg_area.remove_children()
         self.shell_owner.clear_history()
         self.query_one(StatusLine).clear_definition_of_done()
+        self.query_one(StatusLine).update_session_id(self.shell_owner.session.session_id)
+        self.query_one(StatusLine).update_runtime_owner(
+            self.shell_owner.session.runtime_owner_path or ""
+        )
         self.query_one(StatusLine).update_workflow_mode("execute")
         self._add_message("[dim]Conversation cleared.[/dim]")
 
@@ -870,3 +887,14 @@ class LoaderApp(App):
         self.is_generating = False
         self._stop_timer()
         self.query_one(StatusLine).set_generating(False)
+
+
+def _definition_of_done_verification_attempt(dod) -> str | None:
+    """Render one compact verification-attempt label from DoD state."""
+
+    active_number = getattr(dod, "active_verification_attempt_number", None)
+    if active_number is None:
+        return None
+    if getattr(dod, "last_verification_result", None) == "stale" and active_number > 1:
+        return f"attempt {active_number - 1} -> attempt {active_number}"
+    return f"attempt {active_number}"

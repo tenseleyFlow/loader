@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from ..runtime.owner_metadata import normalize_runtime_owner_path
+
 
 def format_definition_of_done_parts(
     status: str,
     pending_items_count: int,
     last_verification_result: str,
+    verification_attempt: str = "",
 ) -> list[str]:
     """Format definition-of-done state for the status line."""
     if not status:
@@ -27,8 +30,11 @@ def format_definition_of_done_parts(
         verify_color = "green" if last_verification_result == "passed" else "red"
         if last_verification_result == "skipped":
             verify_color = "dim"
+        verify_label = f"verify {last_verification_result}"
+        if verification_attempt:
+            verify_label = f"{verify_label} ({verification_attempt})"
         parts.append(
-            f"[{verify_color}]verify {last_verification_result}[/{verify_color}]"
+            f"[{verify_color}]{verify_label}[/{verify_color}]"
         )
 
     return parts
@@ -63,6 +69,15 @@ def format_session_part(session_id: str) -> str | None:
     if not session_id:
         return None
     return f"[dim]session {session_id[-8:]}[/dim]"
+
+
+def format_runtime_owner_part(owner_path: str) -> str | None:
+    """Format the active runtime-owner path for the status line."""
+
+    normalized_path = normalize_runtime_owner_path(owner_path)
+    if not normalized_path:
+        return None
+    return f"[dim]owner {normalized_path}[/dim]"
 
 
 def format_workflow_mode_part(mode: str) -> str | None:

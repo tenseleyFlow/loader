@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from ..context.project import ProjectContext
 from ..tools.base import ToolRegistry
 from .capabilities import CapabilityProfile
-from .events import AgentEvent
+from .events import AgentEvent, TurnSummary
 from .session import ConversationSession
 
 RuntimeOwnerKind = Literal["runtime", "public-compat"]
@@ -23,6 +23,7 @@ class RuntimeShellOwner(Protocol):
     capability_profile: CapabilityProfile
     safeguards: object
     session: ConversationSession
+    last_turn_summary: TurnSummary | None
     project_context: ProjectContext | None
     workflow_mode: str
     active_permission_mode: str

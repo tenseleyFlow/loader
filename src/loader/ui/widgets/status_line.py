@@ -7,6 +7,7 @@ from ..status_helpers import (
     format_capability_part,
     format_definition_of_done_parts,
     format_permission_mode_part,
+    format_runtime_owner_part,
     format_session_part,
     format_turn_phase_part,
     format_workflow_mode_part,
@@ -20,6 +21,7 @@ class StatusLine(Static):
     mode: reactive[str] = reactive("Native")
     capability_profile: reactive[str] = reactive("")
     session_id: reactive[str] = reactive("")
+    runtime_owner: reactive[str] = reactive("")
     workflow_mode: reactive[str] = reactive("")
     turn_phase: reactive[str] = reactive("")
     permission_mode: reactive[str] = reactive("")
@@ -29,6 +31,7 @@ class StatusLine(Static):
     dod_status: reactive[str] = reactive("")
     pending_items_count: reactive[int] = reactive(0)
     last_verification_result: reactive[str] = reactive("")
+    verification_attempt: reactive[str] = reactive("")
 
     def render(self) -> str:
         """Render the status line."""
@@ -51,6 +54,7 @@ class StatusLine(Static):
                 self.dod_status,
                 self.pending_items_count,
                 self.last_verification_result,
+                self.verification_attempt,
             )
         )
 
@@ -76,6 +80,9 @@ class StatusLine(Static):
         session_part = format_session_part(self.session_id)
         if session_part:
             parts.append(session_part)
+        runtime_owner = format_runtime_owner_part(self.runtime_owner)
+        if runtime_owner:
+            parts.append(runtime_owner)
 
         return " · ".join(parts) if parts else "[dim]Ready[/dim]"
 
@@ -103,6 +110,10 @@ class StatusLine(Static):
         """React to session id changes."""
         self.refresh()
 
+    def watch_runtime_owner(self, runtime_owner: str) -> None:
+        """React to runtime owner changes."""
+        self.refresh()
+
     def watch_workflow_mode(self, workflow_mode: str) -> None:
         """React to workflow mode changes."""
         self.refresh()
@@ -121,6 +132,10 @@ class StatusLine(Static):
 
     def watch_last_verification_result(self, last_verification_result: str) -> None:
         """React to verification result changes."""
+        self.refresh()
+
+    def watch_verification_attempt(self, verification_attempt: str) -> None:
+        """React to verification attempt changes."""
         self.refresh()
 
     def set_generating(self, is_generating: bool) -> None:
@@ -151,6 +166,10 @@ class StatusLine(Static):
         """Update the active session id."""
         self.session_id = session_id
 
+    def update_runtime_owner(self, runtime_owner: str) -> None:
+        """Update the active runtime owner path."""
+        self.runtime_owner = runtime_owner
+
     def update_workflow_mode(self, workflow_mode: str) -> None:
         """Update the active workflow mode."""
         self.workflow_mode = workflow_mode
@@ -164,14 +183,17 @@ class StatusLine(Static):
         status: str,
         pending_items_count: int,
         last_verification_result: str | None,
+        verification_attempt: str | None = None,
     ) -> None:
         """Update definition-of-done status."""
         self.dod_status = status
         self.pending_items_count = pending_items_count
         self.last_verification_result = last_verification_result or ""
+        self.verification_attempt = verification_attempt or ""
 
     def clear_definition_of_done(self) -> None:
         """Clear definition-of-done status."""
         self.dod_status = ""
         self.pending_items_count = 0
         self.last_verification_result = ""
+        self.verification_attempt = ""

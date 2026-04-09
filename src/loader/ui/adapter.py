@@ -191,6 +191,7 @@ class DefinitionOfDoneUpdated(Message):
     dod_status: str
     pending_items_count: int = 0
     last_verification_result: str | None = None
+    verification_attempt: str | None = None
 
 
 @dataclass
@@ -460,6 +461,9 @@ class EventAdapter:
                         dod_status=event.dod_status or "",
                         pending_items_count=event.pending_items_count or 0,
                         last_verification_result=event.last_verification_result,
+                        verification_attempt=_definition_of_done_verification_attempt(
+                            event.definition_of_done
+                        ),
                     )
                 )
 
@@ -487,3 +491,16 @@ class EventAdapter:
                         artifact_path=event.artifact_path or "",
                     )
                 )
+
+
+def _definition_of_done_verification_attempt(dod) -> str | None:
+    """Render one compact verification-attempt label from DoD state."""
+
+    if dod is None:
+        return None
+    active_number = getattr(dod, "active_verification_attempt_number", None)
+    if active_number is None:
+        return None
+    if getattr(dod, "last_verification_result", None) == "stale" and active_number > 1:
+        return f"attempt {active_number - 1} -> attempt {active_number}"
+    return f"attempt {active_number}"

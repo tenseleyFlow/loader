@@ -10,6 +10,7 @@ from loader.ui.status_helpers import (
     format_capability_part,
     format_definition_of_done_parts,
     format_permission_mode_part,
+    format_runtime_owner_part,
     format_session_part,
     format_turn_phase_part,
     format_workflow_mode_part,
@@ -17,12 +18,12 @@ from loader.ui.status_helpers import (
 
 
 def test_status_helper_formats_definition_of_done_parts() -> None:
-    parts = format_definition_of_done_parts("verifying", 1, "failed")
+    parts = format_definition_of_done_parts("verifying", 1, "failed", "attempt 2")
 
     assert parts == [
         "[yellow]DoD: verifying[/yellow]",
         "[dim]1 pending[/dim]",
-        "[red]verify failed[/red]",
+        "[red]verify failed (attempt 2)[/red]",
     ]
 
 
@@ -63,3 +64,4 @@ def test_turn_phase_helpers_use_expected_colors() -> None:
 def test_status_helpers_format_capability_and_session_parts() -> None:
     assert format_capability_part("native/strict") == "[dim]cap native/strict[/dim]"
     assert format_session_part("20260406T120000Z-abcdef01") == "[dim]session abcdef01[/dim]"
+    assert format_runtime_owner_part("runtime-handle") == "[dim]owner runtime-handle[/dim]"
