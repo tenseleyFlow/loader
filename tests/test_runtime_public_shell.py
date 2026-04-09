@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from loader.agent.loop import Agent, AgentConfig
-from loader.llm.base import Message, Role
+from loader.llm.base import CompletionResponse, Message, Role, StreamChunk
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.public_shell import (
@@ -26,6 +26,9 @@ from loader.runtime.public_shell import (
     refresh_runtime_shell_capability_profile,
     restore_runtime_session_state,
     resume_runtime_shell_session,
+    run_runtime_shell,
+    run_runtime_shell_explore,
+    stream_runtime_shell,
 )
 from loader.runtime.session import ConversationSession
 from tests.helpers.runtime_harness import ScriptedBackend
@@ -129,6 +132,92 @@ async def test_build_event_emitter_supports_sync_and_async_callbacks() -> None:
     await build_event_emitter(None)(SimpleNamespace(type="ignored"))
 
     assert seen == [("sync", "response"), ("async", "stream")]
+
+
+@pytest.mark.asyncio
+async def test_run_runtime_shell_uses_runtime_launcher_entrypoint(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(
+            completions=[CompletionResponse(content="Runtime shell reply.")]
+        ),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+    agent.config.reasoning.completion_check = False
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    response = await run_runtime_shell(
+        agent,
+        "Summarize the runtime shell state.",
+        on_event=capture,
+        use_plan=False,
+    )
+
+    assert response == "Runtime shell reply."
+    assert agent.last_turn_summary is not None
+    assert agent.last_turn_summary.final_response == "Runtime shell reply."
+    assert agent.steering.is_running is False
+    assert any(event.type == "response" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_stream_runtime_shell_yields_streamed_events(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(
+            streams=[
+                [
+                    StreamChunk(content="Quick ", is_done=False),
+                    StreamChunk(
+                        content="reply.",
+                        full_content="Quick reply.",
+                        is_done=True,
+                    ),
+                ]
+            ]
+        ),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+
+    events = [event async for event in stream_runtime_shell(agent, "thanks")]
+
+    assert any(event.type == "response" and event.content == "Quick reply." for event in events)
+    assert agent.steering.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_run_runtime_shell_explore_updates_last_turn_summary(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(
+            completions=[CompletionResponse(content="Quick repo summary.")]
+        ),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    response = await run_runtime_shell_explore(
+        agent,
+        "Give me a quick repo summary.",
+        on_event=capture,
+    )
+
+    assert response == "Quick repo summary."
+    assert agent.last_turn_summary is not None
+    assert agent.last_turn_summary.workflow_mode == "explore"
+    assert any(event.type == "response" for event in events)
 
 
 def test_steering_mailbox_tracks_running_state_and_fifo_messages() -> None:

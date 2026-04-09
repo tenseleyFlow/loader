@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -15,6 +17,7 @@ from ..tools.base import ToolRegistry
 from .capabilities import CapabilityProfile, resolve_backend_capability_profile
 from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
+from .launcher import build_runtime_launcher
 from .permissions import PermissionConfigStatus, PermissionMode, PermissionPolicy
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
@@ -124,9 +127,11 @@ class RuntimeShellOwner(Protocol):
 
     project_root: Path
     backend: Any
+    registry: ToolRegistry
     session: ConversationSession
     messages: list[Message]
     config: RuntimeShellConfigProtocol
+    project_context: ProjectContext | None
     permission_policy: PermissionPolicy
     permission_config_status: PermissionConfigStatus
     capability_profile: CapabilityProfile
@@ -142,6 +147,15 @@ class RuntimeShellOwner(Protocol):
 
     def set_workflow_mode(self, workflow_mode: str) -> None:
         """Update the active workflow mode."""
+
+    def queue_steering_message(self, message: str) -> None:
+        """Queue one steering message for the runtime."""
+
+    def drain_steering_messages(self) -> list[str]:
+        """Drain queued steering messages."""
+
+    def refresh_capability_profile(self) -> None:
+        """Refresh the active capability profile."""
 
     def _get_system_message(self) -> Message:
         """Build the active system message."""
@@ -407,6 +421,91 @@ def build_event_emitter(
             await result
 
     return emit
+
+
+async def run_runtime_shell(
+    owner: RuntimeShellOwner,
+    user_message: str,
+    *,
+    on_event: Callable[[AgentEvent], None]
+    | Callable[[AgentEvent], Awaitable[None]]
+    | None = None,
+    on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+    on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
+    use_plan: bool | None = None,
+) -> str:
+    """Run one user message through the runtime-owned public shell entrypoint."""
+
+    emit = build_event_emitter(on_event)
+    owner.steering.mark_running()
+    try:
+        launcher = build_runtime_launcher(owner)
+        return await launcher.run_user_message(
+            user_message,
+            emit,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            use_plan=use_plan,
+        )
+    finally:
+        owner.steering.mark_idle()
+
+
+async def stream_runtime_shell(
+    owner: RuntimeShellOwner,
+    user_message: str,
+) -> AsyncIterator[AgentEvent]:
+    """Yield the streamed event sequence from the runtime-owned public shell."""
+
+    queue: asyncio.Queue[AgentEvent | BaseException | None] = asyncio.Queue()
+
+    async def on_event(event: AgentEvent) -> None:
+        await queue.put(event)
+
+    async def run_owner() -> None:
+        try:
+            await run_runtime_shell(owner, user_message, on_event=on_event)
+        except BaseException as exc:  # pragma: no cover - propagated below
+            await queue.put(exc)
+        finally:
+            await queue.put(None)
+
+    task = asyncio.create_task(run_owner())
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+async def run_runtime_shell_explore(
+    owner: RuntimeShellOwner,
+    user_message: str,
+    *,
+    on_event: Callable[[AgentEvent], None]
+    | Callable[[AgentEvent], Awaitable[None]]
+    | None = None,
+    fresh: bool = False,
+) -> str:
+    """Run one read-only explore query through the runtime-owned public shell."""
+
+    emit = build_event_emitter(on_event)
+    launcher = build_runtime_launcher(owner)
+    owner.last_turn_summary = await launcher.run_explore(
+        user_message,
+        emit,
+        fresh=fresh,
+    )
+    return owner.last_turn_summary.final_response
 
 
 def refresh_runtime_capability_state(
