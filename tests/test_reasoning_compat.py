@@ -56,6 +56,7 @@ def test_parse_completion_check_builds_continuation_prompt() -> None:
 
     assert completion.is_complete is False
     assert completion.remaining == ["Run the tests"]
+    assert completion.missing_evidence == ["Run the tests"]
     assert "Run pytest -q" in completion.continuation_prompt
 
 

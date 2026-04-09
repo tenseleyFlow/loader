@@ -9,7 +9,7 @@ from ..llm.base import Message, Role
 from .context import RuntimeContext
 from .events import AgentEvent, TurnSummary
 from .reasoning_types import TaskCompletionCheck
-from .task_completion import detect_premature_completion, get_continuation_prompt
+from .task_completion import assess_completion_follow_through, detect_premature_completion
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -31,6 +31,7 @@ class ContinuationDecision:
     should_continue: bool
     decision_code: str
     decision_summary: str
+    completion_check: TaskCompletionCheck | None = None
 
 
 class CompletionPolicy:
@@ -92,11 +93,21 @@ class CompletionPolicy:
         """Nudge non-mutating tasks to continue when completion looks premature."""
 
         cfg = self.context.config.reasoning
+        completion_check = (
+            assess_completion_follow_through(
+                task=task,
+                response=content,
+                actions_taken=actions_taken,
+            )
+            if cfg.use_quick_completion
+            else None
+        )
         if continuation_count >= cfg.max_continuation_prompts:
             return ContinuationDecision(
                 should_continue=False,
                 decision_code="continuation_budget_exhausted",
                 decision_summary="accepted the response because the continuation budget was exhausted",
+                completion_check=completion_check,
             )
 
         is_premature = (
@@ -109,31 +120,25 @@ class CompletionPolicy:
                 should_continue=False,
                 decision_code="completion_response_accepted",
                 decision_summary="accepted the response because completion heuristics found no missing follow-through",
+                completion_check=completion_check,
             )
 
-        continuation_prompt = get_continuation_prompt(
-            task,
-            actions_taken,
-            content,
-        )
         await emit(
             AgentEvent(
                 type="completion_check",
                 content=f"Task may be incomplete ({len(actions_taken)} actions taken)",
-                completion_check=TaskCompletionCheck(
-                    original_task=task,
-                    is_complete=False,
-                    accomplished=[action.split(":")[0] for action in actions_taken],
-                    continuation_prompt=continuation_prompt,
-                ),
+                completion_check=completion_check,
             )
         )
         self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
-        self.context.session.append(Message(role=Role.USER, content=continuation_prompt))
+        self.context.session.append(
+            Message(role=Role.USER, content=completion_check.continuation_prompt)
+        )
         return ContinuationDecision(
             should_continue=True,
             decision_code="premature_completion_nudge",
             decision_summary="requested one continuation because the non-mutating response looked incomplete",
+            completion_check=completion_check,
         )
 
     @staticmethod

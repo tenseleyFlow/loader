@@ -60,3 +60,5 @@ def test_self_critique_and_completion_defaults_are_stable() -> None:
     assert critique.can_revise() is True
     assert completion.is_complete is False
     assert completion.accomplished == []
+    assert completion.required_evidence == []
+    assert completion.missing_evidence == []

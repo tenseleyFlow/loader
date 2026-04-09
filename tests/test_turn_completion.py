@@ -82,7 +82,8 @@ async def test_turn_completion_requests_continuation_for_premature_text_response
     assert prepared.summary.workflow_timeline[-1].policy_stage == "continuation_check"
     assert prepared.summary.workflow_timeline[-1].policy_outcome == "continue"
     assert agent.session.messages[-1].role.value == "user"
-    assert "If there's more to do, continue" in agent.session.messages[-1].content
+    assert "concrete evidence" in agent.session.messages[-1].content
+    assert "Carry out the requested change or command now" in agent.session.messages[-1].content
     assert any(event.type == "completion_check" for event in events)
 
 

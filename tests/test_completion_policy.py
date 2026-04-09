@@ -17,6 +17,7 @@ from loader.runtime.permissions import (
     load_permission_rules,
 )
 from loader.runtime.task_completion import (
+    assess_completion_follow_through,
     detect_premature_completion,
     get_continuation_prompt,
 )
@@ -128,7 +129,36 @@ def test_get_continuation_prompt_surfaces_missing_verification_steps() -> None:
         "The script has been created.",
     )
 
-    assert "Run the tests" in prompt or "verify it works" in prompt
+    assert "Continue with" in prompt
+    assert "run the relevant tests" in prompt.lower() or "verify" in prompt.lower()
+
+
+def test_assess_completion_follow_through_tracks_missing_evidence() -> None:
+    check = assess_completion_follow_through(
+        task="Create the script and test that it works.",
+        response="The script has been created.",
+        actions_taken=["write: script.py"],
+    )
+
+    assert check.is_complete is False
+    assert "showing the requested work was actually carried out" in check.required_evidence
+    assert "showing the result was run or verified" in check.required_evidence
+    assert check.missing_evidence == ["showing the result was run or verified"]
+    assert check.suggested_next_steps == [
+        "Execute what you created or run the relevant tests now"
+    ]
+
+
+def test_assess_completion_follow_through_accepts_informational_tasks() -> None:
+    check = assess_completion_follow_through(
+        task="Explain how Loader's workflow timeline works.",
+        response="Loader records workflow decisions and policy events in a timeline.",
+        actions_taken=[],
+    )
+
+    assert check.is_complete is True
+    assert check.required_evidence == []
+    assert check.missing_evidence == []
 
 
 @pytest.mark.asyncio
@@ -194,6 +224,11 @@ async def test_completion_policy_requests_continuation_using_runtime_context(
     assert decision.decision_summary == (
         "requested one continuation because the non-mutating response looked incomplete"
     )
+    assert decision.completion_check is not None
+    assert decision.completion_check.missing_evidence == [
+        "showing the requested work was actually carried out",
+        "showing the result was run or verified",
+    ]
     assert context.session.messages[-2] == Message(
         role=Role.ASSISTANT,
         content="I can handle that.",
@@ -201,3 +236,8 @@ async def test_completion_policy_requests_continuation_using_runtime_context(
     assert context.session.messages[-1].role == Role.USER
     assert "verify it works" in context.session.messages[-1].content.lower()
     assert events[0].type == "completion_check"
+    assert events[0].completion_check is not None
+    assert events[0].completion_check.missing_evidence == [
+        "showing the requested work was actually carried out",
+        "showing the result was run or verified",
+    ]
