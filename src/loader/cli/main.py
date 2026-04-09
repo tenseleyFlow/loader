@@ -187,6 +187,31 @@ def clean_response(text: str) -> str:
     return text.strip()
 
 
+def _build_cli_shell_owner(
+    *,
+    backend,
+    registry,
+    config,
+    require_public_agent: bool,
+):
+    """Build the CLI runtime owner for the requested integration path.
+
+    Non-TUI CLI flows use the runtime-first internal handle so internal
+    integrations stop depending on `Agent` by reflex. The Textual app still
+    receives the public `Agent` facade intentionally because it relies on the
+    documented public steering shell.
+    """
+
+    if require_public_agent:
+        from ..agent.loop import Agent
+
+        return Agent(backend=backend, registry=registry, config=config)
+
+    from ..runtime.runtime_handle import RuntimeHandle
+
+    return RuntimeHandle(backend=backend, registry=registry, config=config)
+
+
 @click.command()
 @click.option("--model", "-m", default=None, help="Model to use (default: llama3.1:8b)")
 @click.option("--select-model", "-s", is_flag=True, help="Interactively select model from available")
@@ -294,7 +319,7 @@ async def _main(
     reason: bool,
     prompt: str | None,
 ) -> None:
-    from ..agent.loop import Agent, AgentConfig, ReasoningConfig
+    from ..agent.loop import AgentConfig, ReasoningConfig
     from ..config import get_default_model, get_last_model, set_last_model
     from ..llm.ollama import OllamaBackend
     from ..tools.base import create_default_registry
@@ -364,22 +389,28 @@ async def _main(
         workflow_mode_override="clarify" if clarify else ("plan" if plan else None),
         reasoning=reasoning_config,
     )
+    require_public_agent = not no_tui and prompt is None
     try:
-        agent = Agent(backend=llm, registry=registry, config=config)
+        shell_owner = _build_cli_shell_owner(
+            backend=llm,
+            registry=registry,
+            config=config,
+            require_public_agent=require_public_agent,
+        )
     except ValueError as exc:
         console.print(f"[red]Permission policy error:[/red] {exc}")
         return
     resumed = False
     if resume_target is not None:
         session_id = None if resume_target == "__latest__" else resume_target
-        resumed = agent.resume_session(session_id)
+        resumed = shell_owner.resume_session(session_id)
         if not resumed and session_id is None:
             console.print("[yellow]No previous session found; starting a new session.[/yellow]")
         elif not resumed:
             console.print(f"[red]Session not found:[/red] {session_id}")
             return
         else:
-            console.print(f"[dim]Resumed session: {agent.session.session_id}[/dim]")
+            console.print(f"[dim]Resumed session: {shell_owner.session.session_id}[/dim]")
 
     # Show reasoning status if enabled
     reasoning_active = []
@@ -403,15 +434,15 @@ async def _main(
             f"Mode: {mode_str}",
             (
                 "Capabilities: "
-                f"{agent.capability_profile.preferred_tool_call_format}/"
-                f"{agent.capability_profile.verification_strictness}"
+                f"{shell_owner.capability_profile.preferred_tool_call_format}/"
+                f"{shell_owner.capability_profile.verification_strictness}"
             ),
-            f"Workflow: {format_workflow_mode(agent.workflow_mode)}",
-            f"Permissions: {format_permission_mode(agent.active_permission_mode)}",
-            f"Session: {agent.session.session_id}",
+            f"Workflow: {format_workflow_mode(shell_owner.workflow_mode)}",
+            f"Permissions: {format_permission_mode(shell_owner.active_permission_mode)}",
+            f"Session: {shell_owner.session.session_id}",
         ]
-        if agent.project_context:
-            status_parts.append(f"Project: {agent.project_context.project_type}")
+        if shell_owner.project_context:
+            status_parts.append(f"Project: {shell_owner.project_context.project_type}")
         status_parts.append(f"Timeout: {timeout_mins}m")
         if yes:
             status_parts.append("Confirm: off")
@@ -420,7 +451,7 @@ async def _main(
             "[bold blue]Loader[/bold blue]\n" + " | ".join(status_parts),
             border_style="blue",
         ))
-        await run_once(agent, prompt, skip_confirmation=yes)
+        await run_once(shell_owner, prompt, skip_confirmation=yes)
         return
 
     # Interactive mode - use TUI unless --no-tui
@@ -432,15 +463,15 @@ async def _main(
             f"Mode: {mode_str}",
             (
                 "Capabilities: "
-                f"{agent.capability_profile.preferred_tool_call_format}/"
-                f"{agent.capability_profile.verification_strictness}"
+                f"{shell_owner.capability_profile.preferred_tool_call_format}/"
+                f"{shell_owner.capability_profile.verification_strictness}"
             ),
-            f"Workflow: {format_workflow_mode(agent.workflow_mode)}",
-            f"Permissions: {format_permission_mode(agent.active_permission_mode)}",
-            f"Session: {agent.session.session_id}",
+            f"Workflow: {format_workflow_mode(shell_owner.workflow_mode)}",
+            f"Permissions: {format_permission_mode(shell_owner.active_permission_mode)}",
+            f"Session: {shell_owner.session.session_id}",
         ]
-        if agent.project_context:
-            status_parts.append(f"Project: {agent.project_context.project_type}")
+        if shell_owner.project_context:
+            status_parts.append(f"Project: {shell_owner.project_context.project_type}")
         status_parts.append(f"Timeout: {timeout_mins}m")
         if yes:
             status_parts.append("Confirm: off")
@@ -450,23 +481,23 @@ async def _main(
             border_style="blue",
         ))
         console.print("[dim]Type 'exit' to quit, 'clear' to reset conversation[/dim]\n")
-        await run_interactive(agent, skip_confirmation=yes)
+        await run_interactive(shell_owner, skip_confirmation=yes)
     else:
         # Launch TUI
         from ..ui.app import LoaderApp
 
         app = LoaderApp(
-            agent=agent,
+            agent=shell_owner,
             model_name=model,
             mode=mode_str,
             capability_profile=(
-                f"{agent.capability_profile.preferred_tool_call_format}/"
-                f"{agent.capability_profile.verification_strictness}"
+                f"{shell_owner.capability_profile.preferred_tool_call_format}/"
+                f"{shell_owner.capability_profile.verification_strictness}"
             ),
-            session_id=agent.session.session_id,
-            workflow_mode=agent.workflow_mode,
-            turn_phase=agent.session.active_turn_phase or "",
-            permission_mode=agent.active_permission_mode,
+            session_id=shell_owner.session.session_id,
+            workflow_mode=shell_owner.workflow_mode,
+            turn_phase=shell_owner.session.active_turn_phase or "",
+            permission_mode=shell_owner.active_permission_mode,
         )
         await app.run_async()
 
@@ -483,8 +514,8 @@ def _format_tool_args(args: dict | None) -> str:
     return ", ".join(parts)
 
 
-async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
-    """Run a single prompt."""
+async def run_once(shell_owner, prompt: str, skip_confirmation: bool = False) -> None:
+    """Run a single prompt through one shell-compatible runtime owner."""
     import time
 
     from ..tools.base import ConfirmationRequired
@@ -553,7 +584,7 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
             pass  # We'll print the full response at the end
 
     try:
-        response = await agent.run(
+        response = await shell_owner.run(
             prompt,
             on_event=on_event,
             on_user_question=_ask_user_question_cli,
@@ -569,22 +600,22 @@ async def run_once(agent, prompt: str, skip_confirmation: bool = False) -> None:
         if e.details:
             console.print(f"[dim]{e.details}[/dim]")
         if Confirm.ask("Proceed?"):
-            agent.registry.skip_confirmation = True
+            shell_owner.registry.skip_confirmation = True
             streamed_response = False  # Reset for continuation
-            response = await agent.run(
+            response = await shell_owner.run(
                 "Continue with the previous action.",
                 on_event=on_event,
                 on_user_question=_ask_user_question_cli,
             )
             if not streamed_response:
                 console.print(Markdown(clean_response(response)))
-            agent.registry.skip_confirmation = skip_confirmation
+            shell_owner.registry.skip_confirmation = skip_confirmation
         else:
             console.print("[red]Aborted.[/red]")
 
 
-async def run_interactive(agent, skip_confirmation: bool = False) -> None:
-    """Run interactive chat loop."""
+async def run_interactive(shell_owner, skip_confirmation: bool = False) -> None:
+    """Run the simple interactive chat loop for one shell-compatible owner."""
     import os
 
     from prompt_toolkit import PromptSession
@@ -616,7 +647,7 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
             break
 
         if user_input.lower() == "clear":
-            agent.clear_history()
+            shell_owner.clear_history()
             console.print("[dim]Conversation cleared[/dim]")
             continue
 
@@ -696,7 +727,7 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                 console.print(Panel(event.content, title="[red]Error[/red]", border_style="red"))
 
         try:
-            response = await agent.run(
+            response = await shell_owner.run(
                 user_input,
                 on_event=on_event,
                 on_user_question=_ask_user_question_cli,
@@ -718,10 +749,10 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
             if e.details:
                 console.print(f"[dim]{e.details}[/dim]")
             if Confirm.ask("Proceed?"):
-                agent.registry.skip_confirmation = True
+                shell_owner.registry.skip_confirmation = True
                 streamed_response = False  # Reset for continuation
                 try:
-                    response = await agent.run(
+                    response = await shell_owner.run(
                         "Continue with the previous action.",
                         on_event=on_event,
                         on_user_question=_ask_user_question_cli,
@@ -731,7 +762,7 @@ async def run_interactive(agent, skip_confirmation: bool = False) -> None:
                         console.print(Markdown(clean_response(response)))
                     console.print()
                 finally:
-                    agent.registry.skip_confirmation = skip_confirmation
+                    shell_owner.registry.skip_confirmation = skip_confirmation
             else:
                 console.print("[red]Aborted.[/red]\n")
 
@@ -1220,7 +1251,7 @@ async def _explore_main(
     timeout: int | None,
     prompt: str,
 ) -> None:
-    from ..agent.loop import Agent, AgentConfig
+    from ..agent.loop import AgentConfig
     from ..config import get_default_model, get_last_model, set_last_model
     from ..llm.ollama import OllamaBackend
     from ..runtime.permissions import PermissionMode
@@ -1252,19 +1283,21 @@ async def _explore_main(
     set_last_model(model)
 
     try:
-        agent = Agent(
+        shell_owner = _build_cli_shell_owner(
             backend=llm,
+            registry=None,
             config=AgentConfig(
                 auto_context=not no_context,
                 force_react=react,
                 permission_mode=PermissionMode.READ_ONLY,
                 stream=False,
             ),
+            require_public_agent=False,
         )
     except ValueError as exc:
         console.print(f"[red]Permission policy error:[/red] {exc}")
         return
-    mode_str = "ReAct" if agent.use_react else "Native"
+    mode_str = "ReAct" if shell_owner.use_react else "Native"
     console.print(
         Panel.fit(
             "[bold blue]Loader Explore[/bold blue]\n"
@@ -1292,7 +1325,7 @@ async def _explore_main(
                 preview += f"\n[dim]... ({len(lines) - 8} more lines)[/dim]"
             console.print(Panel(preview, border_style="dim"))
 
-    response = await agent.run_explore(prompt, on_event=on_event, fresh=fresh)
+    response = await shell_owner.run_explore(prompt, on_event=on_event, fresh=fresh)
     console.print(Markdown(clean_response(response)))
 
 
