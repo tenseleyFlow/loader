@@ -58,6 +58,12 @@ class WorkflowTimelineEntryKind(StrEnum):
     CLARIFY_EXIT = "clarify_exit"
     PLAN_REFRESH = "plan_refresh"
     VERIFY_SKIP = "verify_skip"
+    COMPLETION_CHECK = "completion_check"
+    COMPLETION_CONTINUE = "completion_continue"
+    COMPLETION_COMPLETE = "completion_complete"
+    COMPLETION_FINALIZE = "completion_finalize"
+    REPAIR_RETRY = "repair_retry"
+    REPAIR_FAIL = "repair_fail"
 
 
 @dataclass(slots=True)
@@ -291,6 +297,8 @@ class WorkflowTimelineEntry:
     clarify_pressure_kind: str | None = None
     pressure_pass_complete: bool = False
     missing_readiness_gates: list[str] = field(default_factory=list)
+    policy_stage: str | None = None
+    policy_outcome: str | None = None
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
     artifact_paths: list[str] = field(default_factory=list)
@@ -314,6 +322,8 @@ class WorkflowTimelineEntry:
             "clarify_pressure_kind": self.clarify_pressure_kind,
             "pressure_pass_complete": self.pressure_pass_complete,
             "missing_readiness_gates": list(self.missing_readiness_gates),
+            "policy_stage": self.policy_stage,
+            "policy_outcome": self.policy_outcome,
             "prompt_format": self.prompt_format,
             "prompt_sections": list(self.prompt_sections),
             "artifact_paths": list(self.artifact_paths),
@@ -339,6 +349,8 @@ class WorkflowTimelineEntry:
             clarify_pressure_kind=_optional_text(data.get("clarify_pressure_kind")),
             pressure_pass_complete=bool(data.get("pressure_pass_complete", False)),
             missing_readiness_gates=_string_list(data.get("missing_readiness_gates")),
+            policy_stage=_optional_text(data.get("policy_stage")),
+            policy_outcome=_optional_text(data.get("policy_outcome")),
             prompt_format=_optional_text(data.get("prompt_format")),
             prompt_sections=_string_list(data.get("prompt_sections")),
             artifact_paths=_string_list(data.get("artifact_paths")),
@@ -381,6 +393,48 @@ class WorkflowTimelineEntry:
             clarify_pressure_kind=decision.clarify_pressure_kind,
             pressure_pass_complete=decision.pressure_pass_complete,
             missing_readiness_gates=list(decision.missing_readiness_gates),
+            prompt_format=prompt_format,
+            prompt_sections=list(prompt_sections or []),
+            artifact_paths=list(artifact_paths or []),
+        )
+
+    @classmethod
+    def accountability(
+        cls,
+        *,
+        kind: WorkflowTimelineEntryKind,
+        mode: WorkflowMode | str,
+        reason_code: str,
+        summary: str,
+        policy_stage: str | None = None,
+        policy_outcome: str | None = None,
+        decision_kind: WorkflowDecisionKind | str | None = WorkflowDecisionKind.FORCED,
+        prompt_format: str | None = None,
+        prompt_sections: list[str] | None = None,
+        signal_summary: list[str] | None = None,
+        evidence_summary: list[str] | None = None,
+        artifact_paths: list[str] | None = None,
+    ) -> WorkflowTimelineEntry:
+        """Build one typed non-routing accountability entry."""
+
+        resolved_mode = mode.value if isinstance(mode, WorkflowMode) else str(mode)
+        if isinstance(decision_kind, WorkflowDecisionKind):
+            resolved_decision_kind = decision_kind.value
+        elif decision_kind is None:
+            resolved_decision_kind = None
+        else:
+            resolved_decision_kind = str(decision_kind)
+        return cls(
+            timestamp=_utc_now(),
+            kind=kind.value,
+            mode=resolved_mode,
+            reason_code=reason_code,
+            summary=summary,
+            decision_kind=resolved_decision_kind,
+            signal_summary=list(signal_summary or []),
+            evidence_summary=list(evidence_summary or []),
+            policy_stage=policy_stage,
+            policy_outcome=policy_outcome,
             prompt_format=prompt_format,
             prompt_sections=list(prompt_sections or []),
             artifact_paths=list(artifact_paths or []),

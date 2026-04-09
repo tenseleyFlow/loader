@@ -5,6 +5,7 @@ from __future__ import annotations
 from loader.runtime.clarify_strategy import ClarifySnapshot
 from loader.runtime.workflow import (
     ArtifactEvidenceKind,
+    WorkflowDecisionKind,
     WorkflowMode,
     WorkflowPolicy,
     WorkflowTimelineEntry,
@@ -142,6 +143,27 @@ def test_workflow_timeline_entry_round_trips() -> None:
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context"],
         artifact_paths=["/tmp/implementation.md"],
+    )
+
+    restored = WorkflowTimelineEntry.from_dict(entry.to_dict())
+
+    assert restored == entry
+
+
+def test_workflow_accountability_entry_round_trips() -> None:
+    entry = WorkflowTimelineEntry.accountability(
+        kind=WorkflowTimelineEntryKind.COMPLETION_CONTINUE,
+        mode=WorkflowMode.EXECUTE,
+        reason_code="verification_failed_reentry",
+        summary="completion: verification failed; returning to execute for fixes",
+        policy_stage="definition_of_done",
+        policy_outcome="continue",
+        decision_kind=WorkflowDecisionKind.FORCED,
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context"],
+        signal_summary=["stage=definition_of_done"],
+        evidence_summary=["verification contradiction: pytest still failed"],
+        artifact_paths=["/tmp/verification.md"],
     )
 
     restored = WorkflowTimelineEntry.from_dict(entry.to_dict())
