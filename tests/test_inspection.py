@@ -192,6 +192,7 @@ def _persist_explore_snapshot(temp_dir: Path) -> None:
                 Message(role=Role.USER, content="What file did you mention?"),
                 Message(role=Role.ASSISTANT, content="I mentioned README.md."),
             ],
+            last_history_mode="continue",
             last_query="What file did you mention?",
             last_response="I mentioned README.md.",
         )
@@ -492,6 +493,7 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     )
     assert snapshot.explore_turn_count == 2
     assert snapshot.explore_message_count == 4
+    assert snapshot.explore_history_mode == "continue"
     assert snapshot.explore_last_query == "What file did you mention?"
     assert snapshot.explore_last_response == "I mentioned README.md."
     assert snapshot.explore_updated_at is not None
@@ -643,6 +645,7 @@ def test_status_and_session_commands_render_persisted_state(
     assert "completion -> finalize" in status_result.output
     assert "Finalizing completed turn" in status_result.output
     assert "Explore Turns" in status_result.output
+    assert "Explore History" in status_result.output
     assert "What file did you mention?" in status_result.output
 
     assert list_result.exit_code == 0
@@ -980,6 +983,31 @@ def test_permissions_show_surfaces_invalid_rule_file(
     assert "invalid" in result.output.lower()
     assert "Rule Error" in result.output
     assert "Rules Source" in result.output
+
+
+def test_explore_command_can_show_and_reset_continuity(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_explore_snapshot(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    status_result = runner.invoke(cli_main_module.explore_cli, ["--status"])
+
+    assert status_result.exit_code == 0
+    assert "Loader Explore State" in status_result.output
+    assert "continue" in status_result.output
+    assert "What file did you mention?" in status_result.output
+
+    reset_result = runner.invoke(cli_main_module.explore_cli, ["--reset"])
+
+    assert reset_result.exit_code == 0
+    assert "Cleared persisted explore continuity." in reset_result.output
+    assert ExploreStateStore(temp_dir).load() is None
 
 
 def test_root_help_lists_special_commands() -> None:

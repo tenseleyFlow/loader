@@ -229,6 +229,7 @@ async def test_explore_mode_persists_recent_history_for_follow_up_queries(temp_d
     snapshot = ExploreStateStore(temp_dir).load()
     assert snapshot is not None
     assert snapshot.turn_count == 2
+    assert snapshot.last_history_mode == "continue"
     assert snapshot.last_query == "What file did you mention?"
     assert snapshot.last_response == "I mentioned README.md."
 
@@ -266,5 +267,6 @@ async def test_explore_mode_fresh_query_ignores_persisted_history(temp_dir) -> N
     snapshot = ExploreStateStore(temp_dir).load()
     assert snapshot is not None
     assert snapshot.turn_count == 1
+    assert snapshot.last_history_mode == "fresh"
     assert snapshot.last_query == "Ignore the previous lookup."
     assert snapshot.last_response == "Fresh answer only."
