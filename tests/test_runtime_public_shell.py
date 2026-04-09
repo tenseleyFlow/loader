@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from loader.agent.loop import Agent, AgentConfig
 from loader.llm.base import Message, Role
@@ -10,11 +13,13 @@ from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.public_shell import (
     SteeringMailbox,
+    build_event_emitter,
     build_runtime_few_shot_examples,
     build_runtime_system_message,
     create_runtime_session,
     create_runtime_session_install,
     load_runtime_session_install,
+    refresh_runtime_capability_state,
     restore_runtime_session_state,
 )
 from loader.runtime.session import ConversationSession
@@ -101,6 +106,26 @@ def test_build_runtime_few_shot_examples_switches_tool_format() -> None:
     assert native_examples[1].content.startswith("[write:")
 
 
+@pytest.mark.asyncio
+async def test_build_event_emitter_supports_sync_and_async_callbacks() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def on_event_sync(event) -> None:
+        seen.append(("sync", event.type))
+
+    async def on_event_async(event) -> None:
+        seen.append(("async", event.type))
+
+    sync_emit = build_event_emitter(on_event_sync)
+    async_emit = build_event_emitter(on_event_async)
+
+    await sync_emit(SimpleNamespace(type="response"))
+    await async_emit(SimpleNamespace(type="stream"))
+    await build_event_emitter(None)(SimpleNamespace(type="ignored"))
+
+    assert seen == [("sync", "response"), ("async", "stream")]
+
+
 def test_steering_mailbox_tracks_running_state_and_fifo_messages() -> None:
     mailbox = SteeringMailbox()
 
@@ -127,6 +152,19 @@ def test_steering_mailbox_tracks_running_state_and_fifo_messages() -> None:
     mailbox.clear()
     assert mailbox.is_running is False
     assert mailbox.drain() == []
+
+
+def test_refresh_runtime_capability_state_reports_prompt_reset_requirement() -> None:
+    backend = ScriptedBackend(supports_native_tools=False)
+    current_profile = SimpleNamespace(supports_native_tools=True)
+
+    refresh = refresh_runtime_capability_state(
+        backend=backend,
+        current_profile=current_profile,  # type: ignore[arg-type]
+    )
+
+    assert refresh.capability_profile.supports_native_tools is False
+    assert refresh.prompt_reset_required is True
 
 
 def test_create_runtime_session_install_builds_restored_shell_state(

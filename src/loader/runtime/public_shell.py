@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import inspect
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..context.project import ProjectContext
 from ..llm.base import Message, Role
 from ..tools.base import ToolRegistry
+from .capabilities import CapabilityProfile, resolve_backend_capability_profile
 from .dod import DefinitionOfDoneStore
-from .events import TurnSummary
+from .events import AgentEvent, TurnSummary
 from .permissions import PermissionConfigStatus, PermissionPolicy
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
@@ -48,6 +50,14 @@ class RuntimeSessionInstall:
 
     session: ConversationSession
     restored: RestoredSessionState
+
+
+@dataclass(slots=True)
+class CapabilityRefresh:
+    """Result of recomputing the active capability profile."""
+
+    capability_profile: CapabilityProfile
+    prompt_reset_required: bool
 
 
 class SteeringMailbox:
@@ -250,6 +260,35 @@ def load_runtime_session_install(
             project_root=project_root,
             session=session,
         ),
+    )
+
+
+def build_event_emitter(
+    on_event: Callable[[AgentEvent], None] | Callable[[AgentEvent], Awaitable[None]] | None,
+) -> Callable[[AgentEvent], Awaitable[None]]:
+    """Normalize public-shell event callbacks into one async emitter."""
+
+    async def emit(event: AgentEvent) -> None:
+        if on_event is None:
+            return
+        result = on_event(event)
+        if inspect.iscoroutine(result):
+            await result
+
+    return emit
+
+
+def refresh_runtime_capability_state(
+    *,
+    backend,
+    current_profile: CapabilityProfile,
+) -> CapabilityRefresh:
+    """Recompute backend capability state and report whether prompts must reset."""
+
+    refreshed_profile = resolve_backend_capability_profile(backend)
+    return CapabilityRefresh(
+        capability_profile=refreshed_profile,
+        prompt_reset_required=refreshed_profile != current_profile,
     )
 
 
