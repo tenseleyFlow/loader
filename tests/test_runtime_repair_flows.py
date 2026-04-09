@@ -113,3 +113,43 @@ async def test_repeated_empty_responses_fail_honestly_after_one_retry(
         "Please try again or switch to a different backend/model."
     )
     assert len(backend.invocations) == 2
+
+
+@pytest.mark.asyncio
+async def test_raw_text_tool_recovery_budget_fails_honestly(
+    temp_dir: Path,
+) -> None:
+    for name in ("one.txt", "two.txt", "three.txt", "four.txt"):
+        (temp_dir / name).write_text(f"{name}\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content='{"name": "read", "arguments": {"file_path": "one.txt"}}'
+            ),
+            CompletionResponse(
+                content='{"name": "read", "arguments": {"file_path": "two.txt"}}'
+            ),
+            CompletionResponse(
+                content='{"name": "read", "arguments": {"file_path": "three.txt"}}'
+            ),
+            CompletionResponse(
+                content='{"name": "read", "arguments": {"file_path": "four.txt"}}'
+            ),
+        ]
+    )
+
+    run = await run_scenario(
+        "Inspect the text fixtures.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read", "read", "read"]
+    assert run.response == (
+        "I couldn't safely continue because the model kept emitting raw-text "
+        "tool calls instead of proper tool invocations. Please try again or "
+        "switch to a different backend/model."
+    )
+    assert "Let me know if you'd like me to continue" not in run.response

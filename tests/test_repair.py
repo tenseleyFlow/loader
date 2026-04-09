@@ -164,3 +164,40 @@ def test_response_repairer_recovers_todowrite_from_runtime_registry(
             },
         )
     ]
+
+
+def test_response_repairer_fails_honestly_when_raw_tool_budget_is_exhausted(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    analysis = repairer.analyze_response(
+        content=json.dumps(
+            {
+                "name": "read",
+                "arguments": {"file_path": "README.md"},
+            }
+        ),
+        response_content=json.dumps(
+            {
+                "name": "read",
+                "arguments": {"file_path": "README.md"},
+            }
+        ),
+        tool_calls=[],
+        extracted_iterations=3,
+        max_extracted_iterations=3,
+    )
+
+    assert analysis.should_stop is True
+    assert analysis.final_response == (
+        "I couldn't safely continue because the model kept emitting raw-text "
+        "tool calls instead of proper tool invocations. Please try again or "
+        "switch to a different backend/model."
+    )
+    assert analysis.failure == "raw-text tool recovery budget exhausted"
+    assert "Let me know if you'd like me to continue" not in analysis.final_response
