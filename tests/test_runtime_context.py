@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from loader.agent.loop import Agent, AgentConfig
-from loader.runtime.bootstrap import build_runtime_context
+from loader.runtime.bootstrap import build_runtime_bootstrap_source, build_runtime_context
 from loader.runtime.context import RuntimeContext
 from loader.runtime.recovery import RecoveryContext
 from tests.helpers.runtime_harness import ScriptedBackend
@@ -18,8 +18,9 @@ def test_agent_builds_typed_runtime_context(temp_dir: Path) -> None:
         config=AgentConfig(auto_context=False),
         project_root=temp_dir,
     )
+    source = build_runtime_bootstrap_source(agent)
 
-    context = build_runtime_context(agent)
+    context = build_runtime_context(source)
 
     assert isinstance(context, RuntimeContext)
     assert context.project_root == temp_dir.resolve()
@@ -47,8 +48,9 @@ def test_runtime_context_control_callbacks_stay_in_sync(temp_dir: Path) -> None:
         config=AgentConfig(auto_context=False),
         project_root=temp_dir,
     )
+    source = build_runtime_bootstrap_source(agent)
 
-    context = build_runtime_context(agent)
+    context = build_runtime_context(source)
     context.queue_steering_message("Re-check the current task.")
 
     assert context.drain_steering_messages() == ["Re-check the current task."]

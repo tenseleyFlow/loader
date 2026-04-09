@@ -8,6 +8,7 @@ import pytest
 
 from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, StreamChunk
+from loader.runtime.bootstrap import RuntimeBootstrapView
 from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -24,7 +25,9 @@ def test_build_runtime_launcher_returns_launcher_for_agent_source(
     launcher = build_runtime_launcher(agent)
 
     assert isinstance(launcher, RuntimeLauncher)
-    assert launcher.source is agent
+    assert isinstance(launcher.source, RuntimeBootstrapView)
+    assert launcher.source is not agent
+    assert launcher.source.metadata == {"owner_type": "Agent"}
 
 
 @pytest.mark.asyncio

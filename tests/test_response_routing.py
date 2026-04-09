@@ -53,7 +53,7 @@ async def _prepare_context(
         task=prepared.task,
         effective_task=prepared.effective_task,
         iterations=1,
-        max_iterations=runtime.agent.config.max_iterations,
+        max_iterations=runtime.context.config.max_iterations,
         actions_taken=[],
         continuation_count=continuation_count,
         consecutive_errors=consecutive_errors,

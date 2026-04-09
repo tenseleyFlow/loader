@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from loader.agent.loop import Agent, AgentConfig
-from loader.runtime.bootstrap import build_runtime_context, sync_runtime_context
+from loader.runtime.bootstrap import (
+    RuntimeBootstrapView,
+    build_runtime_bootstrap_source,
+    build_runtime_context,
+    sync_runtime_context,
+)
 from loader.runtime.conversation import ConversationRuntime
 from loader.runtime.explore import ExploreRuntime
 from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
@@ -21,8 +26,9 @@ def test_build_runtime_context_uses_shared_bootstrap_contract(
         config=AgentConfig(auto_context=False),
         project_root=temp_dir,
     )
+    source = build_runtime_bootstrap_source(agent)
 
-    context = build_runtime_context(agent)
+    context = build_runtime_context(source)
 
     assert context.project_root == temp_dir.resolve()
     assert context.backend is agent.backend
@@ -35,6 +41,7 @@ def test_build_runtime_context_uses_shared_bootstrap_contract(
     assert context.workflow_mode == agent.workflow_mode
     assert context.prompt_format == agent.prompt_format
     assert context.prompt_sections == agent.prompt_sections
+    assert source.metadata == {"owner_type": "Agent"}
 
 
 def test_sync_runtime_context_refreshes_prompt_and_capability_state(
@@ -46,7 +53,8 @@ def test_sync_runtime_context_refreshes_prompt_and_capability_state(
         config=AgentConfig(auto_context=False),
         project_root=temp_dir,
     )
-    context = build_runtime_context(agent)
+    source = build_runtime_bootstrap_source(agent)
+    context = build_runtime_context(source)
 
     agent.prompt_format = "native"
     agent.prompt_sections = ["Workflow Context", "Runtime Config"]
@@ -54,7 +62,7 @@ def test_sync_runtime_context_refreshes_prompt_and_capability_state(
     backend._supports_native_tools = False  # type: ignore[attr-defined]
     agent.refresh_capability_profile()
 
-    sync_runtime_context(context, agent)
+    sync_runtime_context(context, source)
 
     assert context.workflow_mode == "clarify"
     assert context.prompt_format == "native"
@@ -83,10 +91,12 @@ def test_conversation_runtime_uses_shared_bootstrap_factory(
         fake_build_runtime_context,
     )
 
-    runtime = ConversationRuntime(agent)
+    source = build_runtime_bootstrap_source(agent)
+    runtime = ConversationRuntime(source)
 
     assert calls == ["conversation"]
     assert runtime.context.project_root == temp_dir.resolve()
+    assert runtime.source is source
 
 
 def test_explore_runtime_uses_shared_bootstrap_factory(
@@ -110,10 +120,12 @@ def test_explore_runtime_uses_shared_bootstrap_factory(
         fake_build_runtime_context,
     )
 
-    runtime = ExploreRuntime(agent)
+    source = build_runtime_bootstrap_source(agent)
+    runtime = ExploreRuntime(source)
 
     assert calls == ["explore"]
     assert runtime.context.project_root == temp_dir.resolve()
+    assert runtime.source is source
 
 
 def test_build_runtime_launcher_wraps_shared_bootstrap_source(
@@ -128,4 +140,6 @@ def test_build_runtime_launcher_wraps_shared_bootstrap_source(
     launcher = build_runtime_launcher(agent)
 
     assert isinstance(launcher, RuntimeLauncher)
-    assert launcher.source is agent
+    assert isinstance(launcher.source, RuntimeBootstrapView)
+    assert launcher.source is not agent
+    assert launcher.source.metadata == {"owner_type": "Agent"}

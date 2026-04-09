@@ -44,7 +44,7 @@ async def _run_iteration(
         original_task=original_task,
         effective_max_tokens=prepared.effective_max_tokens,
         iterations=1,
-        max_iterations=runtime.agent.config.max_iterations,
+        max_iterations=runtime.context.config.max_iterations,
         actions_taken=[],
         continuation_count=0,
         empty_retry_count=0,
