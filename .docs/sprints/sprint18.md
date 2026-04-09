@@ -157,3 +157,33 @@ The goal is to make Sprint 18 explicitly “reference-guided Loader optimization
 - AST-aware semantic diffs
 - a broad explore workflow UI
 - broad permission-rule editing UX
+
+## Audit
+
+### Status
+
+- Sprint 18 is complete, and the audit is green. Loader now persists explicit completion-policy decisions and step traces, exposes them through the existing operator surfaces, and moves more shell glue out of `src/loader/agent/loop.py` into runtime-owned public-shell helpers.
+
+### Landed
+
+- completion-policy outcomes are now explicit runtime contract instead of hidden side effects: `src/loader/runtime/completion_policy.py`, `src/loader/runtime/turn_completion.py`, and `src/loader/runtime/finalization.py` now preserve reason-coded stop/continue outcomes such as `premature_completion_nudge`, `non_mutating_response_accepted`, `verification_passed`, and `verification_failed_reentry`
+- session/runtime state now persists both the latest completion decision and a bounded per-turn completion trace through `src/loader/runtime/session.py`, `src/loader/runtime/events.py`, and the new `src/loader/runtime/completion_trace.py`
+- completion-policy state is now inspectable from the product surface: `src/loader/runtime/inspection.py` and `src/loader/cli/main.py` show the latest completion decision in `loader status`, `loader session list`, and `loader session show`, while `loader session show` also prints the richer step-by-step completion trace
+- resumed session state now restores completion decisions and traces through `src/loader/runtime/public_shell.py`, so inspection survives restart instead of only describing the active process
+- the public shell is thinner again: `src/loader/runtime/public_shell.py` now owns a real `SteeringMailbox`, fresh/load session-install helpers, sync/async event-emitter normalization, and capability-refresh decision helpers
+- `src/loader/agent/loop.py` now adopts those runtime-owned helpers instead of open-coding them; the file is down to 432 lines, steering no longer leaks across resume/clear lifecycle, and replacing a session now invalidates cached prompt state explicitly
+
+### Verification
+
+- `uv run pytest -q` is green: `342 passed`
+- `tests/test_completion_policy.py`, `tests/test_turn_completion.py`, `tests/test_finalization.py`, `tests/test_session_state.py`, and `tests/test_inspection.py` now pin persisted completion decisions plus step-trace behavior directly
+- `tests/test_runtime_public_shell.py` now covers steering mailbox behavior, fresh/load session-install helpers, sync/async event emitters, and capability-refresh helper behavior directly
+- `tests/test_turn_preparation.py` now proves a new turn clears stale completion trace state before execution starts
+- `tests/test_runtime_context.py`, `tests/test_runtime_bootstrap.py`, and `tests/test_runtime_launcher.py` stayed green while `Agent` adopted the slimmer public-shell helper set
+
+### Residual debt
+
+- `src/loader/agent/loop.py` is materially more facade-like than Sprint 17, but it still owns the public entrypoints themselves plus the remaining launcher/UI glue; Sprint 18 shrank the shell again, it did not eliminate it
+- completion policy is now explicit and inspectable, but Loader still keeps bounded continuation heuristics for some non-mutating tasks; those nudges are no longer hidden, but they are still policy choices rather than hard-stop failures
+- the new completion trace is intentionally compact and per-turn; Loader still does not have a richer long-horizon policy/debug timeline that merges completion, workflow, and repair evidence into one operator view
+- Sprint 18 kept following claw-code and OMX as architectural guardrails, but Loader still stops short of claw-code's tighter policy-engine seams and OMX's deeper verifier/interview rigor
