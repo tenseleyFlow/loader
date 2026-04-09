@@ -18,14 +18,14 @@ from ..runtime.permissions import (
     load_permission_rules,
 )
 from ..runtime.public_shell import (
-    RuntimeSessionInstall,
     SteeringMailbox,
     build_event_emitter,
+    build_fresh_runtime_session_install,
     build_runtime_few_shot_examples,
     build_runtime_system_message,
-    create_runtime_session_install,
-    load_runtime_session_install,
+    clear_runtime_shell_history,
     refresh_runtime_capability_state,
+    resume_runtime_shell_session,
 )
 from ..runtime.safeguards import RuntimeSafeguards
 from ..runtime.workflow import WorkflowMode
@@ -127,24 +127,6 @@ class Agent:
         self.capability_profile = resolve_backend_capability_profile(self.backend)
         self.last_turn_summary: TurnSummary | None = None
         self.steering = SteeringMailbox()
-        self.session = create_runtime_session_install(
-            project_root=self.project_root,
-            messages=self.messages,
-            permission_policy=self.permission_policy,
-            permission_config_status=self.permission_config_status,
-            prompt_format=self.prompt_format,
-            prompt_sections=list(self.prompt_sections),
-            workflow_mode=self.workflow_mode,
-            rotate_after_bytes=self.config.session_rotate_after_bytes,
-            auto_compaction_input_tokens_threshold=(
-                self.config.session_auto_compaction_input_tokens_threshold
-            ),
-            compaction_keep_last_messages=(
-                self.config.session_compaction_keep_last_messages
-            ),
-            system_message_factory=self._get_system_message,
-            few_shot_factory=self._get_few_shot_examples,
-        ).session
 
         # Track original task for multi-turn conversations
         self._current_task: str | None = None
@@ -152,74 +134,16 @@ class Agent:
         # Runtime safeguards for filtering, steering, and deduplication
         self.safeguards = RuntimeSafeguards()
 
+        self.session = build_fresh_runtime_session_install(self).session
+
         # Load project context if enabled
         self.project_context: ProjectContext | None = None
         if self.config.auto_context:
             self.project_context = detect_project(self.project_root)
 
-    def _install_runtime_session(self, install: RuntimeSessionInstall) -> None:
-        """Install one restored runtime session into the agent shell."""
-
-        self.steering.clear()
-        self.session = install.session
-        self.messages = install.restored.messages
-        self._current_task = install.restored.current_task
-        self.set_workflow_mode(install.restored.workflow_mode)
-        self.permission_policy.active_mode = PermissionMode.from_str(
-            install.restored.permission_mode
-        )
-        self.prompt_format = install.restored.prompt_format
-        self.prompt_sections = list(install.restored.prompt_sections)
-        self.last_turn_summary = install.restored.last_turn_summary
-        self._system_message = None
-
-    def _build_fresh_session_install(
-        self,
-        *,
-        messages: list[Message] | None = None,
-        workflow_mode: str | None = None,
-    ) -> RuntimeSessionInstall:
-        """Build a fresh runtime session plus its restored shell view."""
-
-        return create_runtime_session_install(
-            project_root=self.project_root,
-            messages=messages,
-            permission_policy=self.permission_policy,
-            permission_config_status=self.permission_config_status,
-            prompt_format=self.prompt_format,
-            prompt_sections=list(self.prompt_sections),
-            workflow_mode=workflow_mode or self.workflow_mode,
-            rotate_after_bytes=self.config.session_rotate_after_bytes,
-            auto_compaction_input_tokens_threshold=(
-                self.config.session_auto_compaction_input_tokens_threshold
-            ),
-            compaction_keep_last_messages=(
-                self.config.session_compaction_keep_last_messages
-            ),
-            system_message_factory=self._get_system_message,
-            few_shot_factory=self._get_few_shot_examples,
-        )
-
     def resume_session(self, session_id: str | None = None) -> bool:
         """Resume the latest or named persisted session."""
-
-        loaded = load_runtime_session_install(
-            project_root=self.project_root,
-            system_message_factory=self._get_system_message,
-            few_shot_factory=self._get_few_shot_examples,
-            session_id=session_id,
-            rotate_after_bytes=self.config.session_rotate_after_bytes,
-            auto_compaction_input_tokens_threshold=(
-                self.config.session_auto_compaction_input_tokens_threshold
-            ),
-            compaction_keep_last_messages=(
-                self.config.session_compaction_keep_last_messages
-            ),
-        )
-        if loaded is None:
-            return False
-        self._install_runtime_session(loaded)
-        return True
+        return resume_runtime_shell_session(self, session_id=session_id)
 
     def steer(self, message: str) -> bool:
         """Send a steering message to the agent during execution.
@@ -416,17 +340,4 @@ class Agent:
 
     def clear_history(self) -> None:
         """Clear conversation history."""
-        self.messages = []
-        self.prompt_format = None
-        self.prompt_sections = []
-        self._current_task = None
-        self.last_turn_summary = None
-        self.set_workflow_mode(WorkflowMode.EXECUTE.value)
-        self._install_runtime_session(
-            self._build_fresh_session_install(
-                messages=self.messages,
-                workflow_mode=WorkflowMode.EXECUTE.value,
-            )
-        )
-        self._system_message = None
-        self.safeguards.reset()  # Reset all runtime safeguards
+        clear_runtime_shell_history(self)
