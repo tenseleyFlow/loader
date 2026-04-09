@@ -12,6 +12,7 @@ from loader.llm.base import CompletionResponse, Message, Role, ToolCall
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.evidence_provenance import EvidenceProvenance
 from loader.runtime.prompt_history import PromptSnapshot
+from loader.runtime.runtime_handle import RuntimeHandle
 from loader.runtime.session import ConversationSession
 from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
 from loader.runtime.workflow_policy import WorkflowTimelineEntry
@@ -173,6 +174,7 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
 
     session.update_runtime_state(
         current_task="Inspect permission history",
+        runtime_owner_type="RuntimeHandle",
         permission_mode="allow",
         permission_prompting_enabled=True,
         permission_rule_counts={"allow": 2, "deny": 1, "ask": 4},
@@ -237,6 +239,8 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     assert reloaded.permission_rules_source == str(
         temp_dir / ".loader" / "permission-rules.json"
     )
+    assert reloaded.runtime_owner_type == "RuntimeHandle"
+    assert reloaded.runtime_owner_path == "runtime-handle"
     assert reloaded.prompt_format == "native"
     assert reloaded.prompt_sections == [
         "Runtime Config",
@@ -272,6 +276,35 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     assert reloaded.workflow_timeline[0].unresolved_questions == [
         "Scope is still broad."
     ]
+
+
+def test_resume_session_updates_runtime_owner_metadata(temp_dir: Path) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+    agent.session.persist()
+    session_id = agent.session.session_id
+
+    handle = RuntimeHandle(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+
+    assert handle.resume_session(session_id) is True
+
+    reloaded = ConversationSession.load(
+        project_root=temp_dir,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        session_id=session_id,
+    )
+
+    assert reloaded is not None
+    assert reloaded.runtime_owner_type == "RuntimeHandle"
+    assert reloaded.runtime_owner_path == "runtime-handle"
 
 
 def test_session_prefers_canonical_workflow_timeline_for_completion_trace(

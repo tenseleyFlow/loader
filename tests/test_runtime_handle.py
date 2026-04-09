@@ -30,7 +30,10 @@ def test_runtime_handle_builds_runtime_bootstrap_contract(
     assert isinstance(launcher, RuntimeLauncher)
     assert isinstance(launcher.source, RuntimeBootstrapView)
     assert launcher.source is not handle
-    assert launcher.source.metadata == {"owner_type": "RuntimeHandle"}
+    assert launcher.source.metadata == {
+        "owner_type": "RuntimeHandle",
+        "owner_path": "runtime-handle",
+    }
     assert context.project_root == temp_dir.resolve()
     assert context.backend is handle.backend
     assert context.registry is handle.registry
@@ -63,7 +66,10 @@ async def test_runtime_handle_runs_conversation_runtime_without_agent(
     )
 
     assert summary.final_response == "Runtime handle reply."
-    assert runtime.source.metadata == {"owner_type": "RuntimeHandle"}
+    assert runtime.source.metadata == {
+        "owner_type": "RuntimeHandle",
+        "owner_path": "runtime-handle",
+    }
     assert any(event.type == "response" for event in events)
 
 

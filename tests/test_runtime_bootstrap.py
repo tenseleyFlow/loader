@@ -41,7 +41,10 @@ def test_build_runtime_context_uses_shared_bootstrap_contract(
     assert context.workflow_mode == agent.workflow_mode
     assert context.prompt_format == agent.prompt_format
     assert context.prompt_sections == agent.prompt_sections
-    assert source.metadata == {"owner_type": "Agent"}
+    assert source.metadata == {
+        "owner_type": "Agent",
+        "owner_path": "public-agent",
+    }
 
 
 def test_sync_runtime_context_refreshes_prompt_and_capability_state(
@@ -142,4 +145,7 @@ def test_build_runtime_launcher_wraps_shared_bootstrap_source(
     assert isinstance(launcher, RuntimeLauncher)
     assert isinstance(launcher.source, RuntimeBootstrapView)
     assert launcher.source is not agent
-    assert launcher.source.metadata == {"owner_type": "Agent"}
+    assert launcher.source.metadata == {
+        "owner_type": "Agent",
+        "owner_path": "public-agent",
+    }

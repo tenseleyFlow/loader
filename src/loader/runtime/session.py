@@ -24,11 +24,15 @@ from .completion_trace import (
     has_canonical_completion_trace,
     normalize_completion_trace,
 )
+from .owner_metadata import (
+    normalize_runtime_owner_path,
+    normalize_runtime_owner_type,
+)
 from .prompt_history import PromptSnapshot, normalize_prompt_history
 from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 
-SESSION_VERSION = 10
+SESSION_VERSION = 11
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -173,6 +177,8 @@ class SessionSnapshot:
     usage: dict[str, int] = field(default_factory=dict)
     active_dod_path: str | None = None
     current_task: str | None = None
+    runtime_owner_type: str | None = None
+    runtime_owner_path: str | None = None
     workflow_mode: str = "execute"
     permission_mode: str = "workspace-write"
     permission_prompting_enabled: bool = False
@@ -211,6 +217,8 @@ class SessionSnapshot:
             "usage": dict(self.usage),
             "active_dod_path": self.active_dod_path,
             "current_task": self.current_task,
+            "runtime_owner_type": self.runtime_owner_type,
+            "runtime_owner_path": self.runtime_owner_path,
             "workflow_mode": self.workflow_mode,
             "permission_mode": self.permission_mode,
             "permission_prompting_enabled": self.permission_prompting_enabled,
@@ -265,6 +273,15 @@ class SessionSnapshot:
             usage=normalize_usage(data.get("usage")),
             active_dod_path=data.get("active_dod_path"),
             current_task=data.get("current_task"),
+            runtime_owner_type=normalize_runtime_owner_type(
+                data.get("runtime_owner_type")
+            ),
+            runtime_owner_path=normalize_runtime_owner_path(
+                data.get("runtime_owner_path"),
+                owner_type=normalize_runtime_owner_type(
+                    data.get("runtime_owner_type")
+                ),
+            ),
             workflow_mode=str(data.get("workflow_mode", "execute")),
             permission_mode=str(data.get("permission_mode", "workspace-write")),
             permission_prompting_enabled=bool(
@@ -434,6 +451,8 @@ class ConversationSession:
     usage_totals: dict[str, int] = field(default_factory=dict)
     active_dod_path: str | None = None
     current_task: str | None = None
+    runtime_owner_type: str | None = None
+    runtime_owner_path: str | None = None
     workflow_mode: str = "execute"
     permission_mode: str = "workspace-write"
     permission_prompting_enabled: bool = False
@@ -568,6 +587,8 @@ class ConversationSession:
         *,
         active_dod_path: str | None = None,
         current_task: str | None = None,
+        runtime_owner_type: str | None = None,
+        runtime_owner_path: str | None = None,
         workflow_mode: str | None = None,
         permission_mode: str | None = None,
         permission_prompting_enabled: bool | None = None,
@@ -594,6 +615,13 @@ class ConversationSession:
             self.active_dod_path = active_dod_path
         if current_task is not None:
             self.current_task = current_task
+        if runtime_owner_type is not None:
+            self.runtime_owner_type = normalize_runtime_owner_type(runtime_owner_type)
+        if runtime_owner_path is not None or runtime_owner_type is not None:
+            self.runtime_owner_path = normalize_runtime_owner_path(
+                runtime_owner_path,
+                owner_type=self.runtime_owner_type,
+            )
         if workflow_mode is not None:
             self.workflow_mode = workflow_mode
         if permission_mode is not None:
@@ -792,6 +820,8 @@ class ConversationSession:
             usage=dict(self.usage_totals),
             active_dod_path=self.active_dod_path,
             current_task=self.current_task,
+            runtime_owner_type=self.runtime_owner_type,
+            runtime_owner_path=self.runtime_owner_path,
             workflow_mode=self.workflow_mode,
             permission_mode=self.permission_mode,
             permission_prompting_enabled=self.permission_prompting_enabled,
@@ -855,6 +885,8 @@ class ConversationSession:
         instance.usage_totals = dict(snapshot.usage)
         instance.active_dod_path = snapshot.active_dod_path
         instance.current_task = snapshot.current_task
+        instance.runtime_owner_type = snapshot.runtime_owner_type
+        instance.runtime_owner_path = snapshot.runtime_owner_path
         instance.workflow_mode = snapshot.workflow_mode
         instance.permission_mode = snapshot.permission_mode
         instance.permission_prompting_enabled = snapshot.permission_prompting_enabled

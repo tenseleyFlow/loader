@@ -28,7 +28,10 @@ def test_build_runtime_launcher_returns_launcher_for_agent_source(
     assert isinstance(launcher, RuntimeLauncher)
     assert isinstance(launcher.source, RuntimeBootstrapView)
     assert launcher.source is not agent
-    assert launcher.source.metadata == {"owner_type": "Agent"}
+    assert launcher.source.metadata == {
+        "owner_type": "Agent",
+        "owner_path": "public-agent",
+    }
 
 
 @pytest.mark.asyncio

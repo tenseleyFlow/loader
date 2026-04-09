@@ -18,6 +18,7 @@ from .capabilities import CapabilityProfile, resolve_backend_capability_profile
 from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .launcher import build_runtime_launcher
+from .owner_metadata import build_runtime_owner_metadata
 from .permissions import PermissionConfigStatus, PermissionMode, PermissionPolicy
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
@@ -174,6 +175,8 @@ def create_runtime_session(
     prompt_format: str | None,
     prompt_sections: list[str],
     workflow_mode: str,
+    runtime_owner_type: str | None,
+    runtime_owner_path: str | None,
     rotate_after_bytes: int,
     auto_compaction_input_tokens_threshold: int,
     compaction_keep_last_messages: int,
@@ -187,6 +190,8 @@ def create_runtime_session(
         few_shot_factory=few_shot_factory,
         project_root=project_root,
         messages=messages or [],
+        runtime_owner_type=runtime_owner_type,
+        runtime_owner_path=runtime_owner_path,
         permission_mode=permission_policy.active_mode.as_str(),
         permission_prompting_enabled=permission_policy.prompting_enabled,
         permission_rule_counts=_copy_rule_counts(permission_policy.rule_counts()),
@@ -211,6 +216,8 @@ def create_runtime_session_install(
     prompt_format: str | None,
     prompt_sections: list[str],
     workflow_mode: str,
+    runtime_owner_type: str | None,
+    runtime_owner_path: str | None,
     rotate_after_bytes: int,
     auto_compaction_input_tokens_threshold: int,
     compaction_keep_last_messages: int,
@@ -227,6 +234,8 @@ def create_runtime_session_install(
         prompt_format=prompt_format,
         prompt_sections=prompt_sections,
         workflow_mode=workflow_mode,
+        runtime_owner_type=runtime_owner_type,
+        runtime_owner_path=runtime_owner_path,
         rotate_after_bytes=rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
             auto_compaction_input_tokens_threshold
@@ -262,6 +271,15 @@ def apply_runtime_session_install(
     owner.prompt_sections = list(install.restored.prompt_sections)
     owner.last_turn_summary = install.restored.last_turn_summary
     owner._system_message = None
+    owner_metadata = build_runtime_owner_metadata(owner)
+    if (
+        install.session.runtime_owner_type != owner_metadata["owner_type"]
+        or install.session.runtime_owner_path != owner_metadata["owner_path"]
+    ):
+        install.session.update_runtime_state(
+            runtime_owner_type=owner_metadata["owner_type"],
+            runtime_owner_path=owner_metadata["owner_path"],
+        )
 
 
 def build_fresh_runtime_session_install(
@@ -272,6 +290,7 @@ def build_fresh_runtime_session_install(
 ) -> RuntimeSessionInstall:
     """Build a fresh runtime session install from the current public shell."""
 
+    owner_metadata = build_runtime_owner_metadata(owner)
     return create_runtime_session_install(
         project_root=owner.project_root,
         messages=messages,
@@ -280,6 +299,8 @@ def build_fresh_runtime_session_install(
         prompt_format=owner.prompt_format,
         prompt_sections=list(owner.prompt_sections),
         workflow_mode=workflow_mode or owner.workflow_mode,
+        runtime_owner_type=owner_metadata["owner_type"],
+        runtime_owner_path=owner_metadata["owner_path"],
         rotate_after_bytes=owner.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
             owner.config.session_auto_compaction_input_tokens_threshold

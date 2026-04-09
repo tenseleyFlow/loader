@@ -17,6 +17,7 @@ from .context import (
     RuntimeSafeguardsProtocol,
 )
 from .events import TurnSummary
+from .owner_metadata import build_runtime_owner_metadata
 from .permissions import PermissionConfigStatus, PermissionPolicy
 from .reasoning_service import RuntimeReasoningService
 from .session import ConversationSession
@@ -174,7 +175,7 @@ def build_runtime_bootstrap_source(source: RuntimeBootstrapSource | Any) -> Runt
         _queue_steering_message=source.queue_steering_message,
         _drain_steering_messages=source.drain_steering_messages,
         _refresh_capability_profile=source.refresh_capability_profile,
-        metadata={"owner_type": type(source).__name__},
+        metadata=build_runtime_owner_metadata(source),
     )
 
 

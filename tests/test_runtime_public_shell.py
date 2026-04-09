@@ -71,6 +71,8 @@ def test_create_runtime_session_copies_public_shell_state(temp_dir: Path) -> Non
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context"],
         workflow_mode="execute",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
         rotate_after_bytes=handle.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
             handle.config.session_auto_compaction_input_tokens_threshold
@@ -83,6 +85,8 @@ def test_create_runtime_session_copies_public_shell_state(temp_dir: Path) -> Non
     assert session.permission_mode == handle.active_permission_mode
     assert session.permission_prompting_enabled is handle.permission_policy.prompting_enabled
     assert session.permission_rule_counts == handle.permission_policy.rule_counts()
+    assert session.runtime_owner_type == "RuntimeHandle"
+    assert session.runtime_owner_path == "runtime-handle"
     assert session.prompt_format == "native"
     assert session.prompt_sections == ["Runtime Config", "Workflow Context"]
 
@@ -374,6 +378,8 @@ def test_create_runtime_session_install_builds_restored_shell_state(
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context"],
         workflow_mode="execute",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
         rotate_after_bytes=handle.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
             handle.config.session_auto_compaction_input_tokens_threshold
@@ -402,6 +408,8 @@ def test_apply_runtime_session_install_updates_owner_shell_state(
         prompt_format="native",
         prompt_sections=["Runtime Config", "Workflow Context"],
         workflow_mode="plan",
+        runtime_owner_type="Agent",
+        runtime_owner_path="public-agent",
         rotate_after_bytes=handle.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
             handle.config.session_auto_compaction_input_tokens_threshold
@@ -423,6 +431,8 @@ def test_apply_runtime_session_install_updates_owner_shell_state(
     assert handle.active_permission_mode == "prompt"
     assert handle.prompt_format == "native"
     assert handle.prompt_sections == ["Runtime Config", "Workflow Context"]
+    assert handle.session.runtime_owner_type == "RuntimeHandle"
+    assert handle.session.runtime_owner_path == "runtime-handle"
 
 
 def test_build_fresh_runtime_session_install_uses_current_owner_shell_state(
