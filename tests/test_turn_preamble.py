@@ -55,7 +55,7 @@ async def test_turn_preamble_drains_steering_without_prefill_hint(
         task="Create a README for the runtime controller.",
     )
     agent.messages.append(Message(role=Role.USER, content=prepared.task))
-    agent._steering_queue.put_nowait("Stay inside src/loader/runtime.")
+    agent.queue_steering_message("Stay inside src/loader/runtime.")
 
     decision = await runtime.turn_preamble.prepare_iteration(
         task=prepared.task,

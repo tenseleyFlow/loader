@@ -18,13 +18,14 @@ from ..runtime.permissions import (
     load_permission_rules,
 )
 from ..runtime.public_shell import (
+    RuntimeSessionInstall,
+    SteeringMailbox,
     build_runtime_few_shot_examples,
     build_runtime_system_message,
-    create_runtime_session,
-    restore_runtime_session_state,
+    create_runtime_session_install,
+    load_runtime_session_install,
 )
 from ..runtime.safeguards import RuntimeSafeguards
-from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
 
@@ -119,15 +120,29 @@ class Agent:
         self.messages: list[Message] = []
         self.prompt_format: str | None = None
         self.prompt_sections: list[str] = []
-        self.session = self._create_session(messages=self.messages)
         self._system_message: Message | None = None
         self._use_react: bool | None = None
         self.capability_profile = resolve_backend_capability_profile(self.backend)
         self.last_turn_summary: TurnSummary | None = None
-
-        # Steering: allow user to send messages during execution
-        self._steering_queue: asyncio.Queue[str] = asyncio.Queue()
-        self._is_running: bool = False
+        self.steering = SteeringMailbox()
+        self.session = create_runtime_session_install(
+            project_root=self.project_root,
+            messages=self.messages,
+            permission_policy=self.permission_policy,
+            permission_config_status=self.permission_config_status,
+            prompt_format=self.prompt_format,
+            prompt_sections=list(self.prompt_sections),
+            workflow_mode=self.workflow_mode,
+            rotate_after_bytes=self.config.session_rotate_after_bytes,
+            auto_compaction_input_tokens_threshold=(
+                self.config.session_auto_compaction_input_tokens_threshold
+            ),
+            compaction_keep_last_messages=(
+                self.config.session_compaction_keep_last_messages
+            ),
+            system_message_factory=self._get_system_message,
+            few_shot_factory=self._get_few_shot_examples,
+        ).session
 
         # Track original task for multi-turn conversations
         self._current_task: str | None = None
@@ -140,50 +155,53 @@ class Agent:
         if self.config.auto_context:
             self.project_context = detect_project(self.project_root)
 
-    def _create_session(
+    def _install_runtime_session(self, install: RuntimeSessionInstall) -> None:
+        """Install one restored runtime session into the agent shell."""
+
+        self.steering.clear()
+        self.session = install.session
+        self.messages = install.restored.messages
+        self._current_task = install.restored.current_task
+        self.set_workflow_mode(install.restored.workflow_mode)
+        self.permission_policy.active_mode = PermissionMode.from_str(
+            install.restored.permission_mode
+        )
+        self.prompt_format = install.restored.prompt_format
+        self.prompt_sections = list(install.restored.prompt_sections)
+        self.last_turn_summary = install.restored.last_turn_summary
+        self._system_message = None
+
+    def _build_fresh_session_install(
         self,
         *,
         messages: list[Message] | None = None,
-    ) -> ConversationSession:
-        """Create a fresh persisted conversation session."""
+        workflow_mode: str | None = None,
+    ) -> RuntimeSessionInstall:
+        """Build a fresh runtime session plus its restored shell view."""
 
-        return create_runtime_session(
+        return create_runtime_session_install(
             project_root=self.project_root,
             messages=messages,
             permission_policy=self.permission_policy,
             permission_config_status=self.permission_config_status,
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
-            workflow_mode=self.workflow_mode,
+            workflow_mode=workflow_mode or self.workflow_mode,
             rotate_after_bytes=self.config.session_rotate_after_bytes,
-            auto_compaction_input_tokens_threshold=self.config.session_auto_compaction_input_tokens_threshold,
-            compaction_keep_last_messages=self.config.session_compaction_keep_last_messages,
+            auto_compaction_input_tokens_threshold=(
+                self.config.session_auto_compaction_input_tokens_threshold
+            ),
+            compaction_keep_last_messages=(
+                self.config.session_compaction_keep_last_messages
+            ),
             system_message_factory=self._get_system_message,
             few_shot_factory=self._get_few_shot_examples,
         )
 
-    def _replace_session(self, session: ConversationSession) -> None:
-        """Install a loaded session as the agent's active conversation."""
-
-        restored = restore_runtime_session_state(
-            project_root=self.project_root,
-            session=session,
-        )
-        self.session = session
-        self.messages = restored.messages
-        self._current_task = restored.current_task
-        self.set_workflow_mode(restored.workflow_mode)
-        self.permission_policy.active_mode = PermissionMode.from_str(
-            restored.permission_mode
-        )
-        self.prompt_format = restored.prompt_format
-        self.prompt_sections = list(restored.prompt_sections)
-        self.last_turn_summary = restored.last_turn_summary
-
     def resume_session(self, session_id: str | None = None) -> bool:
         """Resume the latest or named persisted session."""
 
-        loaded = ConversationSession.load(
+        loaded = load_runtime_session_install(
             project_root=self.project_root,
             system_message_factory=self._get_system_message,
             few_shot_factory=self._get_few_shot_examples,
@@ -198,7 +216,7 @@ class Agent:
         )
         if loaded is None:
             return False
-        self._replace_session(loaded)
+        self._install_runtime_session(loaded)
         return True
 
     def steer(self, message: str) -> bool:
@@ -207,15 +225,12 @@ class Agent:
         Returns True if the agent is running and the message was queued,
         False if the agent is not running.
         """
-        if not self._is_running:
-            return False
-        self._steering_queue.put_nowait(message)
-        return True
+        return self.steering.steer(message)
 
     @property
     def is_running(self) -> bool:
         """Check if the agent is currently running."""
-        return self._is_running
+        return self.steering.is_running
 
     @property
     def current_task(self) -> str | None:
@@ -237,17 +252,6 @@ class Agent:
         """Return rule counts for the active permission policy."""
 
         return self.permission_policy.rule_counts()
-
-    def _drain_steering_queue(self) -> list[str]:
-        """Get all pending steering messages without blocking."""
-        messages = []
-        while True:
-            try:
-                msg = self._steering_queue.get_nowait()
-                messages.append(msg)
-            except asyncio.QueueEmpty:
-                break
-        return messages
 
     @property
     def use_react(self) -> bool:
@@ -305,7 +309,7 @@ class Agent:
     def queue_steering_message(self, message: str) -> None:
         """Queue one runtime steering message."""
 
-        self._steering_queue.put_nowait(message)
+        self.steering.queue(message)
 
     def build_runtime_source(self):
         """Build the explicit runtime bootstrap source for public entrypoints."""
@@ -315,7 +319,7 @@ class Agent:
     def drain_steering_messages(self) -> list[str]:
         """Drain queued runtime steering messages."""
 
-        return self._drain_steering_queue()
+        return self.steering.drain()
 
     def _get_few_shot_examples(self) -> list[Message]:
         """Get few-shot examples demonstrating proper tool use."""
@@ -351,7 +355,7 @@ class Agent:
                     await result
 
         # Mark agent as running (enables steering)
-        self._is_running = True
+        self.steering.mark_running()
         try:
             launcher = build_runtime_launcher(self.build_runtime_source())
             return await launcher.run_user_message(
@@ -362,7 +366,7 @@ class Agent:
                 use_plan=use_plan,
             )
         finally:
-            self._is_running = False
+            self.steering.mark_idle()
 
     async def run_streaming(
         self,
@@ -429,9 +433,14 @@ class Agent:
         self.messages = []
         self.prompt_format = None
         self.prompt_sections = []
-        self.session = self._create_session(messages=self.messages)
         self._current_task = None
         self.last_turn_summary = None
-        self.workflow_mode = WorkflowMode.EXECUTE.value
+        self.set_workflow_mode(WorkflowMode.EXECUTE.value)
+        self._install_runtime_session(
+            self._build_fresh_session_install(
+                messages=self.messages,
+                workflow_mode=WorkflowMode.EXECUTE.value,
+            )
+        )
         self._system_message = None
         self.safeguards.reset()  # Reset all runtime safeguards

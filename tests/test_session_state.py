@@ -80,6 +80,31 @@ async def test_session_persists_and_resumes_across_agent_restart(temp_dir: Path)
     )
 
 
+def test_agent_clear_history_rebuilds_a_fresh_runtime_session(temp_dir: Path) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+    original_session_id = agent.session.session_id
+    agent.current_task = "Keep runtime state tidy."
+    agent.prompt_format = "native"
+    agent.prompt_sections = ["Runtime Config", "Workflow Context"]
+    agent.set_workflow_mode("clarify")
+    agent.queue_steering_message("Stay in runtime.")
+
+    agent.clear_history()
+
+    assert agent.session.session_id != original_session_id
+    assert agent.current_task is None
+    assert agent.workflow_mode == "execute"
+    assert agent.prompt_format is None
+    assert agent.prompt_sections == []
+    assert agent.messages == []
+    assert agent.last_turn_summary is None
+    assert agent.drain_steering_messages() == []
+
+
 def test_session_rotation_kicks_in_at_size_cap(temp_dir: Path) -> None:
     session = ConversationSession(
         system_message_factory=_dummy_system,
