@@ -14,6 +14,7 @@ from .context import (
     RuntimeContext,
     RuntimeSafeguardsProtocol,
 )
+from .events import TurnSummary
 from .permissions import PermissionConfigStatus, PermissionPolicy
 from .reasoning_service import RuntimeReasoningService
 from .session import ConversationSession
@@ -32,6 +33,8 @@ class RuntimeBootstrapSource(Protocol):
     permission_policy: PermissionPolicy
     permission_config_status: PermissionConfigStatus
     workflow_mode: str
+    current_task: str | None
+    last_turn_summary: TurnSummary | None
     prompt_format: str | None
     prompt_sections: list[str]
     safeguards: RuntimeSafeguardsProtocol

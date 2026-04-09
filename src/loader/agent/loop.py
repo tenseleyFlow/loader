@@ -9,7 +9,6 @@ from pathlib import Path
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role
 from ..runtime.capabilities import resolve_backend_capability_profile
-from ..runtime.deliberation import should_decompose
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.launcher import build_runtime_launcher
@@ -21,7 +20,6 @@ from ..runtime.permissions import (
 from ..runtime.prompt_history import PromptSnapshot
 from ..runtime.safeguards import RuntimeSafeguards
 from ..runtime.session import ConversationSession
-from ..runtime.task_classification import is_conversational
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
 from .prompts import build_system_prompt_result
@@ -234,6 +232,16 @@ class Agent:
         return self._is_running
 
     @property
+    def current_task(self) -> str | None:
+        """Expose the current top-level task through the bootstrap contract."""
+
+        return self._current_task
+
+    @current_task.setter
+    def current_task(self, value: str | None) -> None:
+        self._current_task = value
+
+    @property
     def active_permission_mode(self) -> str:
         """Return the current runtime permission mode."""
         return self.permission_policy.active_mode.as_str()
@@ -386,93 +394,16 @@ class Agent:
         # Mark agent as running (enables steering)
         self._is_running = True
         try:
-            return await self._run_with_steering(
-                user_message,
-                emit,
-                on_confirmation,
-                on_user_question,
-                use_plan,
-            )
-        finally:
-            self._is_running = False
-
-    async def _run_with_steering(
-        self,
-        user_message: str,
-        emit: Callable[[AgentEvent], Awaitable[None]],
-        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None,
-        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None,
-        use_plan: bool | None,
-    ) -> str:
-        """Internal run method that supports steering."""
-        cfg = self.config.reasoning
-        launcher = build_runtime_launcher(self)
-
-        # Fast path: conversational messages don't need tools
-        if is_conversational(user_message):
-            return await launcher.run_conversational(user_message, emit)
-
-        # Track original task for multi-turn conversations
-        # Only set on first non-conversational message
-        if self._current_task is None:
-            self._current_task = user_message
-
-        # Check if we should decompose the task (higher priority than planning)
-        if cfg.decomposition and should_decompose(user_message):
-            return await launcher.run_decomposed(
+            launcher = build_runtime_launcher(self)
+            return await launcher.run_user_message(
                 user_message,
                 emit,
                 on_confirmation=on_confirmation,
                 on_user_question=on_user_question,
-                requested_mode=self._requested_workflow_mode(use_plan),
-                original_task=self._current_task,
+                use_plan=use_plan,
             )
-
-        # No planning or decomposition - run directly
-        self.session.append(Message(role=Role.USER, content=user_message))
-        return await self._run_inner(
-            user_message,
-            emit,
-            on_confirmation,
-            on_user_question=on_user_question,
-            requested_mode=self._requested_workflow_mode(use_plan),
-            original_task=self._current_task,
-        )
-
-    async def _run_inner(
-        self,
-        task: str,
-        emit: Callable[[AgentEvent], Awaitable[None]],
-        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
-        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
-        requested_mode: str | None = None,
-        original_task: str | None = None,
-    ) -> str:
-        """Inner execution loop without planning."""
-
-        launcher = build_runtime_launcher(self)
-        self.last_turn_summary = await launcher.run_turn(
-            task,
-            emit,
-            on_confirmation=on_confirmation,
-            on_user_question=on_user_question,
-            requested_mode=requested_mode,
-            original_task=original_task,
-        )
-        return self.last_turn_summary.final_response
-
-    def _requested_workflow_mode(self, use_plan: bool | None) -> str | None:
-        """Resolve the explicit workflow-mode override for the current turn."""
-
-        if use_plan is True:
-            return WorkflowMode.PLAN.value
-        if use_plan is False:
-            return WorkflowMode.EXECUTE.value
-        if self.config.workflow_mode_override:
-            return self.config.workflow_mode_override
-        if self.config.auto_plan:
-            return WorkflowMode.PLAN.value
-        return None
+        finally:
+            self._is_running = False
 
     async def run_streaming(
         self,

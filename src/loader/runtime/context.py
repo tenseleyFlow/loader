@@ -20,6 +20,7 @@ from .session import ConversationSession
 class ReasoningConfigProtocol(Protocol):
     """Typed view of reasoning-stage settings the runtime consumes."""
 
+    decomposition: bool
     rollback: bool
     show_rollback_plan: bool
     completion_check: bool
@@ -39,9 +40,11 @@ class RuntimeConfigProtocol(Protocol):
     temperature: float
     max_tokens: int
     force_react: bool
+    auto_plan: bool
     auto_recover: bool
     max_recovery_attempts: int
     verification_retry_budget: int
+    workflow_mode_override: str | None
     stream: bool
     reasoning: ReasoningConfigProtocol
 
