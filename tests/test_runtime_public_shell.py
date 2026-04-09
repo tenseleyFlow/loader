@@ -6,6 +6,7 @@ from pathlib import Path
 
 from loader.agent.loop import Agent, AgentConfig
 from loader.llm.base import Message, Role
+from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.public_shell import (
     build_runtime_few_shot_examples,
@@ -117,6 +118,14 @@ def test_restore_runtime_session_state_recovers_last_turn_summary(
     session.last_completion_decision_summary = (
         "accepted the response after verification evidence passed"
     )
+    session.append_completion_trace_entry(
+        CompletionTraceEntry(
+            stage="definition_of_done",
+            outcome="complete",
+            decision_code="verification_passed",
+            decision_summary="accepted the response after verification evidence passed",
+        )
+    )
     session.usage_totals = {"input_tokens": 10, "output_tokens": 4}
 
     restored = restore_runtime_session_state(
@@ -137,3 +146,6 @@ def test_restore_runtime_session_state_recovers_last_turn_summary(
         "accepted the response after verification evidence passed"
     )
     assert restored.last_turn_summary.completion_decision_code == "verification_passed"
+    assert restored.last_turn_summary.completion_trace[0].decision_code == (
+        "verification_passed"
+    )

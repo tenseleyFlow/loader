@@ -99,6 +99,7 @@ def restore_runtime_session_state(
                 workflow_decision_kind=session.workflow_decision_kind,
                 completion_decision_code=session.last_completion_decision_code,
                 completion_decision_summary=session.last_completion_decision_summary,
+                completion_trace=list(session.completion_trace),
                 workflow_timeline=list(session.workflow_timeline),
                 session_id=session.session_id,
                 cumulative_usage=dict(session.usage_totals),
