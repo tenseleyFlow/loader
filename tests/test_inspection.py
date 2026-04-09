@@ -693,6 +693,20 @@ def test_collect_workflow_timeline_highlights_policy_accountability(
     )
 
 
+def test_collect_status_snapshot_includes_latest_policy_summary(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_policy_accountability(temp_dir)
+
+    snapshot = collect_status_snapshot(temp_dir)
+
+    assert snapshot.latest_policy_summary is not None
+    assert "verification_failed_reentry" in snapshot.latest_policy_summary
+    assert "policy-stage=definition_of_done" in snapshot.latest_policy_summary
+
+
 def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
     _ensure_loader_dirs(temp_dir)
@@ -867,9 +881,31 @@ def test_session_show_renders_policy_timeline_preview(
     show_result = runner.invoke(cli_main_module.session_cli, ["show", session_id])
 
     assert show_result.exit_code == 0
+    assert "Latest Policy" in show_result.output
+    assert "verification_failed_reentry" in show_result.output
     assert "Policy Timeline" in show_result.output
     assert "repair_retry" in show_result.output
     assert "completion:" in show_result.output
+
+
+def test_status_command_renders_latest_policy_summary(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_policy_accountability(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(cli_main_module.status_cli, [])
+
+    assert result.exit_code == 0
+    assert session_id in result.output
+    assert "Latest Policy" in result.output
+    assert "verification_failed_reentry" in result.output
+    assert "policy-stage=definition_of_done" in result.output
 
 
 def test_workflow_show_renders_workflow_ledger(

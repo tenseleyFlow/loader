@@ -33,6 +33,7 @@ from ..runtime.inspection import (
     collect_workflow_timeline,
     dry_run_permission_check,
     filter_policy_accountability_entries,
+    latest_policy_accountability_summary,
     list_session_summaries,
     load_session_detail,
     reset_explore_continuity,
@@ -1389,6 +1390,8 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
                 code=snapshot.completion_decision_code,
             ),
         )
+    if snapshot.latest_policy_summary:
+        table.add_row("Latest Policy", snapshot.latest_policy_summary)
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -1586,6 +1589,11 @@ def _session_show_main(session_id: str) -> None:
                 code=snapshot.last_completion_decision_code,
             ),
         )
+    latest_policy_summary = latest_policy_accountability_summary(
+        snapshot.workflow_timeline
+    )
+    if latest_policy_summary:
+        table.add_row("Latest Policy", latest_policy_summary)
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)

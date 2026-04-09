@@ -166,6 +166,7 @@ class StatusSnapshot:
     active_turn_phase: str | None
     completion_decision_code: str | None
     completion_decision_summary: str | None
+    latest_policy_summary: str | None
     last_turn_transition_summary: str | None
     last_turn_transition_kind: str | None
     last_turn_transition_reason_code: str | None
@@ -447,6 +448,7 @@ def collect_status_snapshot(
             active_turn_phase=None,
             completion_decision_code=None,
             completion_decision_summary=None,
+            latest_policy_summary=None,
             last_turn_transition_summary=None,
             last_turn_transition_kind=None,
             last_turn_transition_reason_code=None,
@@ -510,6 +512,9 @@ def collect_status_snapshot(
         active_turn_phase=snapshot.active_turn_phase,
         completion_decision_code=snapshot.last_completion_decision_code,
         completion_decision_summary=snapshot.last_completion_decision_summary,
+        latest_policy_summary=latest_policy_accountability_summary(
+            snapshot.workflow_timeline
+        ),
         last_turn_transition_summary=snapshot.last_turn_transition_summary,
         last_turn_transition_kind=snapshot.last_turn_transition_kind,
         last_turn_transition_reason_code=snapshot.last_turn_transition_reason_code,
@@ -931,6 +936,17 @@ def filter_policy_accountability_entries(
     """Return only unified policy-accountability entries from the workflow timeline."""
 
     return [entry for entry in entries if _is_policy_accountability_entry(entry)]
+
+
+def latest_policy_accountability_summary(
+    entries: list[WorkflowTimelineEntry],
+) -> str | None:
+    """Return one compact explanation for the latest canonical policy event."""
+
+    entry = _latest_matching_entry(entries, _is_policy_accountability_entry)
+    if entry is None:
+        return None
+    return _workflow_entry_explanation(entry)
 
 
 def dry_run_permission_check(
