@@ -152,3 +152,29 @@ The goal is to make Loader easier to audit live and after the fact, not simply m
 - AST-aware semantic diffs
 - a broad visual workflow UI redesign
 - multi-agent or team orchestration
+
+## Audit
+
+### Status
+
+- Sprint 24 is complete, and the audit is green. Loader now treats the TUI as another runtime-first internal path instead of a special `Agent` holdout, and the verification lifecycle is explicit across planned, pending, stale, skipped, and observed states inside the canonical policy timeline.
+
+### Landed
+
+- the TUI now launches through the runtime-first shell-owner seam below `Agent`: `src/loader/cli/main.py`, `src/loader/ui/app.py`, `src/loader/ui/adapter.py`, and `src/loader/runtime/runtime_handle.py` now build and use a runtime-owned shell owner by default for TUI launch instead of routing through the public `Agent` facade by habit
+- verification lifecycle state is now richer and more honest inside the canonical policy/accountability story: `src/loader/runtime/tool_batches.py`, `src/loader/runtime/finalization.py`, `src/loader/runtime/task_completion.py`, and `src/loader/runtime/verification_observations.py` now distinguish verification that is planned after new mutating work, pending because verify has started, stale because fresh mutations invalidated earlier proof, intentionally skipped, or actually observed
+- operator surfaces now expose that lifecycle directly instead of flattening it back into generic “missing verification”: `src/loader/runtime/workflow_timeline_read_model.py`, `src/loader/runtime/inspection.py`, and `src/loader/cli/main.py` now show `Verify planned`, `Verify pending`, and `Verify stale` states plus the corresponding recent-verification summaries in `loader status`, `loader session show`, and `loader workflow show`
+- the public facade boundary is tighter in practice even though Sprint 24 was not primarily a shell-contraction sprint: by moving the last major product path off default `Agent` ownership, Loader now has a clearer answer to what remains public-shell-only versus what is runtime-first by default
+
+### Verification
+
+- `uv run pytest -q` is green: `414 passed`
+- `tests/test_cli_runtime_owner.py` now pins runtime-first owner selection for non-TUI CLI, `loader explore`, single-prompt paths, and TUI launch
+- `tests/test_tool_batches.py`, `tests/test_finalization.py`, `tests/test_completion_policy.py`, and `tests/test_workflow_runtime.py` now pin the planned -> pending -> stale verification lifecycle through mutating work, verify handoff, and completion/continuation policy
+- `tests/test_workflow_timeline_read_model.py` and `tests/test_inspection.py` now pin the operator-facing projection and rendering of planned/pending/stale verification in workflow highlights, status, session, and workflow inspection surfaces
+
+### Residual debt
+
+- Loader now uses runtime-first owner seams across CLI, explore, scripted harnesses, and the TUI, but `Agent` plus `runtime.public_shell` still define the outer compatibility boundary instead of a narrower runtime-first external API
+- the verification lifecycle is much clearer now, but it is still a bounded runtime-authored model; Loader still does not preserve richer queueing/timestamp semantics for “planned” vs “actively running,” nor does it implement OMX-style deeper verifier reasoning
+- Sprint 24 materially improved shell ownership and verification accountability, but Loader still stops short of claw-code's fuller policy engine, richer sandboxing, and the deeper verifier/interview rigor in the refs
