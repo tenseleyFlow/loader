@@ -7,16 +7,29 @@ from dataclasses import dataclass, field
 
 from ..llm.base import ToolCall
 from .context import RuntimeContext
-from .dod import DefinitionOfDone, DefinitionOfDoneStore, record_successful_tool_call
+from .dod import (
+    DefinitionOfDone,
+    DefinitionOfDoneStore,
+    is_state_mutating_tool_call,
+    record_successful_tool_call,
+)
 from .events import AgentEvent, TurnSummary
+from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .executor import ToolExecutionState, ToolExecutor
+from .policy_timeline import append_verification_timeline_entry
 from .tool_batch_checks import ToolBatchConfidenceGate, ToolBatchVerificationGate
 from .tool_batch_recovery import ToolBatchRecoveryController
+from .verification_observations import (
+    VerificationObservation,
+    VerificationObservationStatus,
+)
 from .workflow import sync_todos_to_definition_of_done
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
+
+_VERIFY_ITEM = "Collect verification evidence"
 
 
 @dataclass
@@ -190,7 +203,15 @@ class ToolBatchRunner:
     ) -> str | None:
         """Update DoD bookkeeping after a successful tool execution."""
 
+        previously_verified = dod.last_verification_result == "passed"
         record_successful_tool_call(dod, tool_call)
+        if previously_verified and is_state_mutating_tool_call(tool_call):
+            _mark_verification_stale(
+                context=self.context,
+                summary=summary,
+                dod=dod,
+                tool_call=tool_call,
+            )
         if tool_call.name == "TodoWrite" and outcome.registry_result is not None:
             new_todos = outcome.registry_result.metadata.get("new_todos", [])
             if isinstance(new_todos, list):
@@ -198,3 +219,88 @@ class ToolBatchRunner:
         self.dod_store.save(dod)
         self.context.recovery_context = None
         return None
+
+
+def _mark_verification_stale(
+    *,
+    context: RuntimeContext,
+    summary: TurnSummary,
+    dod: DefinitionOfDone,
+    tool_call: ToolCall,
+) -> None:
+    detail = _stale_verification_detail(tool_call)
+    append_verification_timeline_entry(
+        context,
+        summary,
+        reason_code="verification_stale",
+        reason_summary="previous verification became stale after new mutating work",
+        evidence_summary=[f"fresh verification required after {detail}"],
+        evidence_provenance=_stale_verification_provenance(dod, detail=detail),
+        verification_observations=_stale_verification_observations(
+            dod,
+            detail=detail,
+        ),
+    )
+    dod.last_verification_result = VerificationObservationStatus.STALE.value
+    dod.evidence = []
+    while _VERIFY_ITEM in dod.completed_items:
+        dod.completed_items.remove(_VERIFY_ITEM)
+    if _VERIFY_ITEM not in dod.pending_items:
+        dod.pending_items.append(_VERIFY_ITEM)
+
+
+def _stale_verification_observations(
+    dod: DefinitionOfDone,
+    *,
+    detail: str,
+) -> list[VerificationObservation]:
+    return [
+        VerificationObservation(
+            status=VerificationObservationStatus.STALE.value,
+            summary=f"verification became stale for `{command}` after new mutating work",
+            command=command,
+            kind="runtime",
+            detail=detail,
+        )
+        for command in _stale_verification_commands(dod)
+    ]
+
+
+def _stale_verification_provenance(
+    dod: DefinitionOfDone,
+    *,
+    detail: str,
+) -> list[EvidenceProvenance]:
+    return [
+        EvidenceProvenance(
+            category="verification",
+            source="tool_execution",
+            summary=f"fresh verification required for `{command}` after new mutating work",
+            status=EvidenceProvenanceStatus.MISSING.value,
+            subject=command,
+            detail=detail,
+        )
+        for command in _stale_verification_commands(dod)
+    ]
+
+
+def _stale_verification_commands(dod: DefinitionOfDone) -> list[str]:
+    commands = [command for command in dod.verification_commands if command]
+    if commands:
+        return commands
+    observed = [evidence.command for evidence in dod.evidence if evidence.command]
+    if observed:
+        return observed
+    return ["verification"]
+
+
+def _stale_verification_detail(tool_call: ToolCall) -> str:
+    if tool_call.name in {"write", "edit", "patch"}:
+        file_path = str(tool_call.arguments.get("file_path", "")).strip()
+        if file_path:
+            return f"{tool_call.name} changed {file_path}"
+    if tool_call.name == "bash":
+        command = str(tool_call.arguments.get("command", "")).strip()
+        if command:
+            return f"bash ran `{command}`"
+    return f"{tool_call.name} changed the workspace"

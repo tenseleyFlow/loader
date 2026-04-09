@@ -9,7 +9,11 @@ import pytest
 
 from loader.llm.base import Message, Role, ToolCall
 from loader.runtime.context import RuntimeContext
-from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
+from loader.runtime.dod import (
+    DefinitionOfDoneStore,
+    VerificationEvidence,
+    create_definition_of_done,
+)
 from loader.runtime.events import AgentEvent, TurnSummary
 from loader.runtime.executor import ToolExecutionOutcome, ToolExecutionState
 from loader.runtime.permissions import (
@@ -32,9 +36,13 @@ from tests.helpers.runtime_harness import ScriptedBackend
 class FakeSession:
     def __init__(self, messages: list[Message]) -> None:
         self.messages = list(messages)
+        self.workflow_timeline = []
 
     def append(self, message: Message) -> None:
         self.messages.append(message)
+
+    def append_workflow_timeline_entry(self, entry) -> None:
+        self.workflow_timeline.append(entry)
 
 
 class FakeCodeFilter:
@@ -327,3 +335,83 @@ async def test_tool_batch_runner_verifies_with_context_services(temp_dir: Path) 
     assert context.session.messages[-1].role == Role.TOOL
     assert context.session.messages[-1].content == "file contents"
     assert any(event.type == "verification" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_marks_passed_verification_stale_after_new_mutation(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="write-1",
+        name="write",
+        arguments={"file_path": str(temp_dir / "README.md"), "content": "updated\n"},
+    )
+    executor = FakeExecutor(
+        [tool_outcome(tool_call=tool_call, output="wrote file", is_error=False)]
+    )
+    summary = TurnSummary(final_response="")
+    dod = create_definition_of_done("Update README and verify it still works.")
+    dod.verification_commands = ["uv run pytest -q"]
+    dod.last_verification_result = "passed"
+    dod.evidence = [
+        VerificationEvidence(
+            command="uv run pytest -q",
+            passed=True,
+            stdout="401 passed",
+            kind="test",
+        )
+    ]
+    dod.completed_items.append("Collect verification evidence")
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert dod.last_verification_result == "stale"
+    assert dod.evidence == []
+    assert "Collect verification evidence" in dod.pending_items
+    assert "Collect verification evidence" not in dod.completed_items
+    assert summary.workflow_timeline[-1].reason_code == "verification_stale"
+    assert summary.workflow_timeline[-1].policy_outcome == "stale"
+    assert summary.workflow_timeline[-1].verification_observations[0].status == "stale"
+    assert (
+        summary.workflow_timeline[-1].verification_observations[0].command
+        == "uv run pytest -q"
+    )

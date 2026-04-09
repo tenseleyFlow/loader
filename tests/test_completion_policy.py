@@ -219,6 +219,27 @@ def test_assess_completion_follow_through_surfaces_failing_verification() -> Non
     ]
 
 
+def test_assess_completion_follow_through_requires_fresh_verification_when_stale() -> None:
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.last_verification_result = "stale"
+
+    check = assess_completion_follow_through(
+        task="Run pytest -q and make sure it works.",
+        response="The tests were already handled.",
+        actions_taken=["write: README.md"],
+        dod=dod,
+    )
+
+    assert check.is_complete is False
+    assert check.missing_evidence == [
+        "a fresh passing verification result from `pytest -q` (previous verification became stale after new mutating work)"
+    ]
+    assert check.suggested_next_steps == [
+        "Rerun `pytest -q` now that the implementation changed again"
+    ]
+
+
 def test_completion_assessment_attaches_typed_verification_provenance() -> None:
     dod = create_definition_of_done("Run pytest -q and make sure it works.")
     dod.verification_commands = ["pytest -q"]
@@ -481,6 +502,53 @@ async def test_completion_policy_uses_missing_observed_verification_when_budget_
     )
     assert [item.status for item in decision.verification_observations] == [
         VerificationObservationStatus.MISSING.value
+    ]
+    assert events[0].type == "completion_check"
+
+
+@pytest.mark.asyncio
+async def test_completion_policy_uses_stale_observed_verification_when_budget_is_exhausted(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir,
+        safeguards=FakeSafeguards(),
+        max_continuation_prompts=1,
+    )
+    policy = CompletionPolicy(context)
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.last_verification_result = "stale"
+    events = []
+
+    async def emit(event) -> None:
+        events.append(event)
+
+    decision = await policy.maybe_continue_for_completion(
+        content="The tests were already handled.",
+        response_content="The tests were already handled.",
+        task="Run pytest -q and make sure it works.",
+        actions_taken=["write: README.md"],
+        continuation_count=1,
+        emit=emit,
+        dod=dod,
+    )
+
+    assert decision.should_continue is False
+    assert decision.should_finalize is True
+    assert decision.decision_code == "continuation_budget_exhausted"
+    assert decision.decision_summary == (
+        "stopped because the continuation budget was exhausted while observed "
+        "verification still showed verification became stale for `pytest -q` "
+        "after new mutating work"
+    )
+    assert decision.final_response == (
+        "I stopped because the continuation budget was exhausted and observed "
+        "verification still showed: verification became stale for `pytest -q` "
+        "after new mutating work."
+    )
+    assert [item.status for item in decision.verification_observations] == [
+        VerificationObservationStatus.STALE.value
     ]
     assert events[0].type == "completion_check"
 

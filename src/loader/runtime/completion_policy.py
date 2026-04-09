@@ -265,6 +265,9 @@ class CompletionPolicy:
             if entry.status == VerificationObservationStatus.FAILED.value:
                 return CompletionPolicy._render_observation(entry)
         for entry in verification_observations:
+            if entry.status == VerificationObservationStatus.STALE.value:
+                return CompletionPolicy._render_observation(entry)
+        for entry in verification_observations:
             if entry.status == VerificationObservationStatus.MISSING.value:
                 return CompletionPolicy._render_observation(entry)
         for entry in verification_observations:

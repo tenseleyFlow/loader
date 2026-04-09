@@ -119,6 +119,7 @@ class _FollowThroughFacts:
     has_install_evidence: bool
     has_verification_evidence: bool
     has_failed_verification: bool
+    has_stale_verification: bool
     verification_command: str | None
     pending_items: list[str]
     accomplished: list[str]
@@ -319,6 +320,30 @@ def assess_completion_follow_through_with_provenance(
                 status=EvidenceProvenanceStatus.CONTRADICTS,
             ):
                 _append_unique_provenance(evidence_provenance, entry)
+        elif facts.has_stale_verification:
+            _append_follow_through_gap(
+                missing_evidence,
+                remaining,
+                suggested_next_steps,
+                evidence=_stale_verification_evidence(facts.verification_command),
+                remaining_item="Rerun verification after the implementation changed again",
+                next_step=_stale_verification_follow_up(facts.verification_command),
+            )
+            _append_unique_provenance(
+                evidence_provenance,
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.last_verification_result",
+                    summary=(
+                        "previous verification became stale for "
+                        f"`{facts.verification_command}` after new mutating work"
+                        if facts.verification_command
+                        else "previous verification became stale after new mutating work"
+                    ),
+                    status=EvidenceProvenanceStatus.MISSING.value,
+                    subject=facts.verification_command,
+                ),
+            )
         elif not facts.has_verification_evidence:
             _append_follow_through_gap(
                 missing_evidence,
@@ -726,6 +751,7 @@ def _build_follow_through_facts(
     has_install_evidence = _has_install_evidence(task_lower, action_types, actions_taken)
     has_verification_evidence = _has_verification_evidence(action_types, actions_taken)
     has_failed_verification = False
+    has_stale_verification = False
     verification_command: str | None = None
     pending_items: list[str] = []
 
@@ -735,6 +761,7 @@ def _build_follow_through_facts(
             has_install_evidence=has_install_evidence,
             has_verification_evidence=has_verification_evidence,
             has_failed_verification=has_failed_verification,
+            has_stale_verification=has_stale_verification,
             verification_command=verification_command,
             pending_items=pending_items,
             accomplished=accomplished,
@@ -758,6 +785,7 @@ def _build_follow_through_facts(
         dod.last_verification_result == "failed"
         or any(not evidence.passed for evidence in dod.evidence)
     )
+    has_stale_verification = dod.last_verification_result == "stale"
     has_recorded_work = has_recorded_work or bool(
         dod.touched_files
         or dod.successful_commands
@@ -765,6 +793,7 @@ def _build_follow_through_facts(
         or dod.completed_items
         or has_verification_evidence
         or has_failed_verification
+        or has_stale_verification
     )
     for evidence in dod.evidence:
         if not evidence.passed:
@@ -785,6 +814,7 @@ def _build_follow_through_facts(
         has_install_evidence=has_install_evidence,
         has_verification_evidence=has_verification_evidence,
         has_failed_verification=has_failed_verification,
+        has_stale_verification=has_stale_verification,
         verification_command=verification_command,
         pending_items=pending_items,
         accomplished=accomplished,
@@ -827,6 +857,15 @@ def _failed_verification_evidence(verification_command: str | None) -> str:
     return "a passing verification result (current verification is still failing)"
 
 
+def _stale_verification_evidence(verification_command: str | None) -> str:
+    if verification_command:
+        return (
+            f"a fresh passing verification result from `{verification_command}` "
+            "(previous verification became stale after new mutating work)"
+        )
+    return "a fresh passing verification result after new mutating work"
+
+
 def _verification_follow_up(
     *,
     task_lower: str,
@@ -841,6 +880,12 @@ def _verification_retry_step(verification_command: str | None) -> str:
     if verification_command:
         return f"Fix the failing `{verification_command}` result and rerun it"
     return "Fix the failing verification result and rerun it"
+
+
+def _stale_verification_follow_up(verification_command: str | None) -> str:
+    if verification_command:
+        return f"Rerun `{verification_command}` now that the implementation changed again"
+    return "Rerun the relevant verification now that the implementation changed again"
 
 
 def _verification_provenance(
@@ -944,6 +989,25 @@ def _observed_completion_verification(
                 )
             )
         return observations
+
+    if dod.last_verification_result == VerificationObservationStatus.STALE.value:
+        if verification_command:
+            return [
+                VerificationObservation(
+                    status=VerificationObservationStatus.STALE.value,
+                    summary=(
+                        "verification became stale for "
+                        f"`{verification_command}` after new mutating work"
+                    ),
+                    command=verification_command,
+                )
+            ]
+        return [
+            VerificationObservation(
+                status=VerificationObservationStatus.STALE.value,
+                summary="previous verification became stale after new mutating work",
+            )
+        ]
 
     if verification_command:
         return [

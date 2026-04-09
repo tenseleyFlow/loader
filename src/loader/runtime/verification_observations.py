@@ -11,6 +11,7 @@ class VerificationObservationStatus(StrEnum):
     """How one verification observation resolved at runtime."""
 
     PENDING = "pending"
+    STALE = "stale"
     PASSED = "passed"
     FAILED = "failed"
     SKIPPED = "skipped"
