@@ -15,6 +15,11 @@ from .clarify_strategy import (
     describe_clarify_pressure_kind,
     describe_clarify_slot,
 )
+from .evidence_provenance import (
+    EvidenceProvenance,
+    normalize_evidence_provenance,
+    summarize_evidence_provenance,
+)
 from .workflow_signals import WorkflowSignalExtractor, WorkflowSignalPacket
 
 
@@ -293,6 +298,7 @@ class WorkflowTimelineEntry:
     unresolved_questions: list[str] = field(default_factory=list)
     signal_summary: list[str] = field(default_factory=list)
     evidence_summary: list[str] = field(default_factory=list)
+    evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
     clarify_stage: str | None = None
     clarify_pressure_kind: str | None = None
     pressure_pass_complete: bool = False
@@ -318,6 +324,9 @@ class WorkflowTimelineEntry:
             "unresolved_questions": list(self.unresolved_questions),
             "signal_summary": list(self.signal_summary),
             "evidence_summary": list(self.evidence_summary),
+            "evidence_provenance": [
+                item.to_dict() for item in self.evidence_provenance
+            ],
             "clarify_stage": self.clarify_stage,
             "clarify_pressure_kind": self.clarify_pressure_kind,
             "pressure_pass_complete": self.pressure_pass_complete,
@@ -345,6 +354,9 @@ class WorkflowTimelineEntry:
             unresolved_questions=_string_list(data.get("unresolved_questions")),
             signal_summary=_string_list(data.get("signal_summary")),
             evidence_summary=_string_list(data.get("evidence_summary")),
+            evidence_provenance=normalize_evidence_provenance(
+                data.get("evidence_provenance")
+            ),
             clarify_stage=_optional_text(data.get("clarify_stage")),
             clarify_pressure_kind=_optional_text(data.get("clarify_pressure_kind")),
             pressure_pass_complete=bool(data.get("pressure_pass_complete", False)),
@@ -389,6 +401,7 @@ class WorkflowTimelineEntry:
             unresolved_questions=list(decision.unresolved_questions),
             signal_summary=list(decision.signal_summary),
             evidence_summary=list(decision.evidence_summary),
+            evidence_provenance=[],
             clarify_stage=decision.clarify_stage,
             clarify_pressure_kind=decision.clarify_pressure_kind,
             pressure_pass_complete=decision.pressure_pass_complete,
@@ -413,6 +426,7 @@ class WorkflowTimelineEntry:
         prompt_sections: list[str] | None = None,
         signal_summary: list[str] | None = None,
         evidence_summary: list[str] | None = None,
+        evidence_provenance: list[EvidenceProvenance] | None = None,
         artifact_paths: list[str] | None = None,
     ) -> WorkflowTimelineEntry:
         """Build one typed non-routing accountability entry."""
@@ -424,6 +438,7 @@ class WorkflowTimelineEntry:
             resolved_decision_kind = None
         else:
             resolved_decision_kind = str(decision_kind)
+        resolved_provenance = list(evidence_provenance or [])
         return cls(
             timestamp=_utc_now(),
             kind=kind.value,
@@ -432,7 +447,10 @@ class WorkflowTimelineEntry:
             summary=summary,
             decision_kind=resolved_decision_kind,
             signal_summary=list(signal_summary or []),
-            evidence_summary=list(evidence_summary or []),
+            evidence_summary=list(
+                evidence_summary or summarize_evidence_provenance(resolved_provenance)
+            ),
+            evidence_provenance=resolved_provenance,
             policy_stage=policy_stage,
             policy_outcome=policy_outcome,
             prompt_format=prompt_format,

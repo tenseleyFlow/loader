@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .context import RuntimeContext
 from .events import TurnSummary
+from .evidence_provenance import EvidenceProvenance
 from .workflow_policy import (
     WorkflowDecisionKind,
     WorkflowTimelineEntry,
@@ -22,6 +23,7 @@ def append_policy_timeline_entry(
     policy_outcome: str | None = None,
     decision_kind: WorkflowDecisionKind | str | None = WorkflowDecisionKind.FORCED,
     evidence_summary: list[str] | None = None,
+    evidence_provenance: list[EvidenceProvenance] | None = None,
 ) -> WorkflowTimelineEntry:
     """Append one typed completion/repair accountability event."""
 
@@ -36,6 +38,7 @@ def append_policy_timeline_entry(
         prompt_format=context.prompt_format,
         prompt_sections=context.prompt_sections,
         evidence_summary=evidence_summary,
+        evidence_provenance=evidence_provenance,
     )
     context.session.append_workflow_timeline_entry(entry)
     summary.workflow_timeline = list(context.session.workflow_timeline)

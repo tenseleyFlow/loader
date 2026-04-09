@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .evidence_provenance import (
+    EvidenceProvenance,
+    normalize_evidence_provenance,
+    summarize_evidence_provenance,
+)
 from .workflow_policy import WorkflowTimelineEntry
 
 
@@ -17,6 +22,7 @@ class CompletionTraceEntry:
     decision_code: str
     decision_summary: str
     evidence_summary: list[str] = field(default_factory=list)
+    evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, str]:
         """Serialize the entry into persisted session state."""
@@ -27,6 +33,7 @@ class CompletionTraceEntry:
             "decision_code": self.decision_code,
             "decision_summary": self.decision_summary,
             "evidence_summary": list(self.evidence_summary),
+            "evidence_provenance": [item.to_dict() for item in self.evidence_provenance],
         }
 
     @classmethod
@@ -43,6 +50,9 @@ class CompletionTraceEntry:
                 for item in data.get("evidence_summary", [])
                 if str(item).strip()
             ],
+            evidence_provenance=normalize_evidence_provenance(
+                data.get("evidence_provenance")
+            ),
         )
 
 
@@ -125,7 +135,11 @@ def _completion_trace_entry_from_timeline_entry(
         outcome=entry.policy_outcome or _completion_outcome_from_kind(entry.kind),
         decision_code=entry.reason_code,
         decision_summary=summary,
-        evidence_summary=list(entry.evidence_summary),
+        evidence_summary=list(
+            entry.evidence_summary
+            or summarize_evidence_provenance(entry.evidence_provenance)
+        ),
+        evidence_provenance=list(entry.evidence_provenance),
     )
 
 
