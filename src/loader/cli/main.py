@@ -32,6 +32,7 @@ from ..runtime.inspection import (
     collect_workflow_artifact_diffs,
     collect_workflow_timeline,
     dry_run_permission_check,
+    filter_policy_accountability_entries,
     list_session_summaries,
     load_session_detail,
     reset_explore_continuity,
@@ -1015,11 +1016,23 @@ def prompt_diff_cli(full: bool, session_id: str | None) -> None:
             "clarify_exit",
             "plan_refresh",
             "verify_skip",
+            "repair_retry",
+            "repair_fail",
+            "completion_check",
+            "completion_continue",
+            "completion_complete",
+            "completion_finalize",
         ],
         case_sensitive=False,
     ),
     default=None,
     help="Filter timeline entries to one event kind",
+)
+@click.option(
+    "--policy",
+    "accountability_only",
+    is_flag=True,
+    help="Show only unified repair, verification, and completion accountability events",
 )
 @click.option(
     "--limit",
@@ -1034,6 +1047,7 @@ def prompt_diff_cli(full: bool, session_id: str | None) -> None:
 def workflow_show_cli(
     mode: str | None,
     kind: str | None,
+    accountability_only: bool,
     limit: int,
     show_diff: bool,
     full_diff: bool,
@@ -1045,6 +1059,7 @@ def workflow_show_cli(
         session_id=session_id,
         mode=mode,
         kind=kind,
+        accountability_only=accountability_only,
         limit=limit,
         show_diff=show_diff,
         full_diff=full_diff,
@@ -1627,6 +1642,15 @@ def _session_show_main(session_id: str) -> None:
         console.print()
         _print_completion_trace_entries(snapshot.completion_trace)
 
+    policy_entries = filter_policy_accountability_entries(snapshot.workflow_timeline)
+    if policy_entries:
+        console.print()
+        _print_workflow_timeline_entries(
+            policy_entries,
+            title="[bold blue]Policy Timeline[/bold blue]",
+            limit=5,
+        )
+
     if snapshot.workflow_timeline:
         console.print()
         _print_workflow_timeline_entries(
@@ -1641,6 +1665,7 @@ def _workflow_show_main(
     session_id: str | None,
     mode: str | None,
     kind: str | None,
+    accountability_only: bool,
     limit: int | None,
     show_diff: bool,
     full_diff: bool,
@@ -1650,6 +1675,7 @@ def _workflow_show_main(
             session_id=session_id,
             mode=mode,
             kind=kind,
+            accountability_only=accountability_only,
             limit=limit,
         )
     except FileNotFoundError:
@@ -1674,6 +1700,7 @@ def _workflow_show_main(
         _format_workflow_filters(
             mode=snapshot.selected_mode,
             kind=snapshot.selected_kind,
+            accountability_only=snapshot.selected_accountability_only,
             limit=snapshot.entry_limit,
         ),
     )
@@ -1706,7 +1733,11 @@ def _workflow_show_main(
     console.print()
     _print_workflow_timeline_entries(
         snapshot.entries,
-        title="[bold blue]Workflow Timeline[/bold blue]",
+        title=(
+            "[bold blue]Policy Timeline[/bold blue]"
+            if snapshot.selected_accountability_only
+            else "[bold blue]Workflow Timeline[/bold blue]"
+        ),
     )
 
 
@@ -2158,6 +2189,7 @@ def _format_workflow_filters(
     *,
     mode: str | None,
     kind: str | None,
+    accountability_only: bool,
     limit: int | None,
 ) -> str:
     parts: list[str] = []
@@ -2165,6 +2197,8 @@ def _format_workflow_filters(
         parts.append(f"mode={mode}")
     if kind:
         parts.append(f"kind={kind}")
+    if accountability_only:
+        parts.append("policy-only")
     if limit is not None:
         parts.append(f"limit={limit}")
     return ", ".join(parts) or "none"

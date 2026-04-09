@@ -277,6 +277,7 @@ class WorkflowTimelineSnapshot:
     total_entries: int = 0
     selected_mode: str | None = None
     selected_kind: str | None = None
+    selected_accountability_only: bool = False
     entry_limit: int | None = None
     highlights: list[str] = field(default_factory=list)
     entries: list[WorkflowTimelineEntry] = field(default_factory=list)
@@ -869,6 +870,7 @@ def collect_workflow_timeline(
     project_root: Path | str | None = None,
     mode: str | None = None,
     kind: str | None = None,
+    accountability_only: bool = False,
     limit: int | None = None,
 ) -> WorkflowTimelineSnapshot:
     """Load persisted workflow history for the latest or named session."""
@@ -887,6 +889,7 @@ def collect_workflow_timeline(
             total_entries=0,
             selected_mode=mode,
             selected_kind=kind,
+            selected_accountability_only=accountability_only,
             entry_limit=limit,
             highlights=[],
             entries=[],
@@ -894,6 +897,8 @@ def collect_workflow_timeline(
         )
 
     filtered_entries = list(snapshot.workflow_timeline)
+    if accountability_only:
+        filtered_entries = filter_policy_accountability_entries(filtered_entries)
     if mode:
         filtered_entries = [entry for entry in filtered_entries if entry.mode == mode]
     if kind:
@@ -912,11 +917,20 @@ def collect_workflow_timeline(
         total_entries=len(snapshot.workflow_timeline),
         selected_mode=mode,
         selected_kind=kind,
+        selected_accountability_only=accountability_only,
         entry_limit=limit,
         highlights=list(dict.fromkeys(highlights)),
         entries=filtered_entries,
         workflow_ledger=snapshot.workflow_ledger.copy(),
     )
+
+
+def filter_policy_accountability_entries(
+    entries: list[WorkflowTimelineEntry],
+) -> list[WorkflowTimelineEntry]:
+    """Return only unified policy-accountability entries from the workflow timeline."""
+
+    return [entry for entry in entries if _is_policy_accountability_entry(entry)]
 
 
 def dry_run_permission_check(
@@ -1211,6 +1225,11 @@ def _workflow_timeline_highlights(entries: list[WorkflowTimelineEntry]) -> list[
         )
 
     return list(dict.fromkeys(highlights))
+
+
+def _is_policy_accountability_entry(entry: WorkflowTimelineEntry) -> bool:
+    kind = entry.kind
+    return kind.startswith(("completion_", "repair_")) or kind == "verify_skip"
 
 
 def _latest_matching_entry(

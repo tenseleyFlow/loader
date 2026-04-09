@@ -786,6 +786,7 @@ def test_status_and_session_commands_render_persisted_state(
     assert "continuation_check" in show_result.output
     assert "completion -> finalize" in show_result.output
     assert "Finalizing completed turn" in show_result.output
+    assert "Policy Timeline" not in show_result.output
     assert "Workflow Timeline" in show_result.output
     assert "handoff" in show_result.output
     assert "next=verify" in show_result.output
@@ -819,6 +820,56 @@ def test_workflow_command_renders_policy_accountability_context(
     assert "verification_failed_reentry" in result.output
     assert "policy-stage=raw_text_tool_fallback" in result.output
     assert "policy-outcome=continue" in result.output
+
+    policy_result = runner.invoke(cli_main_module.workflow_cli, ["show", "--policy"])
+
+    assert policy_result.exit_code == 0
+    assert "Loader Workflow" in policy_result.output
+    assert "Policy Timeline" in policy_result.output
+    assert "policy-only" in policy_result.output
+    assert "repair_retry" in policy_result.output
+    assert "verification_failed_reentry" in policy_result.output
+    assert "handoff" not in policy_result.output
+
+
+def test_collect_workflow_timeline_can_focus_on_policy_accountability(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_policy_accountability(temp_dir)
+
+    snapshot = collect_workflow_timeline(
+        project_root=temp_dir,
+        accountability_only=True,
+    )
+
+    assert snapshot.session_id == session_id
+    assert snapshot.selected_accountability_only is True
+    assert [entry.kind for entry in snapshot.entries] == [
+        "repair_retry",
+        "completion_check",
+        "completion_continue",
+    ]
+
+
+def test_session_show_renders_policy_timeline_preview(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_policy_accountability(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    show_result = runner.invoke(cli_main_module.session_cli, ["show", session_id])
+
+    assert show_result.exit_code == 0
+    assert "Policy Timeline" in show_result.output
+    assert "repair_retry" in show_result.output
+    assert "completion:" in show_result.output
 
 
 def test_workflow_show_renders_workflow_ledger(
