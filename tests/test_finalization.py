@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from loader.llm.base import Message, Role
+from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.context import RuntimeContext
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.events import TurnSummary
@@ -31,6 +32,14 @@ class FakeSession:
         self.last_completion_decision_summary = (
             "accepted the response after verification evidence passed"
         )
+        self.completion_trace = [
+            CompletionTraceEntry(
+                stage="definition_of_done",
+                outcome="complete",
+                decision_code="verification_passed",
+                decision_summary="accepted the response after verification evidence passed",
+            )
+        ]
         self.last_turn_transition_summary = (
             "completion -> finalize [terminal] Finalizing completed turn"
         )
@@ -177,3 +186,6 @@ def test_turn_finalizer_finalize_summary_uses_runtime_context(
     assert final_summary.completion_decision_summary == (
         "accepted the response after verification evidence passed"
     )
+    assert [entry.decision_code for entry in final_summary.completion_trace] == [
+        "verification_passed"
+    ]

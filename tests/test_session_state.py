@@ -8,6 +8,7 @@ import pytest
 
 from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, Message, Role, ToolCall
+from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.prompt_history import PromptSnapshot
 from loader.runtime.session import ConversationSession
 from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
@@ -182,6 +183,14 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
             prompt_sections=["Runtime Config", "Workflow Context", "Project Context"],
         )
     )
+    session.append_completion_trace_entry(
+        CompletionTraceEntry(
+            stage="definition_of_done",
+            outcome="continue",
+            decision_code="verification_failed_reentry",
+            decision_summary="continued after verification failed and the runtime re-entered execute mode",
+        )
+    )
 
     reloaded = ConversationSession.load(
         project_root=temp_dir,
@@ -215,6 +224,9 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     assert reloaded.last_completion_decision_summary == (
         "continued after verification failed and the runtime re-entered execute mode"
     )
+    assert [entry.decision_code for entry in reloaded.completion_trace] == [
+        "verification_failed_reentry"
+    ]
     assert reloaded.last_turn_transition_summary == (
         "completion -> finalize [terminal] Finalizing completed turn"
     )

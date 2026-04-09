@@ -107,6 +107,7 @@ class TurnPreparationController:
         )
         summary.definition_of_done = dod
 
+        self.context.session.clear_completion_trace(persist=False)
         self.context.session.update_runtime_state(
             active_dod_path=dod.storage_path,
             current_task=effective_task,
@@ -115,6 +116,8 @@ class TurnPreparationController:
             permission_prompting_enabled=self.context.permission_policy.prompting_enabled,
             permission_rule_counts=self.context.active_permission_rule_counts,
             permission_rules_source=str(self.context.permission_config_status.source_path),
+            last_completion_decision_code=None,
+            last_completion_decision_summary=None,
         )
         await self.finalizer.emit_dod_status(emit, dod)
 

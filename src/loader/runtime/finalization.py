@@ -350,6 +350,9 @@ class TurnFinalizer:
             "last_completion_decision_summary",
             None,
         )
+        summary.completion_trace = list(
+            getattr(self.context.session, "completion_trace", [])
+        )
         summary.last_turn_transition_summary = (
             getattr(self.context.session, "last_turn_transition_summary", None)
         )

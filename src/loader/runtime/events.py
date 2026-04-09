@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..llm.base import Message
+from .completion_trace import CompletionTraceEntry
 from .dod import DefinitionOfDone
 from .reasoning_types import (
     ActionVerification,
@@ -77,6 +78,7 @@ class TurnSummary:
     workflow_decision_kind: str | None = None
     completion_decision_code: str | None = None
     completion_decision_summary: str | None = None
+    completion_trace: list[CompletionTraceEntry] = field(default_factory=list)
     last_turn_transition_summary: str | None = None
     workflow_timeline: list[WorkflowTimelineEntry] = field(default_factory=list)
     session_id: str | None = None

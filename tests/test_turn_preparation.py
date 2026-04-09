@@ -8,6 +8,7 @@ import pytest
 
 from loader.agent.loop import Agent, AgentConfig
 from loader.llm.base import CompletionResponse, ToolCall
+from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.conversation import ConversationRuntime
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -31,6 +32,18 @@ async def test_turn_preparation_bootstraps_execute_turn_state(
     runtime = ConversationRuntime(agent)
     events = []
     task = "Update README.md heading."
+    agent.session.last_completion_decision_code = "verification_passed"
+    agent.session.last_completion_decision_summary = (
+        "accepted the response after verification evidence passed"
+    )
+    agent.session.append_completion_trace_entry(
+        CompletionTraceEntry(
+            stage="definition_of_done",
+            outcome="complete",
+            decision_code="verification_passed",
+            decision_summary="accepted the response after verification evidence passed",
+        )
+    )
 
     async def capture(event) -> None:
         events.append(event)
@@ -54,6 +67,8 @@ async def test_turn_preparation_bootstraps_execute_turn_state(
     assert agent.session.current_task == task
     assert agent.session.active_dod_path == prepared.definition_of_done.storage_path
     assert agent.session.workflow_mode == "execute"
+    assert agent.session.last_completion_decision_code is None
+    assert agent.session.completion_trace == []
     assert any(event.type == "dod_status" for event in events)
     assert any(
         event.type == "workflow_mode" and event.workflow_mode == "execute"

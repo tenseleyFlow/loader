@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from ..llm.base import Message, Role
 from .completion_policy import CompletionPolicy
+from .completion_trace import CompletionTraceEntry
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
@@ -70,6 +71,24 @@ class TurnCompletionController:
             last_completion_decision_summary=decision_summary,
         )
 
+    def _append_completion_trace_entry(
+        self,
+        *,
+        summary: TurnSummary,
+        stage: str,
+        outcome: str,
+        decision_code: str,
+        decision_summary: str,
+    ) -> None:
+        entry = CompletionTraceEntry(
+            stage=stage,
+            outcome=outcome,
+            decision_code=decision_code,
+            decision_summary=decision_summary,
+        )
+        summary.completion_trace.append(entry)
+        self.context.session.append_completion_trace_entry(entry)
+
     async def handle_text_response(
         self,
         *,
@@ -101,6 +120,13 @@ class TurnCompletionController:
             summary=summary,
         )
         if text_loop_decision.should_stop:
+            self._append_completion_trace_entry(
+                summary=summary,
+                stage="text_loop",
+                outcome="finalize",
+                decision_code=text_loop_decision.decision_code,
+                decision_summary=text_loop_decision.decision_summary,
+            )
             self._record_completion_decision(
                 summary=summary,
                 decision_code=text_loop_decision.decision_code,
@@ -130,6 +156,17 @@ class TurnCompletionController:
                     emit=emit,
                 )
             )
+            self._append_completion_trace_entry(
+                summary=summary,
+                stage="continuation_check",
+                outcome=(
+                    "continue"
+                    if continuation_decision.should_continue
+                    else "accept"
+                ),
+                decision_code=continuation_decision.decision_code,
+                decision_summary=continuation_decision.decision_summary,
+            )
             if continuation_decision.should_continue:
                 self._record_completion_decision(
                     summary=summary,
@@ -156,6 +193,13 @@ class TurnCompletionController:
             emit=emit,
             summary=summary,
             executor=executor,
+        )
+        self._append_completion_trace_entry(
+            summary=summary,
+            stage="definition_of_done",
+            outcome="continue" if gate_result.should_continue else "complete",
+            decision_code=gate_result.reason_code,
+            decision_summary=gate_result.reason_summary,
         )
         if gate_result.should_continue:
             self._record_completion_decision(

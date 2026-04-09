@@ -18,11 +18,12 @@ from .compaction import (
     compact_session_messages,
     estimate_message_tokens,
 )
+from .completion_trace import CompletionTraceEntry, normalize_completion_trace
 from .prompt_history import PromptSnapshot, normalize_prompt_history
 from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 
-SESSION_VERSION = 8
+SESSION_VERSION = 9
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -186,6 +187,7 @@ class SessionSnapshot:
     workflow_scheduled_next_mode: str | None = None
     last_completion_decision_code: str | None = None
     last_completion_decision_summary: str | None = None
+    completion_trace: list[CompletionTraceEntry] = field(default_factory=list)
     last_turn_transition_summary: str | None = None
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
@@ -221,6 +223,7 @@ class SessionSnapshot:
             "workflow_scheduled_next_mode": self.workflow_scheduled_next_mode,
             "last_completion_decision_code": self.last_completion_decision_code,
             "last_completion_decision_summary": self.last_completion_decision_summary,
+            "completion_trace": [entry.to_dict() for entry in self.completion_trace],
             "last_turn_transition_summary": self.last_turn_transition_summary,
             "last_turn_transition_kind": self.last_turn_transition_kind,
             "last_turn_transition_reason_code": self.last_turn_transition_reason_code,
@@ -280,6 +283,7 @@ class SessionSnapshot:
             last_completion_decision_summary=normalize_optional_text(
                 data.get("last_completion_decision_summary")
             ),
+            completion_trace=normalize_completion_trace(data.get("completion_trace")),
             last_turn_transition_summary=normalize_optional_text(
                 data.get("last_turn_transition_summary")
             ),
@@ -434,6 +438,7 @@ class ConversationSession:
     workflow_scheduled_next_mode: str | None = None
     last_completion_decision_code: str | None = None
     last_completion_decision_summary: str | None = None
+    completion_trace: list[CompletionTraceEntry] = field(default_factory=list)
     last_turn_transition_summary: str | None = None
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
@@ -525,6 +530,7 @@ class ConversationSession:
         self.workflow_scheduled_next_mode = None
         self.last_completion_decision_code = None
         self.last_completion_decision_summary = None
+        self.completion_trace = []
         self.active_turn_phase = None
         self.last_turn_transition_summary = None
         self.last_turn_transition_kind = None
@@ -666,6 +672,30 @@ class ConversationSession:
         self.touch()
         self.persist()
 
+    def append_completion_trace_entry(
+        self,
+        entry: CompletionTraceEntry,
+        *,
+        max_entries: int = 8,
+    ) -> None:
+        """Persist one completion-policy trace entry."""
+
+        self.completion_trace.append(entry)
+        if len(self.completion_trace) > max_entries:
+            self.completion_trace[:] = self.completion_trace[-max_entries:]
+        self.touch()
+        self.persist()
+
+    def clear_completion_trace(self, *, persist: bool = True) -> None:
+        """Clear persisted completion-policy trace state for a new turn."""
+
+        self.completion_trace = []
+        self.last_completion_decision_code = None
+        self.last_completion_decision_summary = None
+        if persist:
+            self.touch()
+            self.persist()
+
     def update_workflow_ledger(self, ledger: WorkflowLedger) -> None:
         """Replace persisted workflow-ledger state."""
 
@@ -752,6 +782,7 @@ class ConversationSession:
             workflow_scheduled_next_mode=self.workflow_scheduled_next_mode,
             last_completion_decision_code=self.last_completion_decision_code,
             last_completion_decision_summary=self.last_completion_decision_summary,
+            completion_trace=list(self.completion_trace),
             last_turn_transition_summary=self.last_turn_transition_summary,
             last_turn_transition_kind=self.last_turn_transition_kind,
             last_turn_transition_reason_code=self.last_turn_transition_reason_code,
@@ -816,6 +847,7 @@ class ConversationSession:
         instance.last_completion_decision_summary = (
             snapshot.last_completion_decision_summary
         )
+        instance.completion_trace = list(snapshot.completion_trace)
         instance.last_turn_transition_summary = snapshot.last_turn_transition_summary
         instance.last_turn_transition_kind = snapshot.last_turn_transition_kind
         instance.last_turn_transition_reason_code = (
