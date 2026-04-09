@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from loader.runtime.safeguards import RuntimeSafeguards
@@ -10,7 +11,7 @@ from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message
 from ..tools.base import ToolRegistry, create_default_registry
 from .capabilities import resolve_backend_capability_profile
-from .events import TurnSummary
+from .events import AgentEvent, TurnSummary
 from .permissions import (
     PermissionMode,
     build_permission_policy,
@@ -25,13 +26,16 @@ from .public_shell import (
     refresh_runtime_shell_capability_profile,
     resolve_runtime_shell_use_react,
     resume_runtime_shell_session,
+    run_runtime_shell,
+    run_runtime_shell_explore,
     set_runtime_shell_workflow_mode,
+    stream_runtime_shell,
 )
 from .workflow import WorkflowMode
 
 
 class RuntimeHandle:
-    """Runtime-first internal owner for launcher and turn-runtime tests."""
+    """Runtime-first internal owner for launcher, shell, and integration paths."""
 
     def __init__(
         self,
@@ -122,6 +126,58 @@ class RuntimeHandle:
         """Reset the internal runtime handle onto a fresh session."""
 
         clear_runtime_shell_history(self)
+
+    async def run(
+        self,
+        user_message: str,
+        on_event: (
+            Callable[[AgentEvent], None]
+            | Callable[[AgentEvent], Awaitable[None]]
+            | None
+        ) = None,
+        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
+        use_plan: bool | None = None,
+    ) -> str:
+        """Run one user message through the runtime-owned shell entrypoint."""
+
+        return await run_runtime_shell(
+            self,
+            user_message,
+            on_event=on_event,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            use_plan=use_plan,
+        )
+
+    async def run_streaming(
+        self,
+        user_message: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """Yield the streamed event sequence from the runtime-owned shell."""
+
+        async for event in stream_runtime_shell(self, user_message):
+            yield event
+
+    async def run_explore(
+        self,
+        user_message: str,
+        on_event: (
+            Callable[[AgentEvent], None]
+            | Callable[[AgentEvent], Awaitable[None]]
+            | None
+        ) = None,
+        *,
+        fresh: bool = False,
+    ) -> str:
+        """Run one read-only explore query through the runtime-owned shell."""
+
+        return await run_runtime_shell_explore(
+            self,
+            user_message,
+            on_event=on_event,
+            fresh=fresh,
+        )
 
     def set_workflow_mode(self, workflow_mode: str) -> None:
         """Update the active workflow mode used by the system prompt."""
