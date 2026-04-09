@@ -24,7 +24,7 @@ from ..runtime.public_shell import (
     build_runtime_few_shot_examples,
     build_runtime_system_message,
     clear_runtime_shell_history,
-    refresh_runtime_capability_state,
+    refresh_runtime_shell_capability_profile,
     resume_runtime_shell_session,
 )
 from ..runtime.safeguards import RuntimeSafeguards
@@ -221,14 +221,7 @@ class Agent:
 
     def refresh_capability_profile(self) -> None:
         """Refresh the runtime capability profile from the current backend."""
-        refresh = refresh_runtime_capability_state(
-            backend=self.backend,
-            current_profile=self.capability_profile,
-        )
-        self.capability_profile = refresh.capability_profile
-        if refresh.prompt_reset_required:
-            self._system_message = None
-        self._use_react = None
+        refresh_runtime_shell_capability_profile(self)
 
     def queue_steering_message(self, message: str) -> None:
         """Queue one runtime steering message."""
