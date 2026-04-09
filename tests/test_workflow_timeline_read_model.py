@@ -26,7 +26,10 @@ def test_project_workflow_timeline_builds_policy_views_and_highlights() -> None:
             kind="completion_continue",
             mode="execute",
             reason_code="verification_failed_reentry",
-            summary="completion: continued after verification failed and the runtime re-entered execute mode",
+            summary=(
+                "completion: continued after verification failed and the runtime "
+                "re-entered execute mode"
+            ),
             decision_kind="forced",
             policy_stage="definition_of_done",
             policy_outcome="continue",
@@ -89,6 +92,41 @@ def test_project_workflow_timeline_builds_policy_views_and_highlights() -> None:
     assert any(item.startswith("Contradicted assumptions:") for item in projection.highlights)
 
 
+def test_project_workflow_timeline_treats_verify_observation_as_accountability() -> None:
+    entries = [
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:03:00Z",
+            kind="verify_observation",
+            mode="verify",
+            reason_code="verification_command_failed",
+            summary="verify: verification failed for `pytest -q`",
+            decision_kind="forced",
+            policy_stage="verification",
+            policy_outcome="failed",
+            verification_observations=[
+                VerificationObservation(
+                    status="failed",
+                    summary="verification failed for `pytest -q`",
+                    command="pytest -q",
+                    kind="test",
+                    detail="1 failed",
+                )
+            ],
+        )
+    ]
+
+    projection = project_workflow_timeline(entries, accountability_only=True)
+
+    assert [entry.kind for entry in projection.policy_entries] == ["verify_observation"]
+    assert [entry.kind for entry in projection.entries] == ["verify_observation"]
+    assert projection.latest_policy_summary is not None
+    assert "policy-stage=verification" in projection.latest_policy_summary
+    assert "observed=verification failed for `pytest -q` [1 failed]" in (
+        projection.latest_policy_summary
+    )
+    assert any(item.startswith("Verify observed:") for item in projection.highlights)
+
+
 def test_project_workflow_timeline_applies_policy_filters_and_limits() -> None:
     entries = [
         WorkflowTimelineEntry(
@@ -114,7 +152,10 @@ def test_project_workflow_timeline_applies_policy_filters_and_limits() -> None:
             kind="completion_check",
             mode="execute",
             reason_code="completion_response_accepted",
-            summary="completion: accepted the response because completion heuristics found no missing follow-through",
+            summary=(
+                "completion: accepted the response because completion heuristics "
+                "found no missing follow-through"
+            ),
             decision_kind="forced",
             policy_stage="continuation_check",
             policy_outcome="accept",

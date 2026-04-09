@@ -150,10 +150,16 @@ def workflow_timeline_highlights(
 
     verify_entry = _latest_matching_entry(
         entries,
-        lambda entry: entry.kind == "verify_skip" or "verify_skip" in entry.reason_code,
+        lambda entry: entry.kind in {"verify_skip", "verify_observation"}
+        or "verify_skip" in entry.reason_code,
     )
     if verify_entry is not None:
-        highlights.append("Skipped verify: " + workflow_entry_explanation(verify_entry))
+        prefix = (
+            "Skipped verify:"
+            if verify_entry.kind == "verify_skip"
+            else "Verify observed:"
+        )
+        highlights.append(prefix + " " + workflow_entry_explanation(verify_entry))
 
     return list(dict.fromkeys(highlights))
 
@@ -162,7 +168,10 @@ def is_policy_accountability_entry(entry: WorkflowTimelineEntry) -> bool:
     """Return whether one workflow timeline entry is a policy-accountability event."""
 
     kind = entry.kind
-    return kind.startswith(("completion_", "repair_")) or kind == "verify_skip"
+    return kind.startswith(("completion_", "repair_")) or kind in {
+        "verify_skip",
+        "verify_observation",
+    }
 
 
 def workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
