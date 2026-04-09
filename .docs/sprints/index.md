@@ -67,6 +67,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 17](sprint17.md) — Bootstrap Source Narrowing, Turn Contract Tightening, and Explore Operator UX
 
+## Phase 16: Shell Minimalism and Completion Honesty
+
+- [Sprint 18](sprint18.md) — Shell Minimalism, Completion Contract, and Runtime Policy Trace
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
