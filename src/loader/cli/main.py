@@ -198,9 +198,9 @@ def _build_cli_shell_owner(
     """Build the CLI runtime owner for the requested integration path.
 
     Non-TUI CLI flows use the runtime-first internal handle so internal
-    integrations stop depending on `Agent` by reflex. The Textual app still
-    receives the public `Agent` facade intentionally because it relies on the
-    documented public steering shell.
+    integrations stop depending on `Agent` by reflex. Public-shell construction
+    remains available for explicit compatibility paths, but the CLI can choose a
+    runtime-first owner even for interactive surfaces.
     """
 
     if require_public_agent:
@@ -390,13 +390,12 @@ async def _main(
         workflow_mode_override="clarify" if clarify else ("plan" if plan else None),
         reasoning=reasoning_config,
     )
-    require_public_agent = not no_tui and prompt is None
     try:
         shell_owner = _build_cli_shell_owner(
             backend=llm,
             registry=registry,
             config=config,
-            require_public_agent=require_public_agent,
+            require_public_agent=False,
         )
     except ValueError as exc:
         console.print(f"[red]Permission policy error:[/red] {exc}")
@@ -488,7 +487,7 @@ async def _main(
         from ..ui.app import LoaderApp
 
         app = LoaderApp(
-            agent=shell_owner,
+            shell_owner=shell_owner,
             model_name=model,
             mode=mode_str,
             capability_profile=(

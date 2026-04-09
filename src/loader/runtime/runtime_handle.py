@@ -112,10 +112,21 @@ class RuntimeHandle:
         return self.permission_policy.rule_counts()
 
     @property
+    def is_running(self) -> bool:
+        """Return whether the runtime-owned shell is currently running."""
+
+        return self.steering.is_running
+
+    @property
     def use_react(self) -> bool:
         """Determine whether to use ReAct prompting or native tools."""
 
         return resolve_runtime_shell_use_react(self)
+
+    def steer(self, message: str) -> bool:
+        """Queue one steering message when the runtime shell is active."""
+
+        return self.steering.steer(message)
 
     def resume_session(self, session_id: str | None = None) -> bool:
         """Resume the latest or named persisted session."""

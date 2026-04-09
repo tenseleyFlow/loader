@@ -162,3 +162,22 @@ async def test_runtime_harness_uses_runtime_handle_for_scripted_runs(
     assert run.response == "Runtime harness reply."
     assert isinstance(explore_run.agent, RuntimeHandle)
     assert explore_run.response == "Explore harness reply."
+
+
+def test_runtime_handle_exposes_public_shell_steering_contract(
+    temp_dir: Path,
+) -> None:
+    handle = RuntimeHandle(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+
+    assert handle.is_running is False
+    assert handle.steer("stay in runtime") is False
+
+    handle.steering.mark_running()
+
+    assert handle.is_running is True
+    assert handle.steer("stay in runtime") is True
+    assert handle.drain_steering_messages() == ["stay in runtime"]

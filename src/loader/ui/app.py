@@ -2,7 +2,9 @@
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Protocol
 
 from rich.markup import escape
 from textual import work
@@ -13,7 +15,7 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Input, Static
 from textual.worker import Worker, get_current_worker
 
-from ..agent.loop import Agent, AgentEvent
+from ..runtime.events import AgentEvent
 from .adapter import (
     ArtifactCreated,
     ClearStream,
@@ -50,6 +52,38 @@ from .widgets import (
 )
 
 
+class LoaderUIShellOwner(Protocol):
+    """Small shell-owner contract used by the Textual UI."""
+
+    backend: object
+    capability_profile: object
+    safeguards: object
+    is_running: bool
+
+    def steer(self, message: str) -> bool:
+        """Queue one steering message while the owner is running."""
+
+    def refresh_capability_profile(self) -> None:
+        """Refresh the active capability profile."""
+
+    async def run(
+        self,
+        user_message: str,
+        on_event: (
+            Callable[[AgentEvent], None]
+            | Callable[[AgentEvent], Awaitable[None]]
+            | None
+        ) = None,
+        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
+        use_plan: bool | None = None,
+    ) -> str:
+        """Run one user message through the shell owner."""
+
+    def clear_history(self) -> None:
+        """Reset the owner history."""
+
+
 class LoaderApp(App):
     """Main Textual application for Loader."""
 
@@ -66,7 +100,7 @@ class LoaderApp(App):
 
     def __init__(
         self,
-        agent: Agent,
+        shell_owner: LoaderUIShellOwner,
         model_name: str = "",
         mode: str = "Native",
         capability_profile: str = "",
@@ -77,7 +111,7 @@ class LoaderApp(App):
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.agent = agent
+        self.shell_owner = shell_owner
         self.model_name = model_name
         self.mode = mode
         self.capability_profile = capability_profile
@@ -185,14 +219,14 @@ class LoaderApp(App):
             self.action_clear_messages()
             return
 
-        # If agent is running, this is a steering message
-        if self.is_generating and self.agent.is_running:
+        # If the runtime owner is running, this is a steering message
+        if self.is_generating and self.shell_owner.is_running:
             # Finalize current streaming so new content appears below user's message
             if self._current_streaming is not None:
                 self._current_streaming.stop_streaming()
                 self._current_streaming = None
             self._add_steering_message(user_input)
-            self.agent.steer(user_input)
+            self.shell_owner.steer(user_input)
             return
 
         # Add user message to display
@@ -278,11 +312,15 @@ class LoaderApp(App):
 
         try:
             models = []
-            if hasattr(self.agent.backend, "list_models"):
-                models = await self.agent.backend.list_models()
+            if hasattr(self.shell_owner.backend, "list_models"):
+                models = await self.shell_owner.backend.list_models()
 
             if models:
-                current = self.agent.backend.model if hasattr(self.agent.backend, "model") else ""
+                current = (
+                    self.shell_owner.backend.model
+                    if hasattr(self.shell_owner.backend, "model")
+                    else ""
+                )
 
                 def on_select(selected: str | None) -> None:
                     if selected:
@@ -299,24 +337,24 @@ class LoaderApp(App):
 
     def _switch_model(self, model_name: str) -> None:
         """Switch to a different model."""
-        if hasattr(self.agent.backend, "model"):
-            old_model = self.agent.backend.model
-            self.agent.backend.model = model_name
-            if hasattr(self.agent, "refresh_capability_profile"):
-                self.agent.refresh_capability_profile()
+        if hasattr(self.shell_owner.backend, "model"):
+            old_model = self.shell_owner.backend.model
+            self.shell_owner.backend.model = model_name
+            if hasattr(self.shell_owner, "refresh_capability_profile"):
+                self.shell_owner.refresh_capability_profile()
             self.model_name = model_name
             # Update status line
             status = self.query_one(StatusLine)
             status.model = model_name
             # Update mode based on new model's capabilities
-            if hasattr(self.agent.backend, "supports_native_tools"):
-                supports_native = self.agent.backend.supports_native_tools()
+            if hasattr(self.shell_owner.backend, "supports_native_tools"):
+                supports_native = self.shell_owner.backend.supports_native_tools()
                 self.mode = "Native" if supports_native else "ReAct"
                 status.mode = self.mode
-            if hasattr(self.agent, "capability_profile"):
+            if hasattr(self.shell_owner, "capability_profile"):
                 self.capability_profile = (
-                    f"{self.agent.capability_profile.preferred_tool_call_format}/"
-                    f"{self.agent.capability_profile.verification_strictness}"
+                    f"{self.shell_owner.capability_profile.preferred_tool_call_format}/"
+                    f"{self.shell_owner.capability_profile.verification_strictness}"
                 )
                 status.capability_profile = self.capability_profile
             self._add_message(
@@ -469,7 +507,7 @@ class LoaderApp(App):
                 await asyncio.sleep(0)
 
         async def on_confirmation(tool_name: str, message: str, details: str) -> bool:
-            """Handle confirmation requests from agent."""
+            """Handle confirmation requests from the runtime owner."""
             if worker.is_cancelled:
                 return False
             return await self._request_confirmation(tool_name, message, details)
@@ -485,7 +523,7 @@ class LoaderApp(App):
             return await self._request_user_question(question, options)
 
         try:
-            return await self.agent.run(
+            return await self.shell_owner.run(
                 user_input,
                 on_event=on_event,
                 on_confirmation=on_confirmation,
@@ -550,7 +588,7 @@ class LoaderApp(App):
 
         # Filter content through safeguards before displaying
         # This removes bracket tool calls, code blocks, etc. from stream
-        filtered_content = self.agent.safeguards.filter_stream_chunk(message.content)
+        filtered_content = self.shell_owner.safeguards.filter_stream_chunk(message.content)
 
         if filtered_content:
             self._current_streaming.append(filtered_content)
@@ -853,7 +891,7 @@ class LoaderApp(App):
         """Clear all messages."""
         msg_area = self.query_one("#message-area", ScrollableContainer)
         msg_area.remove_children()
-        self.agent.clear_history()
+        self.shell_owner.clear_history()
         self.query_one(StatusLine).clear_definition_of_done()
         self.query_one(StatusLine).update_workflow_mode("execute")
         self._add_message("[dim]Conversation cleared.[/dim]")

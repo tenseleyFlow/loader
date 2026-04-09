@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from textual.message import Message
 
-from ..agent.loop import AgentEvent
+from ..runtime.events import AgentEvent
 
 if TYPE_CHECKING:
     from ..runtime.reasoning_types import (
