@@ -32,14 +32,13 @@ from ..runtime.inspection import (
     collect_workflow_artifact_diffs,
     collect_workflow_timeline,
     dry_run_permission_check,
-    filter_policy_accountability_entries,
-    format_evidence_provenance_brief,
-    latest_policy_accountability_summary,
     list_session_summaries,
     load_session_detail,
+    project_workflow_timeline,
     reset_explore_continuity,
 )
 from ..runtime.permissions import PermissionMode
+from ..runtime.workflow_timeline_read_model import format_evidence_provenance_brief
 from .options import inject_resume_target
 from .rendering import (
     format_dod_status,
@@ -1590,11 +1589,12 @@ def _session_show_main(session_id: str) -> None:
                 code=snapshot.last_completion_decision_code,
             ),
         )
-    latest_policy_summary = latest_policy_accountability_summary(
-        snapshot.workflow_timeline
+    projection = project_workflow_timeline(
+        snapshot.workflow_timeline,
+        workflow_ledger=snapshot.workflow_ledger,
     )
-    if latest_policy_summary:
-        table.add_row("Latest Policy", latest_policy_summary)
+    if projection.latest_policy_summary:
+        table.add_row("Latest Policy", projection.latest_policy_summary)
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -1651,21 +1651,18 @@ def _session_show_main(session_id: str) -> None:
         console.print()
         _print_completion_trace_entries(snapshot.completion_trace)
 
-    policy_entries = filter_policy_accountability_entries(snapshot.workflow_timeline)
-    if policy_entries:
+    if projection.policy_entries:
         console.print()
         _print_workflow_timeline_entries(
-            policy_entries,
+            projection.policy_entries[-5:],
             title="[bold blue]Policy Timeline[/bold blue]",
-            limit=5,
         )
 
-    if snapshot.workflow_timeline:
+    if projection.entries:
         console.print()
         _print_workflow_timeline_entries(
-            snapshot.workflow_timeline,
+            projection.entries[-5:],
             title="[bold blue]Workflow Timeline[/bold blue]",
-            limit=5,
         )
 
 

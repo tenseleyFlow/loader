@@ -29,8 +29,11 @@ from .permissions import (
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
 from .session import SessionSnapshot, SessionStore
-from .workflow_ledger import WorkflowLedger, workflow_ledger_highlights
+from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
+from .workflow_timeline_read_model import (
+    project_workflow_timeline,
+)
 
 
 class CheckStatus(StrEnum):
@@ -512,9 +515,9 @@ def collect_status_snapshot(
         active_turn_phase=snapshot.active_turn_phase,
         completion_decision_code=snapshot.last_completion_decision_code,
         completion_decision_summary=snapshot.last_completion_decision_summary,
-        latest_policy_summary=latest_policy_accountability_summary(
+        latest_policy_summary=project_workflow_timeline(
             snapshot.workflow_timeline
-        ),
+        ).latest_policy_summary,
         last_turn_transition_summary=snapshot.last_turn_transition_summary,
         last_turn_transition_kind=snapshot.last_turn_transition_kind,
         last_turn_transition_reason_code=snapshot.last_turn_transition_reason_code,
@@ -901,17 +904,14 @@ def collect_workflow_timeline(
             workflow_ledger=WorkflowLedger(),
         )
 
-    filtered_entries = list(snapshot.workflow_timeline)
-    if accountability_only:
-        filtered_entries = filter_policy_accountability_entries(filtered_entries)
-    if mode:
-        filtered_entries = [entry for entry in filtered_entries if entry.mode == mode]
-    if kind:
-        filtered_entries = [entry for entry in filtered_entries if entry.kind == kind]
-    highlights = _workflow_timeline_highlights(filtered_entries)
-    highlights.extend(workflow_ledger_highlights(snapshot.workflow_ledger))
-    if limit is not None:
-        filtered_entries = filtered_entries[-limit:]
+    projection = project_workflow_timeline(
+        snapshot.workflow_timeline,
+        workflow_ledger=snapshot.workflow_ledger,
+        mode=mode,
+        kind=kind,
+        accountability_only=accountability_only,
+        limit=limit,
+    )
 
     return WorkflowTimelineSnapshot(
         project_root=resolved_root,
@@ -919,34 +919,15 @@ def collect_workflow_timeline(
         is_current=snapshot.session_id == current_session_id,
         workflow_mode=snapshot.workflow_mode,
         current_task=snapshot.current_task,
-        total_entries=len(snapshot.workflow_timeline),
+        total_entries=projection.total_entries,
         selected_mode=mode,
         selected_kind=kind,
         selected_accountability_only=accountability_only,
         entry_limit=limit,
-        highlights=list(dict.fromkeys(highlights)),
-        entries=filtered_entries,
+        highlights=list(projection.highlights),
+        entries=list(projection.entries),
         workflow_ledger=snapshot.workflow_ledger.copy(),
     )
-
-
-def filter_policy_accountability_entries(
-    entries: list[WorkflowTimelineEntry],
-) -> list[WorkflowTimelineEntry]:
-    """Return only unified policy-accountability entries from the workflow timeline."""
-
-    return [entry for entry in entries if _is_policy_accountability_entry(entry)]
-
-
-def latest_policy_accountability_summary(
-    entries: list[WorkflowTimelineEntry],
-) -> str | None:
-    """Return one compact explanation for the latest canonical policy event."""
-
-    entry = _latest_matching_entry(entries, _is_policy_accountability_entry)
-    if entry is None:
-        return None
-    return _workflow_entry_explanation(entry)
 
 
 def dry_run_permission_check(
@@ -1172,128 +1153,6 @@ def _coerce_permission_mode(value: PermissionMode | str) -> PermissionMode:
     if isinstance(value, PermissionMode):
         return value
     return PermissionMode.from_str(value)
-
-
-def _workflow_timeline_highlights(entries: list[WorkflowTimelineEntry]) -> list[str]:
-    highlights: list[str] = []
-
-    clarify_entry = _latest_matching_entry(
-        entries,
-        lambda entry: entry.kind
-        in {
-            "clarify_continue",
-            "clarify_exit",
-        },
-    )
-    if clarify_entry is not None:
-        if clarify_entry.kind == "clarify_continue":
-            highlights.append(
-                "Asked again: " + _workflow_entry_explanation(clarify_entry)
-            )
-        else:
-            highlights.append(
-                "Clarify stopped: " + _workflow_entry_explanation(clarify_entry)
-            )
-
-    recovery_entry = _latest_matching_entry(
-        entries,
-        lambda entry: entry.kind in {"reentry", "plan_refresh"}
-        or "replan" in entry.reason_code
-        or "refresh" in entry.reason_code,
-    )
-    if recovery_entry is not None:
-        highlights.append(
-            "Recovered workflow: " + _workflow_entry_explanation(recovery_entry)
-        )
-
-    repair_entry = _latest_matching_entry(
-        entries,
-        lambda entry: entry.kind in {"repair_retry", "repair_fail"},
-    )
-    if repair_entry is not None:
-        prefix = (
-            "Repair failed: " if repair_entry.kind == "repair_fail" else "Repair path: "
-        )
-        highlights.append(prefix + _workflow_entry_explanation(repair_entry))
-
-    completion_entry = _latest_matching_entry(
-        entries,
-        lambda entry: entry.kind
-        in {
-            "completion_check",
-            "completion_continue",
-            "completion_complete",
-            "completion_finalize",
-        },
-    )
-    if completion_entry is not None:
-        highlights.append(
-            "Completion decision: " + _workflow_entry_explanation(completion_entry)
-        )
-
-    verify_entry = _latest_matching_entry(
-        entries,
-        lambda entry: entry.kind == "verify_skip" or "verify_skip" in entry.reason_code,
-    )
-    if verify_entry is not None:
-        highlights.append(
-            "Skipped verify: " + _workflow_entry_explanation(verify_entry)
-        )
-
-    return list(dict.fromkeys(highlights))
-
-
-def _is_policy_accountability_entry(entry: WorkflowTimelineEntry) -> bool:
-    kind = entry.kind
-    return kind.startswith(("completion_", "repair_")) or kind == "verify_skip"
-
-
-def _latest_matching_entry(
-    entries: list[WorkflowTimelineEntry],
-    predicate,
-) -> WorkflowTimelineEntry | None:
-    for entry in reversed(entries):
-        if predicate(entry):
-            return entry
-    return None
-
-
-def _workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
-    parts = [entry.summary]
-    if entry.reason_code:
-        parts.append(f"code={entry.reason_code}")
-    if entry.clarify_stage:
-        parts.append(f"stage={entry.clarify_stage}")
-    if entry.clarify_pressure_kind:
-        parts.append(f"pressure={entry.clarify_pressure_kind}")
-    if entry.policy_stage:
-        parts.append(f"policy-stage={entry.policy_stage}")
-    if entry.policy_outcome:
-        parts.append(f"policy-outcome={entry.policy_outcome}")
-    if entry.missing_readiness_gates:
-        parts.append("gates=" + ",".join(entry.missing_readiness_gates))
-    if entry.unresolved_questions:
-        parts.append(entry.unresolved_questions[0])
-    if entry.evidence_summary:
-        parts.append("evidence=" + "; ".join(entry.evidence_summary[:2]))
-    if entry.evidence_provenance:
-        parts.append(
-            "provenance=" + format_evidence_provenance_brief(entry.evidence_provenance)
-        )
-    if entry.signal_summary:
-        parts.append("; ".join(entry.signal_summary[:2]))
-    return " | ".join(part for part in parts if part)
-
-
-def format_evidence_provenance_brief(entries, *, max_entries: int = 2) -> str:
-    """Render a compact operator-facing provenance summary."""
-
-    parts: list[str] = []
-    for entry in list(entries)[:max_entries]:
-        source = f"@{entry.source}" if entry.source else ""
-        subject = f"({entry.subject})" if entry.subject else ""
-        parts.append(f"{entry.status}:{entry.category}{source}{subject}")
-    return "; ".join(parts)
 
 
 async def _backend_health_check(
