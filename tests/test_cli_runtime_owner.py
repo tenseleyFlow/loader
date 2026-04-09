@@ -89,6 +89,85 @@ def test_build_cli_shell_owner_uses_agent_for_public_paths(
 
 
 @pytest.mark.asyncio
+async def test_main_uses_runtime_first_owner_for_tui_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_owner = SimpleNamespace(
+        capability_profile=SimpleNamespace(
+            preferred_tool_call_format="native",
+            verification_strictness="strict",
+        ),
+        workflow_mode="execute",
+        active_permission_mode="workspace-write",
+        session=SimpleNamespace(session_id="session-123", active_turn_phase=""),
+        project_context=None,
+        resume_session=lambda session_id=None: False,
+    )
+    owner_calls: list[dict[str, object]] = []
+    app_calls: list[dict[str, object]] = []
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            app_calls.append(kwargs)
+
+        async def run_async(self) -> None:
+            app_calls.append({"ran": True})
+
+    _install_fake_ollama_module(monkeypatch)
+    monkeypatch.setattr("loader.config.get_default_model", lambda: "fake-model")
+    monkeypatch.setattr("loader.config.get_last_model", lambda: None)
+    monkeypatch.setattr("loader.config.set_last_model", lambda model: None)
+    monkeypatch.setattr(
+        "loader.tools.base.create_default_registry",
+        lambda: SimpleNamespace(skip_confirmation=False),
+    )
+    fake_ui_app = ModuleType("loader.ui.app")
+    fake_ui_app.LoaderApp = FakeApp
+    monkeypatch.setitem(sys.modules, "loader.ui.app", fake_ui_app)
+
+    def fake_build_owner(*, backend, registry, config, require_public_agent):
+        owner_calls.append(
+            {
+                "backend": backend,
+                "registry": registry,
+                "config": config,
+                "require_public_agent": require_public_agent,
+            }
+        )
+        return fake_owner
+
+    monkeypatch.setattr(cli_main_module, "_build_cli_shell_owner", fake_build_owner)
+
+    await cli_main_module._main(
+        model="fake-model",
+        select_model=False,
+        backend="ollama",
+        yes=False,
+        permission_mode="workspace-write",
+        react=False,
+        no_context=True,
+        plan=False,
+        clarify=False,
+        resume_target=None,
+        no_recover=False,
+        no_tui=False,
+        ctx=8192,
+        gpu=-1,
+        timeout=60,
+        decompose=False,
+        critique=False,
+        confidence=False,
+        verify=False,
+        reason=False,
+        prompt=None,
+    )
+
+    assert owner_calls and owner_calls[0]["require_public_agent"] is False
+    assert app_calls[0]["shell_owner"] is fake_owner
+    assert app_calls[-1] == {"ran": True}
+
+
+@pytest.mark.asyncio
 async def test_main_uses_runtime_first_owner_for_single_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
