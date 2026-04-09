@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message, Role
+from ..runtime.bootstrap import build_runtime_bootstrap_source
 from ..runtime.capabilities import resolve_backend_capability_profile
 from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
@@ -338,6 +339,11 @@ class Agent:
 
         self._steering_queue.put_nowait(message)
 
+    def build_runtime_source(self):
+        """Build the explicit runtime bootstrap source for public entrypoints."""
+
+        return build_runtime_bootstrap_source(self)
+
     def drain_steering_messages(self) -> list[str]:
         """Drain queued runtime steering messages."""
 
@@ -394,7 +400,7 @@ class Agent:
         # Mark agent as running (enables steering)
         self._is_running = True
         try:
-            launcher = build_runtime_launcher(self)
+            launcher = build_runtime_launcher(self.build_runtime_source())
             return await launcher.run_user_message(
                 user_message,
                 emit,
@@ -457,7 +463,7 @@ class Agent:
                 if inspect.iscoroutine(result):
                     await result
 
-        launcher = build_runtime_launcher(self)
+        launcher = build_runtime_launcher(self.build_runtime_source())
         self.last_turn_summary = await launcher.run_explore(
             user_message,
             emit,

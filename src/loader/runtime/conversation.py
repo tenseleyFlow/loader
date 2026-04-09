@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
-from .bootstrap import build_runtime_context, sync_runtime_context
+from .bootstrap import (
+    RuntimeBootstrapSource,
+    RuntimeBootstrapView,
+    build_runtime_bootstrap_source,
+    build_runtime_context,
+    sync_runtime_context,
+)
 from .completion_policy import CompletionPolicy
 from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
@@ -40,9 +45,9 @@ UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 class ConversationRuntime:
     """Runs one explicit conversation turn against the current session."""
 
-    def __init__(self, agent: Any) -> None:
-        self.agent = agent
-        self.context = build_runtime_context(agent)
+    def __init__(self, source: RuntimeBootstrapSource) -> None:
+        self.source: RuntimeBootstrapView = build_runtime_bootstrap_source(source)
+        self.context = build_runtime_context(self.source)
         self.tracer = RuntimeTracer()
         self.executor: ToolExecutor | None = None
         self.dod_store = DefinitionOfDoneStore(self.context.project_root)
@@ -142,7 +147,7 @@ class ConversationRuntime:
             original_task=original_task,
             on_user_question=on_user_question,
         )
-        sync_runtime_context(self.context, self.agent)
+        sync_runtime_context(self.context, self.source)
         self.executor = prepared_turn.executor
         summary = prepared_turn.summary
         dod = prepared_turn.definition_of_done

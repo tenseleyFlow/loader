@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from ..llm.base import Message, Role
-from .bootstrap import RuntimeBootstrapSource
+from .bootstrap import (
+    RuntimeBootstrapSource,
+    RuntimeBootstrapView,
+    build_runtime_bootstrap_source,
+)
 from .chat_lane import ConversationalTurnRunner
 from .conversation import ConfirmationHandler, ConversationRuntime, EventSink, UserQuestionHandler
 from .decomposition_lane import DecompositionTurnRunner
@@ -18,7 +22,7 @@ class RuntimeLauncher:
     """Thin launcher over the shared runtime bootstrap contract."""
 
     def __init__(self, source: RuntimeBootstrapSource) -> None:
-        self.source = source
+        self.source: RuntimeBootstrapView = build_runtime_bootstrap_source(source)
 
     async def run_conversational(
         self,

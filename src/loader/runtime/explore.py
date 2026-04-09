@@ -8,7 +8,11 @@ from collections.abc import Awaitable, Callable
 from ..llm.base import Message, Role
 from ..runtime.events import AgentEvent, TurnSummary
 from ..tools.base import create_explore_registry
-from .bootstrap import build_runtime_context
+from .bootstrap import (
+    RuntimeBootstrapSource,
+    build_runtime_bootstrap_source,
+    build_runtime_context,
+)
 from .context import RuntimeContext
 from .executor import ToolExecutionState, ToolExecutor
 from .explore_state import ExploreSnapshot, ExploreStateStore
@@ -75,8 +79,9 @@ Current directory: {cwd}
 class ExploreRuntime:
     """Minimal read-only runtime for lookup-oriented tasks."""
 
-    def __init__(self, agent) -> None:
-        self.context: RuntimeContext = build_runtime_context(agent)
+    def __init__(self, source: RuntimeBootstrapSource) -> None:
+        self.source = build_runtime_bootstrap_source(source)
+        self.context: RuntimeContext = build_runtime_context(self.source)
         self.registry = create_explore_registry(self.context.project_root)
         explore_rules = PermissionRuleSet(
             deny=list(self.context.permission_policy.rules.deny),
