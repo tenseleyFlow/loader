@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from loader.runtime.safeguards import RuntimeSafeguards
+
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message
 from ..tools.base import ToolRegistry, create_default_registry
@@ -25,7 +27,6 @@ from .public_shell import (
     resume_runtime_shell_session,
     set_runtime_shell_workflow_mode,
 )
-from .safeguards import RuntimeSafeguards
 from .workflow import WorkflowMode
 
 
