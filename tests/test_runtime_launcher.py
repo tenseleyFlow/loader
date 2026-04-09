@@ -10,6 +10,7 @@ from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, StreamChunk
 from loader.runtime.bootstrap import RuntimeBootstrapView
 from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
+from loader.runtime.runtime_handle import RuntimeHandle
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -34,14 +35,14 @@ def test_build_runtime_launcher_returns_launcher_for_agent_source(
 async def test_runtime_launcher_runs_conversation_turn(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=ScriptedBackend(
             completions=[CompletionResponse(content="Hello back.")]
         ),
         config=AgentConfig(auto_context=False, stream=False),
         project_root=temp_dir,
     )
-    launcher = build_runtime_launcher(agent)
+    launcher = build_runtime_launcher(handle)
     events = []
 
     async def emit(event) -> None:
@@ -62,12 +63,12 @@ async def test_runtime_launcher_runs_explore_query(
             CompletionResponse(content="Quick repo summary.")
         ]
     )
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=backend,
         config=AgentConfig(auto_context=False, stream=False),
         project_root=temp_dir,
     )
-    launcher = build_runtime_launcher(agent)
+    launcher = build_runtime_launcher(handle)
     events = []
 
     async def emit(event) -> None:
@@ -95,7 +96,7 @@ async def test_runtime_launcher_runs_decomposition_fallback_turn(
             CompletionResponse(content="Feature shipped directly."),
         ]
     )
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=backend,
         config=AgentConfig(
             auto_context=False,
@@ -104,7 +105,7 @@ async def test_runtime_launcher_runs_decomposition_fallback_turn(
         ),
         project_root=temp_dir,
     )
-    launcher = build_runtime_launcher(agent)
+    launcher = build_runtime_launcher(handle)
     events = []
 
     async def emit(event) -> None:
@@ -121,14 +122,14 @@ async def test_runtime_launcher_runs_decomposition_fallback_turn(
     assert events[0].type == "thinking"
     assert any(event.type == "response" for event in events)
     assert not any(event.type == "decomposition" for event in events)
-    assert agent.session.messages[0].content == "Ship the feature"
+    assert handle.session.messages[0].content == "Ship the feature"
 
 
 @pytest.mark.asyncio
 async def test_runtime_launcher_routes_user_message_to_conversational_fast_path(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=ScriptedBackend(
             streams=[
                 [
@@ -144,7 +145,7 @@ async def test_runtime_launcher_routes_user_message_to_conversational_fast_path(
         config=AgentConfig(auto_context=False),
         project_root=temp_dir,
     )
-    launcher = build_runtime_launcher(agent)
+    launcher = build_runtime_launcher(handle)
     events = []
 
     async def emit(event) -> None:
@@ -153,7 +154,7 @@ async def test_runtime_launcher_routes_user_message_to_conversational_fast_path(
     response = await launcher.run_user_message("thanks", emit)
 
     assert response == "Quick reply."
-    assert agent.current_task is None
+    assert handle.current_task is None
     assert any(event.type == "response" and event.content == "Quick reply." for event in events)
 
 
@@ -161,7 +162,7 @@ async def test_runtime_launcher_routes_user_message_to_conversational_fast_path(
 async def test_runtime_launcher_routes_user_message_to_direct_runtime_turn(
     temp_dir: Path,
 ) -> None:
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=ScriptedBackend(
             completions=[CompletionResponse(content="Feature shipped directly.")]
         ),
@@ -172,7 +173,7 @@ async def test_runtime_launcher_routes_user_message_to_direct_runtime_turn(
         ),
         project_root=temp_dir,
     )
-    launcher = build_runtime_launcher(agent)
+    launcher = build_runtime_launcher(handle)
     events = []
 
     async def emit(event) -> None:
@@ -185,11 +186,11 @@ async def test_runtime_launcher_routes_user_message_to_direct_runtime_turn(
     )
 
     assert response == "Feature shipped directly."
-    assert agent.current_task == "Write a short release-note style summary of what Loader does well."
-    assert agent.last_turn_summary is not None
-    assert agent.last_turn_summary.final_response == "Feature shipped directly."
+    assert handle.current_task == "Write a short release-note style summary of what Loader does well."
+    assert handle.last_turn_summary is not None
+    assert handle.last_turn_summary.final_response == "Feature shipped directly."
     assert (
-        agent.session.messages[0].content
+        handle.session.messages[0].content
         == "Write a short release-note style summary of what Loader does well."
     )
     assert any(event.type == "response" for event in events)
@@ -200,7 +201,7 @@ async def test_runtime_launcher_routes_user_message_through_decomposition_lane(
     temp_dir: Path,
     monkeypatch,
 ) -> None:
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=ScriptedBackend(),
         config=AgentConfig(
             auto_context=False,
@@ -209,7 +210,7 @@ async def test_runtime_launcher_routes_user_message_through_decomposition_lane(
         ),
         project_root=temp_dir,
     )
-    launcher = build_runtime_launcher(agent)
+    launcher = build_runtime_launcher(handle)
     events = []
     calls = []
 
@@ -243,7 +244,7 @@ async def test_runtime_launcher_routes_user_message_through_decomposition_lane(
     )
 
     assert response == "All done."
-    assert agent.current_task == "Read the spec and implement the feature"
+    assert handle.current_task == "Read the spec and implement the feature"
     assert calls == [
         {
             "task": "Read the spec and implement the feature",

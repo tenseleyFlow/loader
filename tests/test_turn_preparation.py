@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from loader.agent.loop import Agent, AgentConfig
+from loader.agent.loop import AgentConfig
 from loader.llm.base import CompletionResponse, ToolCall
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.conversation import ConversationRuntime
+from loader.runtime.runtime_handle import RuntimeHandle
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -24,19 +25,19 @@ async def test_turn_preparation_bootstraps_execute_turn_state(
     temp_dir: Path,
 ) -> None:
     backend = ScriptedBackend()
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=backend,
         config=non_streaming_config(),
         project_root=temp_dir,
     )
-    runtime = ConversationRuntime(agent)
+    runtime = ConversationRuntime(handle)
     events = []
     task = "Update README.md heading."
-    agent.session.last_completion_decision_code = "verification_passed"
-    agent.session.last_completion_decision_summary = (
+    handle.session.last_completion_decision_code = "verification_passed"
+    handle.session.last_completion_decision_summary = (
         "accepted the response after verification evidence passed"
     )
-    agent.session.append_completion_trace_entry(
+    handle.session.append_completion_trace_entry(
         CompletionTraceEntry(
             stage="definition_of_done",
             outcome="complete",
@@ -64,11 +65,11 @@ async def test_turn_preparation_bootstraps_execute_turn_state(
     assert prepared.summary.workflow_mode == "execute"
     assert prepared.definition_of_done.current_mode == "execute"
     assert prepared.definition_of_done.storage_path is not None
-    assert agent.session.current_task == task
-    assert agent.session.active_dod_path == prepared.definition_of_done.storage_path
-    assert agent.session.workflow_mode == "execute"
-    assert agent.session.last_completion_decision_code is None
-    assert agent.session.completion_trace == []
+    assert handle.session.current_task == task
+    assert handle.session.active_dod_path == prepared.definition_of_done.storage_path
+    assert handle.session.workflow_mode == "execute"
+    assert handle.session.last_completion_decision_code is None
+    assert handle.session.completion_trace == []
     assert any(event.type == "dod_status" for event in events)
     assert any(
         event.type == "workflow_mode" and event.workflow_mode == "execute"
@@ -125,12 +126,12 @@ async def test_turn_preparation_can_bootstrap_clarify_handoff(
             ),
         ]
     )
-    agent = Agent(
+    handle = RuntimeHandle(
         backend=backend,
         config=non_streaming_config(),
         project_root=temp_dir,
     )
-    runtime = ConversationRuntime(agent)
+    runtime = ConversationRuntime(handle)
     events = []
     asked_questions: list[str] = []
 
@@ -156,7 +157,7 @@ async def test_turn_preparation_can_bootstrap_clarify_handoff(
     assert prepared.definition_of_done.current_mode == "execute"
     assert prepared.definition_of_done.clarify_brief is not None
     assert Path(prepared.definition_of_done.clarify_brief).exists()
-    assert agent.session.workflow_mode == "execute"
+    assert handle.session.workflow_mode == "execute"
     assert any(
         entry.kind == "clarify_exit" for entry in prepared.summary.workflow_timeline
     )
