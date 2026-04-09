@@ -15,6 +15,7 @@ from ..context.project import ProjectContext, detect_project
 from ..runtime.capabilities import CapabilityProfile, resolve_capability_profile
 from ..tools.base import ToolRegistry, create_default_registry
 from .dod import DefinitionOfDone, DefinitionOfDoneStore, VerificationEvidence
+from .explore_state import ExploreStateStore
 from .permissions import (
     PermissionConfigStatus,
     PermissionDecision,
@@ -183,6 +184,11 @@ class StatusSnapshot:
     usage: dict[str, int] = field(default_factory=dict)
     compaction_count: int = 0
     project_type: str = "unknown"
+    explore_updated_at: str | None = None
+    explore_turn_count: int = 0
+    explore_message_count: int = 0
+    explore_last_query: str | None = None
+    explore_last_response: str | None = None
 
 
 @dataclass(slots=True)
@@ -402,6 +408,7 @@ def collect_status_snapshot(
     capability_profile = resolve_capability_profile(resolved_model)
     default_permission_mode = _coerce_permission_mode(permission_mode).as_str()
     rule_status = load_permission_rules(resolved_root)
+    explore_snapshot = ExploreStateStore(resolved_root).load()
 
     if snapshot is None:
         return StatusSnapshot(
@@ -442,6 +449,21 @@ def collect_status_snapshot(
             usage={},
             compaction_count=0,
             project_type=project_context.project_type,
+            explore_updated_at=(
+                explore_snapshot.updated_at if explore_snapshot is not None else None
+            ),
+            explore_turn_count=(
+                explore_snapshot.turn_count if explore_snapshot is not None else 0
+            ),
+            explore_message_count=(
+                len(explore_snapshot.messages) if explore_snapshot is not None else 0
+            ),
+            explore_last_query=(
+                explore_snapshot.last_query if explore_snapshot is not None else None
+            ),
+            explore_last_response=(
+                explore_snapshot.last_response if explore_snapshot is not None else None
+            ),
         )
 
     dod = _load_dod(snapshot.active_dod_path, project_root=resolved_root)
@@ -496,6 +518,21 @@ def collect_status_snapshot(
         usage=dict(snapshot.usage),
         compaction_count=(snapshot.compaction.count if snapshot.compaction else 0),
         project_type=project_context.project_type,
+        explore_updated_at=(
+            explore_snapshot.updated_at if explore_snapshot is not None else None
+        ),
+        explore_turn_count=(
+            explore_snapshot.turn_count if explore_snapshot is not None else 0
+        ),
+        explore_message_count=(
+            len(explore_snapshot.messages) if explore_snapshot is not None else 0
+        ),
+        explore_last_query=(
+            explore_snapshot.last_query if explore_snapshot is not None else None
+        ),
+        explore_last_response=(
+            explore_snapshot.last_response if explore_snapshot is not None else None
+        ),
     )
 
 

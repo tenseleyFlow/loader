@@ -119,11 +119,13 @@ class RuntimeLauncher:
         self,
         prompt: str,
         emit: EventSink,
+        *,
+        fresh: bool = False,
     ) -> TurnSummary:
         """Run one read-only explore query through the shared launcher seam."""
 
         runtime = ExploreRuntime(self.source)
-        summary = await runtime.run_query(prompt, emit)
+        summary = await runtime.run_query(prompt, emit, fresh=fresh)
         self.source.last_turn_summary = summary
         return summary
 

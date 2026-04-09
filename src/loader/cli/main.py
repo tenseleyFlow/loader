@@ -801,6 +801,7 @@ def status_cli(
 @click.option("--backend", "-b", default="ollama", help="LLM backend (ollama)")
 @click.option("--react", is_flag=True, help="Force ReAct mode")
 @click.option("--no-context", is_flag=True, help="Skip auto-detecting project context")
+@click.option("--fresh", is_flag=True, help="Ignore persisted explore history for this query")
 @click.option("--ctx", type=int, default=8192, help="Context window size")
 @click.option("--gpu", type=int, default=-1, help="GPU layers (-1 = all, 0 = CPU only)")
 @click.option("--timeout", type=int, default=None, help="Request timeout in seconds")
@@ -811,6 +812,7 @@ def explore_cli(
     backend: str,
     react: bool,
     no_context: bool,
+    fresh: bool,
     ctx: int,
     gpu: int,
     timeout: int | None,
@@ -825,6 +827,7 @@ def explore_cli(
             backend=backend,
             react=react,
             no_context=no_context,
+            fresh=fresh,
             ctx=ctx,
             gpu=gpu,
             timeout=timeout,
@@ -1163,6 +1166,7 @@ async def _explore_main(
     backend: str,
     react: bool,
     no_context: bool,
+    fresh: bool,
     ctx: int,
     gpu: int,
     timeout: int | None,
@@ -1221,6 +1225,7 @@ async def _explore_main(
                     f"Model: {model}",
                     f"Mode: {mode_str}",
                     "Lane: explore",
+                    ("History: fresh" if fresh else "History: continue"),
                     "Permissions: read-only",
                 ]
             ),
@@ -1239,7 +1244,7 @@ async def _explore_main(
                 preview += f"\n[dim]... ({len(lines) - 8} more lines)[/dim]"
             console.print(Panel(preview, border_style="dim"))
 
-    response = await agent.run_explore(prompt, on_event=on_event)
+    response = await agent.run_explore(prompt, on_event=on_event, fresh=fresh)
     console.print(Markdown(clean_response(response)))
 
 
@@ -1360,6 +1365,10 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Rules Source", snapshot.permission_rules_source)
     table.add_row("Task", snapshot.current_task or "none")
     table.add_row("Messages", str(snapshot.message_count))
+    table.add_row("Explore Turns", str(snapshot.explore_turn_count))
+    table.add_row("Explore Messages", str(snapshot.explore_message_count))
+    table.add_row("Explore Updated", snapshot.explore_updated_at or "none")
+    table.add_row("Explore Query", _preview_text(snapshot.explore_last_query))
     table.add_row("DoD", snapshot.dod_status or "none")
     table.add_row("Pending", str(snapshot.dod_pending_items_count))
     table.add_row("Last Verify", snapshot.last_verification_result or "none")
@@ -1388,6 +1397,17 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
             result = "[green]pass[/green]" if item.passed else "[red]fail[/red]"
             evidence.add_row(result, item.kind, item.command, item.detail or "-")
         console.print(evidence)
+
+
+def _preview_text(text: str | None, *, width: int = 80) -> str:
+    """Return one compact single-line preview for status tables."""
+
+    if not text:
+        return "none"
+    normalized = re.sub(r"\s+", " ", text.strip())
+    if len(normalized) <= width:
+        return normalized
+    return normalized[: width - 1].rstrip() + "..."
 
 
 def _session_list_main() -> None:

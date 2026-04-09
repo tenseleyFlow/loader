@@ -444,6 +444,8 @@ class Agent:
         self,
         user_message: str,
         on_event: Callable[[AgentEvent], None] | Callable[[AgentEvent], Awaitable[None]] | None = None,
+        *,
+        fresh: bool = False,
     ) -> str:
         """Run one read-only explore query outside the main workflow runtime."""
 
@@ -456,7 +458,11 @@ class Agent:
                     await result
 
         launcher = build_runtime_launcher(self)
-        self.last_turn_summary = await launcher.run_explore(user_message, emit)
+        self.last_turn_summary = await launcher.run_explore(
+            user_message,
+            emit,
+            fresh=fresh,
+        )
         return self.last_turn_summary.final_response
 
     def clear_history(self) -> None:

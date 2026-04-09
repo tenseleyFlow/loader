@@ -11,6 +11,7 @@ from ..tools.base import create_explore_registry
 from .bootstrap import build_runtime_context
 from .context import RuntimeContext
 from .executor import ToolExecutionState, ToolExecutor
+from .explore_state import ExploreSnapshot, ExploreStateStore
 from .hooks import build_default_tool_hooks
 from .parsing import parse_tool_calls
 from .permissions import PermissionMode, PermissionRuleSet, build_permission_policy
@@ -92,6 +93,7 @@ class ExploreRuntime:
         self.context.permission_policy = self.permission_policy
         self.context.workflow_mode = "explore"
         self.tracer = RuntimeTracer()
+        self.state_store = ExploreStateStore(self.context.project_root)
         self.executor = ToolExecutor(
             self.registry,
             self.tracer,
@@ -108,14 +110,20 @@ class ExploreRuntime:
         self,
         prompt: str,
         emit: EventSink,
+        *,
+        fresh: bool = False,
     ) -> TurnSummary:
         await self._prepare_runtime_capabilities()
 
+        snapshot = ExploreSnapshot() if fresh else (self.state_store.load() or ExploreSnapshot())
+        history_messages = list(snapshot.messages)
         summary = TurnSummary(final_response="", workflow_mode="explore")
         messages = [
             Message(role=Role.SYSTEM, content=self._build_system_prompt()),
+            *history_messages,
             Message(role=Role.USER, content=prompt),
         ]
+        history_prefix_len = 1 + len(history_messages)
         use_react = self.context.use_react
         tools = None if use_react else self.registry.get_schemas()
 
@@ -199,8 +207,17 @@ class ExploreRuntime:
             )
             await emit(AgentEvent(type="response", content=summary.final_response))
             summary.failures.append("explore iteration budget exhausted")
+            fallback_message = Message(role=Role.ASSISTANT, content=summary.final_response)
+            messages.append(fallback_message)
+            summary.assistant_messages.append(fallback_message)
 
         summary.trace = list(self.tracer.events)
+        self._persist_explore_turn(
+            snapshot=snapshot,
+            new_messages=messages[history_prefix_len:],
+            prompt=prompt,
+            response=summary.final_response,
+        )
         return summary
 
     async def _prepare_runtime_capabilities(self) -> None:
@@ -208,6 +225,22 @@ class ExploreRuntime:
         if callable(describe_model):
             await describe_model()
         self.context.refresh_capability_profile()
+
+    def _persist_explore_turn(
+        self,
+        *,
+        snapshot: ExploreSnapshot,
+        new_messages: list[Message],
+        prompt: str,
+        response: str,
+    ) -> None:
+        snapshot.turn_count += 1
+        snapshot.last_query = prompt
+        snapshot.last_response = response
+        model_name = getattr(self.context.backend, "model", None)
+        snapshot.model_name = str(model_name) if model_name else None
+        snapshot.messages.extend(new_messages)
+        self.state_store.save(snapshot)
 
     def _build_system_prompt(self) -> str:
         tool_descriptions = format_tool_descriptions(self.registry.get_schemas())
