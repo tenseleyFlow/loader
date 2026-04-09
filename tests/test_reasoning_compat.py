@@ -69,3 +69,41 @@ def test_agent_reasoning_reexports_runtime_helpers() -> None:
     assert agent_reasoning.parse_completion_check is parse_completion_check
     assert agent_reasoning.parse_confidence is parse_confidence
     assert agent_reasoning.is_conversational is is_conversational
+
+
+def test_agent_reasoning_exports_curated_compatibility_surface() -> None:
+    assert agent_reasoning.__all__ == [
+        "ActionVerification",
+        "COMPLETION_CHECK_PROMPT",
+        "CONFIDENCE_PROMPT",
+        "ConfidenceAssessment",
+        "ConfidenceLevel",
+        "DECOMPOSITION_PROMPT",
+        "RollbackAction",
+        "RollbackPlan",
+        "RollbackType",
+        "SELF_CRITIQUE_PROMPT",
+        "SelfCritique",
+        "Subtask",
+        "TaskCompletionCheck",
+        "TaskDecomposition",
+        "VERIFICATION_PROMPT",
+        "create_rollback_plan_for_action",
+        "detect_premature_completion",
+        "estimate_complexity",
+        "estimate_confidence_quick",
+        "execute_rollback",
+        "get_continuation_prompt",
+        "get_token_budget",
+        "get_undo_command",
+        "is_conversational",
+        "is_destructive_tool",
+        "parse_completion_check",
+        "parse_confidence",
+        "parse_decomposition",
+        "parse_self_critique",
+        "parse_verification",
+        "quick_verify",
+        "should_decompose",
+        "should_self_critique",
+    ]

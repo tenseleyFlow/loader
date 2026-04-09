@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import loader.agent.safeguards as agent_safeguards
 from loader.agent.safeguards import RuntimeSafeguards as AgentRuntimeSafeguards
 from loader.runtime.safeguard_services import (
     ActionTracker,
@@ -65,3 +66,16 @@ def test_runtime_safeguards_wrap_runtime_owned_services() -> None:
 
 def test_agent_safeguards_reexport_runtime_safeguards() -> None:
     assert AgentRuntimeSafeguards is RuntimeSafeguards
+
+
+def test_agent_safeguards_exports_curated_compatibility_surface() -> None:
+    assert agent_safeguards.__all__ == [
+        "ActionTracker",
+        "CodeBlockFilter",
+        "FilterResult",
+        "PatternDetector",
+        "PatternMatch",
+        "PreActionValidator",
+        "RuntimeSafeguards",
+        "ValidationResult",
+    ]
