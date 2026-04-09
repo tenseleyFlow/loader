@@ -33,6 +33,7 @@ from ..runtime.inspection import (
     collect_workflow_timeline,
     dry_run_permission_check,
     filter_policy_accountability_entries,
+    format_evidence_provenance_brief,
     latest_policy_accountability_summary,
     list_session_summaries,
     load_session_detail,
@@ -2136,6 +2137,11 @@ def _format_workflow_timeline_context(entry) -> str:
         parts.append(f"next-question={entry.unresolved_questions[0]}")
     if entry.evidence_summary:
         parts.append(f"evidence={'; '.join(entry.evidence_summary[:2])}")
+    if entry.evidence_provenance:
+        parts.append(
+            "provenance="
+            + format_evidence_provenance_brief(entry.evidence_provenance)
+        )
     if entry.signal_summary:
         parts.append(f"signals={'; '.join(entry.signal_summary[:2])}")
     if entry.artifact_paths:
@@ -2229,7 +2235,16 @@ def _print_completion_trace_entries(entries) -> None:
     table.add_column("Stage", style="white")
     table.add_column("Outcome", style="white")
     table.add_column("Decision", style="white")
+    table.add_column("Evidence", style="white")
     for entry in entries:
+        evidence_parts: list[str] = []
+        if entry.evidence_summary:
+            evidence_parts.append("; ".join(entry.evidence_summary[:2]))
+        if entry.evidence_provenance:
+            evidence_parts.append(
+                "provenance="
+                + format_evidence_provenance_brief(entry.evidence_provenance)
+            )
         table.add_row(
             entry.stage,
             entry.outcome,
@@ -2237,6 +2252,7 @@ def _print_completion_trace_entries(entries) -> None:
                 summary=entry.decision_summary,
                 code=entry.decision_code,
             ),
+            "\n".join(evidence_parts) or "-",
         )
     console.print(
         Panel.fit(

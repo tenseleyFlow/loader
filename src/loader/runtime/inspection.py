@@ -1276,9 +1276,24 @@ def _workflow_entry_explanation(entry: WorkflowTimelineEntry) -> str:
         parts.append(entry.unresolved_questions[0])
     if entry.evidence_summary:
         parts.append("evidence=" + "; ".join(entry.evidence_summary[:2]))
+    if entry.evidence_provenance:
+        parts.append(
+            "provenance=" + format_evidence_provenance_brief(entry.evidence_provenance)
+        )
     if entry.signal_summary:
         parts.append("; ".join(entry.signal_summary[:2]))
     return " | ".join(part for part in parts if part)
+
+
+def format_evidence_provenance_brief(entries, *, max_entries: int = 2) -> str:
+    """Render a compact operator-facing provenance summary."""
+
+    parts: list[str] = []
+    for entry in list(entries)[:max_entries]:
+        source = f"@{entry.source}" if entry.source else ""
+        subject = f"({entry.subject})" if entry.subject else ""
+        parts.append(f"{entry.status}:{entry.category}{source}{subject}")
+    return "; ".join(parts)
 
 
 async def _backend_health_check(

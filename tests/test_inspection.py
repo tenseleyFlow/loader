@@ -12,6 +12,7 @@ import loader.cli.main as cli_main_module
 from loader.llm.base import Message, Role
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
+from loader.runtime.evidence_provenance import EvidenceProvenance
 from loader.runtime.explore_state import ExploreSnapshot, ExploreStateStore
 from loader.runtime.inspection import (
     CheckStatus,
@@ -431,6 +432,15 @@ def _persist_session_with_policy_accountability(temp_dir: Path) -> str:
                 decision_kind="forced",
                 policy_stage="definition_of_done",
                 policy_outcome="continue",
+                evidence_provenance=[
+                    EvidenceProvenance(
+                        category="verification",
+                        source="dod.evidence",
+                        summary="verification failed for `pytest -q`",
+                        status="contradicts",
+                        subject="pytest -q",
+                    )
+                ],
                 prompt_format="native",
                 prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
             ),
@@ -834,6 +844,7 @@ def test_workflow_command_renders_policy_accountability_context(
     assert "verification_failed_reentry" in result.output
     assert "policy-stage=raw_text_tool_fallback" in result.output
     assert "policy-outcome=continue" in result.output
+    assert "provenance=contradicts:verification@dod.evidence" in result.output
 
     policy_result = runner.invoke(cli_main_module.workflow_cli, ["show", "--policy"])
 
@@ -886,6 +897,7 @@ def test_session_show_renders_policy_timeline_preview(
     assert "Policy Timeline" in show_result.output
     assert "repair_retry" in show_result.output
     assert "completion:" in show_result.output
+    assert "provenance=contradicts:verification@dod.evidence" in show_result.output
 
 
 def test_status_command_renders_latest_policy_summary(
