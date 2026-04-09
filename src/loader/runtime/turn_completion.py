@@ -8,7 +8,6 @@ from enum import StrEnum
 
 from ..llm.base import Message, Role
 from .completion_policy import CompletionPolicy
-from .completion_trace import CompletionTraceEntry
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
@@ -74,6 +73,7 @@ class TurnCompletionController:
             last_completion_decision_code=decision_code,
             last_completion_decision_summary=decision_summary,
         )
+        summary.completion_trace = list(self.context.session.completion_trace)
 
     def _append_completion_trace_entry(
         self,
@@ -85,15 +85,6 @@ class TurnCompletionController:
         decision_summary: str,
         evidence_summary: list[str] | None = None,
     ) -> None:
-        entry = CompletionTraceEntry(
-            stage=stage,
-            outcome=outcome,
-            decision_code=decision_code,
-            decision_summary=decision_summary,
-            evidence_summary=list(evidence_summary or []),
-        )
-        summary.completion_trace.append(entry)
-        self.context.session.append_completion_trace_entry(entry)
         append_policy_timeline_entry(
             self.context,
             summary,

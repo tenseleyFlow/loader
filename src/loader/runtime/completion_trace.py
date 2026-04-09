@@ -80,7 +80,7 @@ def completion_trace_from_workflow_timeline(
         return list(fallback or [])
 
     start_index = end_index
-    while start_index > 0 and _is_completion_timeline_entry(timeline[start_index - 1]):
+    while start_index > 0 and _is_completion_trace_context_entry(timeline[start_index - 1]):
         start_index -= 1
 
     return [
@@ -107,6 +107,11 @@ def has_canonical_completion_trace(
 
 def _is_completion_timeline_entry(entry: WorkflowTimelineEntry) -> bool:
     return str(entry.kind).startswith("completion_")
+
+
+def _is_completion_trace_context_entry(entry: WorkflowTimelineEntry) -> bool:
+    kind = str(entry.kind)
+    return kind.startswith("completion_") or kind == "verify_skip"
 
 
 def _completion_trace_entry_from_timeline_entry(

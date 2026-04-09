@@ -642,6 +642,7 @@ class ConversationSession:
             self.last_completion_decision_summary = normalize_optional_text(
                 last_completion_decision_summary
             )
+        self._refresh_completion_trace_projection()
         if last_turn_transition_summary is not _UNSET:
             self.last_turn_transition_summary = normalize_optional_text(
                 last_turn_transition_summary
@@ -668,6 +669,7 @@ class ConversationSession:
         self.workflow_timeline.append(entry)
         if len(self.workflow_timeline) > max_entries:
             self.workflow_timeline[:] = self.workflow_timeline[-max_entries:]
+        self._refresh_completion_trace_projection()
         self.touch()
         self.persist()
 
@@ -700,6 +702,16 @@ class ConversationSession:
             self.completion_trace[:] = self.completion_trace[-max_entries:]
         self.touch()
         self.persist()
+
+    def _refresh_completion_trace_projection(self, *, max_entries: int = 8) -> None:
+        """Refresh the completion-trace read model from canonical workflow events."""
+
+        self.completion_trace = completion_trace_from_workflow_timeline(
+            self.workflow_timeline,
+            last_decision_code=self.last_completion_decision_code,
+            fallback=self.completion_trace,
+            max_entries=max_entries,
+        )
 
     def clear_completion_trace(self, *, persist: bool = True) -> None:
         """Clear persisted completion-policy trace state for a new turn."""
