@@ -9,9 +9,12 @@ from loader.llm.base import Message, Role
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.public_shell import (
+    SteeringMailbox,
     build_runtime_few_shot_examples,
     build_runtime_system_message,
     create_runtime_session,
+    create_runtime_session_install,
+    load_runtime_session_install,
     restore_runtime_session_state,
 )
 from loader.runtime.session import ConversationSession
@@ -98,6 +101,67 @@ def test_build_runtime_few_shot_examples_switches_tool_format() -> None:
     assert native_examples[1].content.startswith("[write:")
 
 
+def test_steering_mailbox_tracks_running_state_and_fifo_messages() -> None:
+    mailbox = SteeringMailbox()
+
+    assert mailbox.is_running is False
+    assert mailbox.steer("stay in runtime") is False
+    assert mailbox.drain() == []
+
+    mailbox.mark_running()
+
+    assert mailbox.steer("stay in runtime") is True
+
+    mailbox.queue("double-check the current task")
+
+    assert mailbox.drain() == [
+        "stay in runtime",
+        "double-check the current task",
+    ]
+
+    mailbox.mark_idle()
+    assert mailbox.is_running is False
+
+    mailbox.mark_running()
+    mailbox.queue("stale message")
+    mailbox.clear()
+    assert mailbox.is_running is False
+    assert mailbox.drain() == []
+
+
+def test_create_runtime_session_install_builds_restored_shell_state(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+
+    install = create_runtime_session_install(
+        project_root=agent.project_root,
+        messages=agent.messages,
+        permission_policy=agent.permission_policy,
+        permission_config_status=agent.permission_config_status,
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context"],
+        workflow_mode="execute",
+        rotate_after_bytes=agent.config.session_rotate_after_bytes,
+        auto_compaction_input_tokens_threshold=(
+            agent.config.session_auto_compaction_input_tokens_threshold
+        ),
+        compaction_keep_last_messages=agent.config.session_compaction_keep_last_messages,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+    )
+
+    assert install.session.permission_mode == agent.active_permission_mode
+    assert install.restored.workflow_mode == "execute"
+    assert install.restored.prompt_format == "native"
+    assert install.restored.prompt_sections == ["Runtime Config", "Workflow Context"]
+    assert install.restored.last_turn_summary is None
+
+
 def test_restore_runtime_session_state_recovers_last_turn_summary(
     temp_dir: Path,
 ) -> None:
@@ -149,3 +213,36 @@ def test_restore_runtime_session_state_recovers_last_turn_summary(
     assert restored.last_turn_summary.completion_trace[0].decision_code == (
         "verification_passed"
     )
+
+
+def test_load_runtime_session_install_reconstructs_saved_shell_state(
+    temp_dir: Path,
+) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+    )
+    session.current_task = "Resume the saved runtime session."
+    session.workflow_mode = "execute"
+    session.permission_mode = "prompt"
+    session.prompt_format = "native"
+    session.prompt_sections = ["Runtime Config", "Workflow Context"]
+    session.append(Message(role=Role.USER, content="Resume the saved runtime session."))
+    session.persist()
+
+    install = load_runtime_session_install(
+        project_root=temp_dir,
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        session_id=session.session_id,
+        rotate_after_bytes=256 * 1024,
+        auto_compaction_input_tokens_threshold=100_000,
+        compaction_keep_last_messages=4,
+    )
+
+    assert install is not None
+    assert install.session.session_id == session.session_id
+    assert install.restored.current_task == "Resume the saved runtime session."
+    assert install.restored.permission_mode == "prompt"
+    assert install.restored.messages[-1].content == "Resume the saved runtime session."

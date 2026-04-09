@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,64 @@ class RestoredSessionState:
     last_turn_summary: TurnSummary | None
 
 
+@dataclass(slots=True)
+class RuntimeSessionInstall:
+    """A persisted session plus the shell state restored from it."""
+
+    session: ConversationSession
+    restored: RestoredSessionState
+
+
+class SteeringMailbox:
+    """Small public-shell owner for steering and running-state bookkeeping."""
+
+    def __init__(self) -> None:
+        self._pending: deque[str] = deque()
+        self._is_running = False
+
+    @property
+    def is_running(self) -> bool:
+        """Return whether the owning shell is currently running."""
+
+        return self._is_running
+
+    def mark_running(self) -> None:
+        """Mark the owning shell as currently running."""
+
+        self._is_running = True
+
+    def mark_idle(self) -> None:
+        """Mark the owning shell as currently idle."""
+
+        self._is_running = False
+
+    def steer(self, message: str) -> bool:
+        """Queue one steering message only when the owner is running."""
+
+        if not self._is_running:
+            return False
+        self.queue(message)
+        return True
+
+    def queue(self, message: str) -> None:
+        """Queue one steering message regardless of running state."""
+
+        self._pending.append(message)
+
+    def drain(self) -> list[str]:
+        """Drain all pending steering messages in FIFO order."""
+
+        drained = list(self._pending)
+        self._pending.clear()
+        return drained
+
+    def clear(self) -> None:
+        """Drop queued steering state and mark the owner idle."""
+
+        self._pending.clear()
+        self._is_running = False
+
+
 def create_runtime_session(
     *,
     project_root: Path,
@@ -75,6 +134,48 @@ def create_runtime_session(
             auto_compaction_input_tokens_threshold
         ),
         compaction_keep_last_messages=compaction_keep_last_messages,
+    )
+
+
+def create_runtime_session_install(
+    *,
+    project_root: Path,
+    messages: list[Message] | None,
+    permission_policy: PermissionPolicy,
+    permission_config_status: PermissionConfigStatus,
+    prompt_format: str | None,
+    prompt_sections: list[str],
+    workflow_mode: str,
+    rotate_after_bytes: int,
+    auto_compaction_input_tokens_threshold: int,
+    compaction_keep_last_messages: int,
+    system_message_factory: Callable[[], Message],
+    few_shot_factory: Callable[[], list[Message]],
+) -> RuntimeSessionInstall:
+    """Create a fresh persisted session and its restored shell view."""
+
+    session = create_runtime_session(
+        project_root=project_root,
+        messages=messages,
+        permission_policy=permission_policy,
+        permission_config_status=permission_config_status,
+        prompt_format=prompt_format,
+        prompt_sections=prompt_sections,
+        workflow_mode=workflow_mode,
+        rotate_after_bytes=rotate_after_bytes,
+        auto_compaction_input_tokens_threshold=(
+            auto_compaction_input_tokens_threshold
+        ),
+        compaction_keep_last_messages=compaction_keep_last_messages,
+        system_message_factory=system_message_factory,
+        few_shot_factory=few_shot_factory,
+    )
+    return RuntimeSessionInstall(
+        session=session,
+        restored=restore_runtime_session_state(
+            project_root=project_root,
+            session=session,
+        ),
     )
 
 
@@ -115,6 +216,40 @@ def restore_runtime_session_state(
         last_completion_decision_code=session.last_completion_decision_code,
         last_completion_decision_summary=session.last_completion_decision_summary,
         last_turn_summary=last_turn_summary,
+    )
+
+
+def load_runtime_session_install(
+    *,
+    project_root: Path,
+    system_message_factory: Callable[[], Message],
+    few_shot_factory: Callable[[], list[Message]],
+    session_id: str | None = None,
+    rotate_after_bytes: int,
+    auto_compaction_input_tokens_threshold: int,
+    compaction_keep_last_messages: int,
+) -> RuntimeSessionInstall | None:
+    """Load the latest or named session together with restored shell state."""
+
+    session = ConversationSession.load(
+        project_root=project_root,
+        system_message_factory=system_message_factory,
+        few_shot_factory=few_shot_factory,
+        session_id=session_id,
+        rotate_after_bytes=rotate_after_bytes,
+        auto_compaction_input_tokens_threshold=(
+            auto_compaction_input_tokens_threshold
+        ),
+        compaction_keep_last_messages=compaction_keep_last_messages,
+    )
+    if session is None:
+        return None
+    return RuntimeSessionInstall(
+        session=session,
+        restored=restore_runtime_session_state(
+            project_root=project_root,
+            session=session,
+        ),
     )
 
 
