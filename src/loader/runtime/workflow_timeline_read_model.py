@@ -158,6 +158,8 @@ def workflow_timeline_highlights(
             prefix = "Skipped verify:"
         elif verify_entry.policy_outcome == "pending":
             prefix = "Verify pending:"
+        elif verify_entry.policy_outcome == "stale":
+            prefix = "Verify stale:"
         else:
             prefix = "Verify observed:"
         highlights.append(prefix + " " + workflow_entry_explanation(verify_entry))

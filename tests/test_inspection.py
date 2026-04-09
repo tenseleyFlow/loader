@@ -529,6 +529,53 @@ def _persist_session_with_pending_verification(temp_dir: Path) -> str:
     return snapshot.session_id
 
 
+def _persist_session_with_stale_verification(temp_dir: Path) -> str:
+    snapshot = SessionSnapshot(
+        session_id="20260406T160700Z-stale1234",
+        created_at="2026-04-06T16:07:00Z",
+        updated_at="2026-04-06T16:07:30Z",
+        messages=[
+            Message(role=Role.USER, content="Keep working on the runtime"),
+            Message(role=Role.ASSISTANT, content="Fresh verification is required again."),
+        ],
+        current_task="Keep working on the runtime",
+        runtime_owner_type="RuntimeHandle",
+        runtime_owner_path="runtime-handle",
+        workflow_mode="execute",
+        permission_mode="workspace-write",
+        prompt_format="native",
+        prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+        workflow_timeline=[
+            WorkflowTimelineEntry(
+                timestamp="2026-04-06T16:07:30Z",
+                kind="verify_observation",
+                mode="execute",
+                reason_code="verification_stale",
+                summary="verify: previous verification became stale after new mutating work",
+                decision_kind="forced",
+                policy_stage="verification",
+                policy_outcome="stale",
+                verification_observations=[
+                    VerificationObservation(
+                        status="stale",
+                        summary=(
+                            "verification became stale for `uv run pytest -q` "
+                            "after new mutating work"
+                        ),
+                        command="uv run pytest -q",
+                        kind="runtime",
+                        detail="write changed src/loader/runtime/finalization.py",
+                    )
+                ],
+                prompt_format="native",
+                prompt_sections=["Runtime Config", "Workflow Context", "Mode Guidance"],
+            )
+        ],
+    )
+    SessionStore(temp_dir).save(snapshot)
+    return snapshot.session_id
+
+
 @pytest.mark.asyncio
 async def test_collect_doctor_report_passes_for_healthy_workspace(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
@@ -842,6 +889,30 @@ def test_collect_status_snapshot_surfaces_pending_verification(
     ]
 
 
+def test_collect_status_snapshot_surfaces_stale_verification(
+    temp_dir: Path,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    _persist_session_with_stale_verification(temp_dir)
+
+    snapshot = collect_status_snapshot(temp_dir)
+
+    assert snapshot.latest_policy_summary is not None
+    assert "verification_stale" in snapshot.latest_policy_summary
+    assert "policy-outcome=stale" in snapshot.latest_policy_summary
+    assert snapshot.latest_policy_observed_verification == [
+        "verification became stale for `uv run pytest -q` after new mutating work [write changed src/loader/runtime/finalization.py]"
+    ]
+    assert [item.status for item in snapshot.recent_verification] == ["stale"]
+    assert [item.command for item in snapshot.recent_verification] == [
+        "uv run pytest -q"
+    ]
+    assert [item.detail for item in snapshot.recent_verification] == [
+        "write changed src/loader/runtime/finalization.py"
+    ]
+
+
 def test_collect_prompt_diff_uses_persisted_prompt_history(temp_dir: Path) -> None:
     _write_python_workspace(temp_dir)
     _ensure_loader_dirs(temp_dir)
@@ -998,6 +1069,29 @@ def test_workflow_command_renders_policy_accountability_context(
     assert "repair_retry" in policy_result.output
     assert "verification_failed_reentry" in policy_result.output
     assert "handoff" not in policy_result.output
+
+
+def test_workflow_command_renders_stale_verification_context(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_python_workspace(temp_dir)
+    _ensure_loader_dirs(temp_dir)
+    session_id = _persist_session_with_stale_verification(temp_dir)
+    runner = CliRunner()
+
+    monkeypatch.chdir(temp_dir)
+
+    result = runner.invoke(cli_main_module.workflow_cli, ["show"])
+
+    assert result.exit_code == 0
+    assert session_id in result.output
+    assert "Verify stale:" in result.output
+    assert "verification_stale" in result.output
+    assert "policy-outcome=stale" in result.output
+    assert "Observed Verification" in result.output
+    assert "uv run pytest -q" in result.output
+    assert "new mutating work" in result.output
 
 
 def test_collect_workflow_timeline_can_focus_on_policy_accountability(
