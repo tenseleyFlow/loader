@@ -73,12 +73,14 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - assistant-turn request handling now lives in `runtime.assistant_turns`, clarify/plan lane execution now lives in `runtime.workflow_lanes`, tool-batch execution/recovery now lives in `runtime.tool_batches`, DoD/finalization logic now lives in `runtime.finalization`, workflow-state/session mutation lives in `runtime.workflow_state`, and the main loop now runs through `runtime.turn_preparation`, `runtime.turn_preamble`, `runtime.turn_iteration`, and `runtime.turn_loop` instead of accumulating further inside `conversation.py`
 - `src/loader/runtime/conversation.py` now acts as a compact coordinator over dedicated runtime controllers rather than owning a monolithic turn loop
 - persisted completion-decision summaries plus bounded completion traces are now available in session/runtime state, status/session inspection, and resume flows
+- typed follow-through evidence now backs non-mutating completion checks, with explicit required/missing evidence and honest terminal failure once the continuation budget is exhausted without enough proof of completion
 - runtime-owned public-shell helpers now cover prompt/session factories, session install/load helpers, steering mailbox behavior, sync/async event wrapping, and capability-refresh decision helpers
+- `loader workflow show --policy` now filters directly to unified repair / verify-skip / completion accountability events, and `loader session show` now includes a `Policy Timeline` preview so operators can inspect the stop/continue/retry story without stitching together separate surfaces by hand
 
 ## Known weak spots
 
-- the public runtime boundary is now explicit and runtime-shaped, but `Agent` still constructs and supplies that boundary; Loader has not yet decided whether the public shell should shrink further or whether this is the stable long-term seam
-- [`src/loader/agent/loop.py`](../src/loader/agent/loop.py) is down to 432 lines and much closer to a public facade than the pre-Sprint-15 shell, but it still owns the public entrypoints and remaining launcher/UI glue instead of collapsing fully to a minimal shell
+- the public runtime boundary is now explicit and runtime-shaped, but `Agent` still constructs and supplies that boundary; Loader has not yet decided whether the current 292-line shell is the stable long-term seam or just the next contraction checkpoint
+- [`src/loader/agent/loop.py`](../src/loader/agent/loop.py) is down to 292 lines and much closer to a public facade than the pre-Sprint-15 shell, but it still owns the public compatibility shell and remaining launcher/UI glue instead of collapsing fully to a minimal shell
 - [`src/loader/agent/reasoning.py`](../src/loader/agent/reasoning.py) and [`src/loader/agent/safeguards.py`](../src/loader/agent/safeguards.py) are now compatibility shims rather than primary implementations, but they still remain as export layers until Loader narrows its external compatibility surface further
 - [`src/loader/runtime/tool_batches.py`](../src/loader/runtime/tool_batches.py) and parts of [`src/loader/runtime/workflow_lanes.py`](../src/loader/runtime/workflow_lanes.py) are narrower and more directly tested than before, but they still carry more heuristic policy than the tightest reference seams in `refs/claw-code`
 - the workflow policy now consumes typed signals, but signal extraction is still heuristic and hand-tuned; Loader does not yet implement OMX's deeper ambiguity analysis, richer pressure-pass discipline, or branch-specific policy depth
@@ -92,6 +94,7 @@ This file tracks the current deterministic runtime baseline for Loader. It stays
 - project-memory capture on finalized DoD evidence is still lightweight and command-summary oriented, not semantically curated memory extraction
 - rule syntax is intentionally narrow and workspace-local; Loader still does not have claw-code's richer rule model or broader prompt/allow operator surface
 - policy state is inspectable in doctor/status/session surfaces and dry-runnable through `loader permissions show/check`, but there is not yet a richer UX for editing, previewing multiple candidate rule sets, or temporarily overriding rules from the product surface
+- follow-through evidence is now explicit and persisted, but it is still heuristic and runtime-authored rather than backed by a deeper verifier/model contract or richer artifact-derived proof model
 - prompt assembly is now typed, previewable, and diffable across persisted sessions, but Loader still does not compare multiple candidate prompt contracts before execution or enforce a richer prompt-contract parity harness beyond the current unit and inspection coverage
 - workflow history is now filterable, ledger-backed, and diffable for persisted artifacts, but it is still text-first; Loader still does not offer semantic/AST-aware artifact diffs, richer artifact preview UX, or a visual workflow trace
 - shell safety is still heuristic and command-based; Loader does not yet have a richer shell sandbox or argument-aware mutability model
@@ -146,7 +149,7 @@ The auditable manifest lives at [`tests/fixtures/runtime_parity_manifest.json`](
 
 As of 2026-04-08:
 
-- `uv run pytest -q`: 342 passed
+- `uv run pytest -q`: 359 passed
 - `tests/test_runtime_harness.py` is fully green, including permission-mode parity, DoD verify/fix coverage, workflow routing parity, and the original contract regression
 - `tests/test_prompt_builder.py` covers section rendering, native-vs-ReAct formatting, and prompt metadata persistence
 - `tests/test_turn_state_machine.py` covers allowed/disallowed turn transitions and terminal transition metadata
@@ -161,6 +164,7 @@ As of 2026-04-08:
 - `tests/test_compat_boundaries.py` fails if internal Loader code drifts back to importing runtime-owned helpers through compatibility shims
 - `tests/test_repair.py` covers raw-text fallback through the runtime parser and active registry, including `TodoWrite` recovery and honest failure once raw-tool recovery exceeds its budget
 - `tests/test_completion_policy.py` covers direct text-loop bailout and continuation-prompt behavior on the typed runtime context
+- `tests/test_completion_policy.py`, `tests/test_turn_completion.py`, and `tests/test_session_state.py` now also pin typed follow-through evidence, honest budget-exhausted completion finalization, and persisted completion-evidence summaries
 - `tests/test_response_routing.py` covers direct final-answer routing and halted tool-batch routing at the new response-policy seam
 - `tests/test_dod.py` covers persistence, sizing boundaries, and verification command derivation
 - `tests/test_workflow.py` covers workflow artifact round trips, scored-router expectations, DoD workflow links, and todo-to-DoD syncing
@@ -177,7 +181,7 @@ As of 2026-04-08:
 - `tests/test_compaction.py` covers claw-style line compression and compacted continuation-message behavior
 - `tests/test_memory_tools.py` covers project-memory writes, notepad writes, lifecycle-hook mirroring, and DoD-summary capture into project memory
 - `tests/test_cli_resume.py` covers `--resume` argument rewriting for latest and named-session restore
-- `tests/test_inspection.py` covers `loader doctor`, `loader status`, `loader session list/show`, `loader permissions show/check`, `loader prompt show`, `loader prompt diff`, `loader workflow show --diff`, workflow timeline filtering/highlights, and workflow inspection surfaces, including recent explore activity plus `loader explore --status` / `--reset`
+- `tests/test_inspection.py` covers `loader doctor`, `loader status`, `loader session list/show`, `loader permissions show/check`, `loader prompt show`, `loader prompt diff`, `loader workflow show --diff`, workflow timeline filtering/highlights, the new `loader workflow show --policy` accountability filter, and workflow/session inspection surfaces, including recent explore activity plus `loader explore --status` / `--reset`
 - `tests/test_explore_runtime.py` covers the direct explore lane contract, forced read-only behavior, persisted follow-up continuity, persisted `fresh` vs `continue` visibility, and `fresh` explore resets outside the parity harness
 - `tests/test_expanded_tools.py` covers structured patch application, read-only git helpers, `notepad_append`, and richer structured user questions
 - `tests/test_permissions.py` covers prompt/allow mode parsing, rule precedence, policy-backed prompting behavior, and hook lifecycle ordering
@@ -208,3 +212,4 @@ As of 2026-04-08:
 - Sprint 16 is complete: Loader now has a first-class runtime launcher contract, a thinner `agent/loop.py`, explicit compatibility-boundary proof, and persisted explore continuity plus status visibility, but it still stops short of a fully minimal public shell, richer explore workflows, claw-code's tighter policy seams, and OMX's deeper planning/interview rigor.
 - Sprint 17 is complete: Loader now starts public runtime launch from an explicit runtime-shaped bootstrap view, moves prompt/session shell helpers into `src/loader/runtime/public_shell.py`, fails raw-text tool recovery more honestly once its budget is exhausted, and exposes explore continuity through `loader explore --status` / `--reset`, but it still stops short of a fully minimal public shell, deeper completion-policy deletions, richer explore workflows, claw-code's tighter policy seams, and OMX's deeper planning/interview rigor.
 - Sprint 18 is complete: Loader now persists explicit completion decisions and bounded completion traces, exposes them through status/session inspection, restores them across resume, and moves more event/steering/capability/session shell glue into `src/loader/runtime/public_shell.py`, but it still stops short of a fully minimal public shell, harder deletion of all continuation heuristics, claw-code's tighter policy seams, and OMX's deeper planning/interview rigor.
+- Sprint 19 is complete: Loader now pushes more public entry glue under `src/loader/runtime/public_shell.py`, derives typed follow-through evidence for non-mutating completion checks, fails honestly when that evidence is still missing after the continuation budget is exhausted, and exposes a clearer unified policy story through `loader workflow show --policy` plus the `Policy Timeline` preview in `loader session show`, but it still stops short of a fully minimal public shell, claw-code's fuller policy engine, and OMX's deeper verifier/interview rigor.
