@@ -56,6 +56,20 @@ class TurnCompletionController:
         self.finalizer = finalizer
         self.phase_tracker = phase_tracker
 
+    def _record_completion_decision(
+        self,
+        *,
+        summary: TurnSummary,
+        decision_code: str,
+        decision_summary: str,
+    ) -> None:
+        summary.completion_decision_code = decision_code
+        summary.completion_decision_summary = decision_summary
+        self.context.session.update_runtime_state(
+            last_completion_decision_code=decision_code,
+            last_completion_decision_summary=decision_summary,
+        )
+
     async def handle_text_response(
         self,
         *,
@@ -87,6 +101,11 @@ class TurnCompletionController:
             summary=summary,
         )
         if text_loop_decision.should_stop:
+            self._record_completion_decision(
+                summary=summary,
+                decision_code=text_loop_decision.decision_code,
+                decision_summary=text_loop_decision.decision_summary,
+            )
             return TurnCompletionDecision(
                 action=TurnCompletionAction.FINALIZE,
                 continuation_count=continuation_count,
@@ -112,6 +131,11 @@ class TurnCompletionController:
                 )
             )
             if continuation_decision.should_continue:
+                self._record_completion_decision(
+                    summary=summary,
+                    decision_code=continuation_decision.decision_code,
+                    decision_summary=continuation_decision.decision_summary,
+                )
                 return TurnCompletionDecision(
                     action=TurnCompletionAction.CONTINUE,
                     continuation_count=continuation_count + 1,
@@ -134,11 +158,21 @@ class TurnCompletionController:
             executor=executor,
         )
         if gate_result.should_continue:
+            self._record_completion_decision(
+                summary=summary,
+                decision_code=gate_result.reason_code,
+                decision_summary=gate_result.reason_summary,
+            )
             return TurnCompletionDecision(
                 action=TurnCompletionAction.CONTINUE,
                 continuation_count=continuation_count,
             )
         final_response = gate_result.final_response
+        self._record_completion_decision(
+            summary=summary,
+            decision_code=gate_result.reason_code,
+            decision_summary=gate_result.reason_summary,
+        )
 
         if rollback_plan and rollback_plan.actions:
             await emit(

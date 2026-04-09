@@ -75,6 +75,8 @@ class TurnSummary:
     workflow_reason_code: str | None = None
     workflow_reason_summary: str | None = None
     workflow_decision_kind: str | None = None
+    completion_decision_code: str | None = None
+    completion_decision_summary: str | None = None
     last_turn_transition_summary: str | None = None
     workflow_timeline: list[WorkflowTimelineEntry] = field(default_factory=list)
     session_id: str | None = None

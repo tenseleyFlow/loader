@@ -42,6 +42,8 @@ class CompletionGateResult:
     """Outcome of the definition-of-done completion gate."""
 
     should_continue: bool
+    reason_code: str
+    reason_summary: str
     final_response: str
 
 
@@ -105,7 +107,12 @@ class TurnFinalizer:
                     ),
                 )
             )
-            return CompletionGateResult(should_continue=True, final_response="")
+            return CompletionGateResult(
+                should_continue=True,
+                reason_code="pending_items_continue",
+                reason_summary="continued because tracked work items still remained incomplete",
+                final_response="",
+            )
 
         if not requires_verification:
             dod.status = "done"
@@ -129,6 +136,8 @@ class TurnFinalizer:
             await self.emit_dod_status(emit, dod)
             return CompletionGateResult(
                 should_continue=False,
+                reason_code="non_mutating_response_accepted",
+                reason_summary="accepted the response because no mutating work required verification",
                 final_response=candidate_response,
             )
 
@@ -191,6 +200,8 @@ class TurnFinalizer:
                 verified_response = f"{candidate_response.rstrip()}\n\n{verification_summary}"
             return CompletionGateResult(
                 should_continue=False,
+                reason_code="verification_passed",
+                reason_summary="accepted the response after verification evidence passed",
                 final_response=verified_response,
             )
 
@@ -209,6 +220,8 @@ class TurnFinalizer:
             )
             return CompletionGateResult(
                 should_continue=False,
+                reason_code="verification_retry_budget_exhausted",
+                reason_summary="stopped after verification retry budget was exhausted",
                 final_response=exhausted_response,
             )
 
@@ -237,7 +250,12 @@ class TurnFinalizer:
             "Fix the failures above, then finish the task again."
         )
         self.context.session.append(Message(role=Role.USER, content=failure_prompt))
-        return CompletionGateResult(should_continue=True, final_response="")
+        return CompletionGateResult(
+            should_continue=True,
+            reason_code="verification_failed_reentry",
+            reason_summary="continued after verification failed and the runtime re-entered execute mode",
+            final_response="",
+        )
 
     async def verify_definition_of_done(
         self,
@@ -322,6 +340,16 @@ class TurnFinalizer:
             iterations=summary.iterations,
         )
         summary.session_id = self.context.session.session_id
+        summary.completion_decision_code = getattr(
+            self.context.session,
+            "last_completion_decision_code",
+            None,
+        )
+        summary.completion_decision_summary = getattr(
+            self.context.session,
+            "last_completion_decision_summary",
+            None,
+        )
         summary.last_turn_transition_summary = (
             getattr(self.context.session, "last_turn_transition_summary", None)
         )

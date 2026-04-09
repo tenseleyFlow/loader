@@ -18,6 +18,8 @@ class TextLoopDecision:
     """Decision returned when checking for text loops."""
 
     should_stop: bool
+    decision_code: str
+    decision_summary: str
     final_response: str = ""
     failure: str | None = None
 
@@ -27,6 +29,8 @@ class ContinuationDecision:
     """Decision returned from the non-mutating completion nudge."""
 
     should_continue: bool
+    decision_code: str
+    decision_summary: str
 
 
 class CompletionPolicy:
@@ -46,11 +50,14 @@ class CompletionPolicy:
 
         is_text_loop, loop_description = self.context.safeguards.detect_text_loop(content)
         if not is_text_loop:
-            return TextLoopDecision(should_stop=False)
+            return TextLoopDecision(
+                should_stop=False,
+                decision_code="text_loop_not_detected",
+                decision_summary="accepted the response because no text loop was detected",
+            )
 
         final_response = (
-            "I seem to be repeating myself. "
-            "Let me know if you'd like me to try a different approach."
+            "I stopped because I was repeating myself and couldn't make further progress."
         )
         summary.final_response = final_response
         summary.failures.append(loop_description)
@@ -66,6 +73,8 @@ class CompletionPolicy:
         await emit(AgentEvent(type="response", content=final_response))
         return TextLoopDecision(
             should_stop=True,
+            decision_code="text_loop_bailout",
+            decision_summary="stopped after detecting a repeated text loop",
             final_response=final_response,
             failure=loop_description,
         )
@@ -84,7 +93,11 @@ class CompletionPolicy:
 
         cfg = self.context.config.reasoning
         if continuation_count >= cfg.max_continuation_prompts:
-            return ContinuationDecision(should_continue=False)
+            return ContinuationDecision(
+                should_continue=False,
+                decision_code="continuation_budget_exhausted",
+                decision_summary="accepted the response because the continuation budget was exhausted",
+            )
 
         is_premature = (
             detect_premature_completion(task, content, actions_taken)
@@ -92,7 +105,11 @@ class CompletionPolicy:
             else False
         )
         if not is_premature:
-            return ContinuationDecision(should_continue=False)
+            return ContinuationDecision(
+                should_continue=False,
+                decision_code="completion_response_accepted",
+                decision_summary="accepted the response because completion heuristics found no missing follow-through",
+            )
 
         continuation_prompt = get_continuation_prompt(
             task,
@@ -113,7 +130,11 @@ class CompletionPolicy:
         )
         self.context.session.append(Message(role=Role.ASSISTANT, content=response_content))
         self.context.session.append(Message(role=Role.USER, content=continuation_prompt))
-        return ContinuationDecision(should_continue=True)
+        return ContinuationDecision(
+            should_continue=True,
+            decision_code="premature_completion_nudge",
+            decision_summary="requested one continuation because the non-mutating response looked incomplete",
+        )
 
     @staticmethod
     def finalize_response_text(

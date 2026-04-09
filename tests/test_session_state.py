@@ -157,6 +157,10 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
         workflow_ambiguity_score=0.2,
         workflow_complexity_score=0.6,
         workflow_scheduled_next_mode="execute",
+        last_completion_decision_code="verification_failed_reentry",
+        last_completion_decision_summary=(
+            "continued after verification failed and the runtime re-entered execute mode"
+        ),
         last_turn_transition_summary="completion -> finalize [terminal] Finalizing completed turn",
         last_turn_transition_kind="terminal",
         last_turn_transition_reason_code="turn_complete",
@@ -207,6 +211,10 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     assert reloaded.workflow_ambiguity_score == pytest.approx(0.2)
     assert reloaded.workflow_complexity_score == pytest.approx(0.6)
     assert reloaded.workflow_scheduled_next_mode == "execute"
+    assert reloaded.last_completion_decision_code == "verification_failed_reentry"
+    assert reloaded.last_completion_decision_summary == (
+        "continued after verification failed and the runtime re-entered execute mode"
+    )
     assert reloaded.last_turn_transition_summary == (
         "completion -> finalize [terminal] Finalizing completed turn"
     )

@@ -67,6 +67,11 @@ async def test_turn_completion_requests_continuation_for_premature_text_response
 
     assert decision.action == TurnCompletionAction.CONTINUE
     assert decision.continuation_count == 1
+    assert prepared.summary.completion_decision_code == "premature_completion_nudge"
+    assert prepared.summary.completion_decision_summary == (
+        "requested one continuation because the non-mutating response looked incomplete"
+    )
+    assert agent.session.last_completion_decision_code == "premature_completion_nudge"
     assert agent.session.messages[-1].role.value == "user"
     assert "If there's more to do, continue" in agent.session.messages[-1].content
     assert any(event.type == "completion_check" for event in events)
@@ -121,6 +126,13 @@ async def test_turn_completion_marks_non_mutating_response_done(
     assert decision.action == TurnCompletionAction.COMPLETE
     assert prepared.summary.final_response == (
         "Loader uses a bounded clarify loop before execution."
+    )
+    assert prepared.summary.completion_decision_code == "non_mutating_response_accepted"
+    assert prepared.summary.completion_decision_summary == (
+        "accepted the response because no mutating work required verification"
+    )
+    assert agent.session.last_completion_decision_code == (
+        "non_mutating_response_accepted"
     )
     assert prepared.definition_of_done.status == "done"
     assert prepared.definition_of_done.last_verification_result == "skipped"
@@ -182,6 +194,7 @@ async def test_turn_completion_handles_fake_tool_narration_without_reroute(
 
     assert decision.action == TurnCompletionAction.COMPLETE
     assert prepared.summary.final_response == narrated
+    assert prepared.summary.completion_decision_code == "non_mutating_response_accepted"
     assert not any(
         "PRETENDING to use tools" in message.content
         for message in agent.session.messages
@@ -240,6 +253,7 @@ async def test_turn_completion_handles_deflection_text_without_repair_prompt(
 
     assert decision.action == TurnCompletionAction.COMPLETE
     assert prepared.summary.final_response == deflection
+    assert prepared.summary.completion_decision_code == "non_mutating_response_accepted"
     assert not any(
         "Please use your tools to execute the task" in message.content
         for message in agent.session.messages
@@ -303,5 +317,6 @@ async def test_turn_completion_skips_self_critique_reroute(
 
     assert decision.action == TurnCompletionAction.COMPLETE
     assert prepared.summary.final_response == detailed
+    assert prepared.summary.completion_decision_code == "non_mutating_response_accepted"
     assert not any("[SELF-CRITIQUE]" in message.content for message in agent.session.messages)
     assert not any(event.type == "critique" for event in events)

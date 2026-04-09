@@ -153,7 +153,13 @@ async def test_completion_policy_stops_for_text_loop_using_runtime_context(
     )
 
     assert decision.should_stop is True
-    assert summary.final_response.startswith("I seem to be repeating myself")
+    assert decision.decision_code == "text_loop_bailout"
+    assert decision.decision_summary == (
+        "stopped after detecting a repeated text loop"
+    )
+    assert summary.final_response == (
+        "I stopped because I was repeating myself and couldn't make further progress."
+    )
     assert summary.assistant_messages[-1].role == Role.ASSISTANT
     assert context.session.messages[-1].content == summary.final_response
     assert events[0].type == "error"
@@ -184,6 +190,10 @@ async def test_completion_policy_requests_continuation_using_runtime_context(
     )
 
     assert decision.should_continue is True
+    assert decision.decision_code == "premature_completion_nudge"
+    assert decision.decision_summary == (
+        "requested one continuation because the non-mutating response looked incomplete"
+    )
     assert context.session.messages[-2] == Message(
         role=Role.ASSISTANT,
         content="I can handle that.",

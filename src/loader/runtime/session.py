@@ -22,7 +22,7 @@ from .prompt_history import PromptSnapshot, normalize_prompt_history
 from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 
-SESSION_VERSION = 7
+SESSION_VERSION = 8
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
@@ -184,6 +184,8 @@ class SessionSnapshot:
     workflow_ambiguity_score: float | None = None
     workflow_complexity_score: float | None = None
     workflow_scheduled_next_mode: str | None = None
+    last_completion_decision_code: str | None = None
+    last_completion_decision_summary: str | None = None
     last_turn_transition_summary: str | None = None
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
@@ -217,6 +219,8 @@ class SessionSnapshot:
             "workflow_ambiguity_score": self.workflow_ambiguity_score,
             "workflow_complexity_score": self.workflow_complexity_score,
             "workflow_scheduled_next_mode": self.workflow_scheduled_next_mode,
+            "last_completion_decision_code": self.last_completion_decision_code,
+            "last_completion_decision_summary": self.last_completion_decision_summary,
             "last_turn_transition_summary": self.last_turn_transition_summary,
             "last_turn_transition_kind": self.last_turn_transition_kind,
             "last_turn_transition_reason_code": self.last_turn_transition_reason_code,
@@ -269,6 +273,12 @@ class SessionSnapshot:
             ),
             workflow_scheduled_next_mode=normalize_optional_text(
                 data.get("workflow_scheduled_next_mode")
+            ),
+            last_completion_decision_code=normalize_optional_text(
+                data.get("last_completion_decision_code")
+            ),
+            last_completion_decision_summary=normalize_optional_text(
+                data.get("last_completion_decision_summary")
             ),
             last_turn_transition_summary=normalize_optional_text(
                 data.get("last_turn_transition_summary")
@@ -422,6 +432,8 @@ class ConversationSession:
     workflow_ambiguity_score: float | None = None
     workflow_complexity_score: float | None = None
     workflow_scheduled_next_mode: str | None = None
+    last_completion_decision_code: str | None = None
+    last_completion_decision_summary: str | None = None
     last_turn_transition_summary: str | None = None
     last_turn_transition_kind: str | None = None
     last_turn_transition_reason_code: str | None = None
@@ -511,6 +523,8 @@ class ConversationSession:
         self.workflow_ambiguity_score = None
         self.workflow_complexity_score = None
         self.workflow_scheduled_next_mode = None
+        self.last_completion_decision_code = None
+        self.last_completion_decision_summary = None
         self.active_turn_phase = None
         self.last_turn_transition_summary = None
         self.last_turn_transition_kind = None
@@ -547,6 +561,8 @@ class ConversationSession:
         workflow_ambiguity_score: float | None | object = _UNSET,
         workflow_complexity_score: float | None | object = _UNSET,
         workflow_scheduled_next_mode: str | None | object = _UNSET,
+        last_completion_decision_code: str | None | object = _UNSET,
+        last_completion_decision_summary: str | None | object = _UNSET,
         last_turn_transition_summary: str | None | object = _UNSET,
         last_turn_transition_kind: str | None | object = _UNSET,
         last_turn_transition_reason_code: str | None | object = _UNSET,
@@ -596,6 +612,14 @@ class ConversationSession:
         if workflow_scheduled_next_mode is not _UNSET:
             self.workflow_scheduled_next_mode = normalize_optional_text(
                 workflow_scheduled_next_mode
+            )
+        if last_completion_decision_code is not _UNSET:
+            self.last_completion_decision_code = normalize_optional_text(
+                last_completion_decision_code
+            )
+        if last_completion_decision_summary is not _UNSET:
+            self.last_completion_decision_summary = normalize_optional_text(
+                last_completion_decision_summary
             )
         if last_turn_transition_summary is not _UNSET:
             self.last_turn_transition_summary = normalize_optional_text(
@@ -726,6 +750,8 @@ class ConversationSession:
             workflow_ambiguity_score=self.workflow_ambiguity_score,
             workflow_complexity_score=self.workflow_complexity_score,
             workflow_scheduled_next_mode=self.workflow_scheduled_next_mode,
+            last_completion_decision_code=self.last_completion_decision_code,
+            last_completion_decision_summary=self.last_completion_decision_summary,
             last_turn_transition_summary=self.last_turn_transition_summary,
             last_turn_transition_kind=self.last_turn_transition_kind,
             last_turn_transition_reason_code=self.last_turn_transition_reason_code,
@@ -786,6 +812,10 @@ class ConversationSession:
         instance.workflow_ambiguity_score = snapshot.workflow_ambiguity_score
         instance.workflow_complexity_score = snapshot.workflow_complexity_score
         instance.workflow_scheduled_next_mode = snapshot.workflow_scheduled_next_mode
+        instance.last_completion_decision_code = snapshot.last_completion_decision_code
+        instance.last_completion_decision_summary = (
+            snapshot.last_completion_decision_summary
+        )
         instance.last_turn_transition_summary = snapshot.last_turn_transition_summary
         instance.last_turn_transition_kind = snapshot.last_turn_transition_kind
         instance.last_turn_transition_reason_code = (

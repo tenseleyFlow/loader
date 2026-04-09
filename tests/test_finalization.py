@@ -27,6 +27,14 @@ class FakeSession:
         self.messages: list[Message] = []
         self.session_id = "session-test-123"
         self.recorded_calls: list[dict[str, object]] = []
+        self.last_completion_decision_code = "verification_passed"
+        self.last_completion_decision_summary = (
+            "accepted the response after verification evidence passed"
+        )
+        self.last_turn_transition_summary = (
+            "completion -> finalize [terminal] Finalizing completed turn"
+        )
+        self.workflow_timeline = []
 
     def append(self, message: Message) -> None:
         self.messages.append(message)
@@ -165,3 +173,7 @@ def test_turn_finalizer_finalize_summary_uses_runtime_context(
     ]
     assert "summary" in captured
     assert final_summary.trace
+    assert final_summary.completion_decision_code == "verification_passed"
+    assert final_summary.completion_decision_summary == (
+        "accepted the response after verification evidence passed"
+    )
