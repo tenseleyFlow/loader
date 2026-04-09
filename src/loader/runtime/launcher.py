@@ -5,6 +5,7 @@ from __future__ import annotations
 from .bootstrap import RuntimeBootstrapSource
 from .chat_lane import ConversationalTurnRunner
 from .conversation import ConfirmationHandler, ConversationRuntime, EventSink, UserQuestionHandler
+from .decomposition_lane import DecompositionTurnRunner
 from .events import TurnSummary
 from .explore import ExploreRuntime
 
@@ -47,6 +48,28 @@ class RuntimeLauncher:
             original_task=original_task,
         )
 
+    async def run_decomposed(
+        self,
+        task: str,
+        emit: EventSink,
+        *,
+        on_confirmation: ConfirmationHandler = None,
+        on_user_question: UserQuestionHandler = None,
+        requested_mode: str | None = None,
+        original_task: str | None = None,
+    ) -> str:
+        """Run a decomposition-guided task through the shared launcher seam."""
+
+        runner = DecompositionTurnRunner(self.source, run_task=self._run_task_response)
+        return await runner.run(
+            task,
+            emit,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            requested_mode=requested_mode,
+            original_task=original_task,
+        )
+
     async def run_explore(
         self,
         prompt: str,
@@ -56,6 +79,27 @@ class RuntimeLauncher:
 
         runtime = ExploreRuntime(self.source)
         return await runtime.run_query(prompt, emit)
+
+    async def _run_task_response(
+        self,
+        task: str,
+        emit: EventSink,
+        on_confirmation: ConfirmationHandler = None,
+        on_user_question: UserQuestionHandler = None,
+        requested_mode: str | None = None,
+        original_task: str | None = None,
+    ) -> str:
+        """Run one runtime turn and return only the final response text."""
+
+        summary = await self.run_turn(
+            task,
+            emit,
+            on_confirmation=on_confirmation,
+            on_user_question=on_user_question,
+            requested_mode=requested_mode,
+            original_task=original_task,
+        )
+        return summary.final_response
 
 
 def build_runtime_launcher(source: RuntimeBootstrapSource) -> RuntimeLauncher:
