@@ -350,6 +350,58 @@ def test_session_prefers_canonical_workflow_timeline_for_completion_trace(
     ]
 
 
+def test_session_projects_live_completion_trace_from_workflow_timeline(
+    temp_dir: Path,
+) -> None:
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+    )
+
+    session.append_workflow_timeline_entry(
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:00:00Z",
+            kind="completion_check",
+            mode="execute",
+            reason_code="completion_response_accepted",
+            summary="completion: accepted the response because follow-through evidence was present",
+            decision_kind="forced",
+            policy_stage="continuation_check",
+            policy_outcome="accept",
+        )
+    )
+    session.append_workflow_timeline_entry(
+        WorkflowTimelineEntry(
+            timestamp="2026-04-09T12:01:00Z",
+            kind="completion_finalize",
+            mode="execute",
+            reason_code="continuation_budget_exhausted",
+            summary="completion: stopped because verification evidence was still missing",
+            decision_kind="forced",
+            policy_stage="continuation_check",
+            policy_outcome="finalize",
+            evidence_summary=["a passing verification result from `pytest -q`"],
+        )
+    )
+    session.update_runtime_state(
+        last_completion_decision_code="continuation_budget_exhausted",
+        last_completion_decision_summary=(
+            "stopped because verification evidence was still missing"
+        ),
+    )
+
+    assert [entry.decision_code for entry in session.completion_trace] == [
+        "completion_response_accepted",
+        "continuation_budget_exhausted",
+    ]
+    assert session.completion_trace[-1].stage == "continuation_check"
+    assert session.completion_trace[-1].outcome == "finalize"
+    assert session.completion_trace[-1].evidence_summary == [
+        "a passing verification result from `pytest -q`"
+    ]
+
+
 def test_session_persists_workflow_ledger_state(temp_dir: Path) -> None:
     session = ConversationSession(
         system_message_factory=_dummy_system,
