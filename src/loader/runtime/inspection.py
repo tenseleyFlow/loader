@@ -29,7 +29,11 @@ from .permissions import (
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
 from .session import SessionSnapshot, SessionStore
-from .verification_observations import VerificationObservation, VerificationObservationStatus
+from .verification_observations import (
+    VerificationObservation,
+    VerificationObservationStatus,
+    describe_verification_attempt,
+)
 from .workflow_ledger import WorkflowLedger
 from .workflow_policy import WorkflowTimelineEntry
 from .workflow_timeline_read_model import (
@@ -150,6 +154,7 @@ class VerificationSummary:
     status: str
     kind: str
     detail: str
+    attempt: str = ""
 
 
 @dataclass(slots=True)
@@ -1626,6 +1631,7 @@ def _verification_summary_from_observation(
         status=observation.status,
         kind=observation.kind or "runtime",
         detail=observation.detail or "",
+        attempt=describe_verification_attempt(observation) or "",
     )
 
 

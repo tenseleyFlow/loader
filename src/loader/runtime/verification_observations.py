@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -80,6 +81,30 @@ def verification_attempt_id(attempt_number: int) -> str:
     return f"verification-attempt-{attempt_number}"
 
 
+def verification_attempt_number(value: str | None) -> int | None:
+    """Extract one attempt number from a persisted attempt identifier."""
+
+    if not value:
+        return None
+    match = re.fullmatch(r"verification-attempt-(\d+)", value.strip())
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def describe_verification_attempt(entry: VerificationObservation) -> str | None:
+    """Render a concise operator-facing attempt label for one observation."""
+
+    current = _format_attempt_label(entry.attempt_id, entry.attempt_number)
+    next_attempt = _format_attempt_label(
+        entry.supersedes_attempt_id,
+        verification_attempt_number(entry.supersedes_attempt_id),
+    )
+    if current and next_attempt:
+        return f"{current} -> {next_attempt}"
+    return current or next_attempt
+
+
 def normalize_verification_observation_status(value: Any) -> str:
     """Coerce persisted observation statuses into the canonical enum set."""
 
@@ -131,3 +156,12 @@ def _optional_int(value: Any) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _format_attempt_label(attempt_id: str | None, attempt_number: int | None) -> str | None:
+    number = attempt_number if attempt_number is not None else verification_attempt_number(attempt_id)
+    if number is not None:
+        return f"attempt {number}"
+    if attempt_id:
+        return attempt_id
+    return None

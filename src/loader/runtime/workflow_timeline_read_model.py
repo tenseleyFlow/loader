@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .evidence_provenance import EvidenceProvenanceRollup, rollup_evidence_provenance
-from .verification_observations import VerificationObservation
+from .verification_observations import (
+    VerificationObservation,
+    describe_verification_attempt,
+)
 from .workflow_ledger import WorkflowLedger, workflow_ledger_highlights
 from .workflow_policy import WorkflowTimelineEntry
 
@@ -247,10 +250,16 @@ def summarize_observed_verification(
     summaries: list[str] = []
     for entry in entries[:max_items]:
         summary = entry.summary.strip()
+        attempt = describe_verification_attempt(entry)
         if entry.detail:
             detail = entry.detail.strip()
             if detail and detail not in summary:
                 summary = f"{summary} [{detail}]"
+        if attempt:
+            if "[" in summary and summary.endswith("]"):
+                summary = summary[:-1] + f"; {attempt}]"
+            elif attempt not in summary:
+                summary = f"{summary} [{attempt}]"
         if summary and summary not in summaries:
             summaries.append(summary)
     return summaries

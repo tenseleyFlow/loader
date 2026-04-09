@@ -1508,6 +1508,7 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
         evidence = Table(show_header=True, header_style="bold cyan")
         evidence.add_column("Result", width=8)
         evidence.add_column("Kind", width=10)
+        evidence.add_column("Attempt", width=16)
         evidence.add_column("Command", style="white")
         evidence.add_column("Detail", style="dim")
         for item in snapshot.recent_verification:
@@ -1520,7 +1521,13 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
                 "skipped": "[yellow]skip[/yellow]",
                 "missing": "[magenta]missing[/magenta]",
             }.get(item.status, item.status)
-            evidence.add_row(result, item.kind, item.command, item.detail or "-")
+            evidence.add_row(
+                result,
+                item.kind,
+                item.attempt or "-",
+                item.command,
+                item.detail or "-",
+            )
         console.print(
             Panel.fit(
                 evidence,
@@ -1769,6 +1776,7 @@ def _session_show_main(session_id: str) -> None:
         verification = Table(show_header=True, header_style="bold cyan")
         verification.add_column("Result", width=8)
         verification.add_column("Kind", width=10)
+        verification.add_column("Attempt", width=16)
         verification.add_column("Command", style="white")
         verification.add_column("Detail", style="dim")
         for item in detail.recent_verification:
@@ -1781,7 +1789,13 @@ def _session_show_main(session_id: str) -> None:
                 "skipped": "[yellow]skip[/yellow]",
                 "missing": "[magenta]missing[/magenta]",
             }.get(item.status, item.status)
-            verification.add_row(result, item.kind, item.command, item.detail or "-")
+            verification.add_row(
+                result,
+                item.kind,
+                item.attempt or "-",
+                item.command,
+                item.detail or "-",
+            )
         console.print(
             Panel.fit(
                 verification,

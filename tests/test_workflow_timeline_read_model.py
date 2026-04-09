@@ -144,6 +144,8 @@ def test_project_workflow_timeline_highlights_pending_verification() -> None:
                     summary="verification pending for `pytest -q`",
                     command="pytest -q",
                     kind="test",
+                    attempt_id="verification-attempt-2",
+                    attempt_number=2,
                 )
             ],
         )
@@ -153,7 +155,7 @@ def test_project_workflow_timeline_highlights_pending_verification() -> None:
 
     assert projection.latest_policy_summary is not None
     assert "policy-outcome=pending" in projection.latest_policy_summary
-    assert "observed=verification pending for `pytest -q`" in (
+    assert "observed=verification pending for `pytest -q` [attempt 2]" in (
         projection.latest_policy_summary
     )
     assert any(item.startswith("Verify pending:") for item in projection.highlights)
@@ -177,6 +179,8 @@ def test_project_workflow_timeline_highlights_planned_verification() -> None:
                     command="pytest -q",
                     kind="runtime",
                     detail="write changed README.md",
+                    attempt_id="verification-attempt-3",
+                    attempt_number=3,
                 )
             ],
         )
@@ -186,7 +190,10 @@ def test_project_workflow_timeline_highlights_planned_verification() -> None:
 
     assert projection.latest_policy_summary is not None
     assert "policy-outcome=planned" in projection.latest_policy_summary
-    assert "observed=verification planned for `pytest -q` [write changed README.md]" in (
+    assert (
+        "observed=verification planned for `pytest -q` "
+        "[write changed README.md; attempt 3]"
+    ) in (
         projection.latest_policy_summary
     )
     assert any(item.startswith("Verify planned:") for item in projection.highlights)
@@ -212,6 +219,9 @@ def test_project_workflow_timeline_highlights_stale_verification() -> None:
                     command="pytest -q",
                     kind="runtime",
                     detail="write changed README.md",
+                    attempt_id="verification-attempt-1",
+                    attempt_number=1,
+                    supersedes_attempt_id="verification-attempt-2",
                 )
             ],
         )
@@ -221,7 +231,10 @@ def test_project_workflow_timeline_highlights_stale_verification() -> None:
 
     assert projection.latest_policy_summary is not None
     assert "policy-outcome=stale" in projection.latest_policy_summary
-    assert "observed=verification became stale for `pytest -q` after new mutating work [write changed README.md]" in (
+    assert (
+        "observed=verification became stale for `pytest -q` after new mutating work "
+        "[write changed README.md; attempt 1 -> attempt 2]"
+    ) in (
         projection.latest_policy_summary
     )
     assert any(item.startswith("Verify stale:") for item in projection.highlights)

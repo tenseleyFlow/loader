@@ -518,6 +518,8 @@ def _persist_session_with_pending_verification(temp_dir: Path) -> str:
                         summary="verification pending for `uv run pytest -q`",
                         command="uv run pytest -q",
                         kind="test",
+                        attempt_id="verification-attempt-2",
+                        attempt_number=2,
                     )
                 ],
                 prompt_format="native",
@@ -562,6 +564,8 @@ def _persist_session_with_planned_verification(temp_dir: Path) -> str:
                         command="uv run pytest -q",
                         kind="runtime",
                         detail="write changed src/loader/runtime/tool_batches.py",
+                        attempt_id="verification-attempt-3",
+                        attempt_number=3,
                     )
                 ],
                 prompt_format="native",
@@ -609,6 +613,9 @@ def _persist_session_with_stale_verification(temp_dir: Path) -> str:
                         command="uv run pytest -q",
                         kind="runtime",
                         detail="write changed src/loader/runtime/finalization.py",
+                        attempt_id="verification-attempt-1",
+                        attempt_number=1,
+                        supersedes_attempt_id="verification-attempt-2",
                     )
                 ],
                 prompt_format="native",
@@ -925,12 +932,13 @@ def test_collect_status_snapshot_surfaces_pending_verification(
     assert "verification_pending" in snapshot.latest_policy_summary
     assert "policy-outcome=pending" in snapshot.latest_policy_summary
     assert snapshot.latest_policy_observed_verification == [
-        "verification pending for `uv run pytest -q`"
+        "verification pending for `uv run pytest -q` [attempt 2]"
     ]
     assert [item.status for item in snapshot.recent_verification] == ["pending"]
     assert [item.command for item in snapshot.recent_verification] == [
         "uv run pytest -q"
     ]
+    assert [item.attempt for item in snapshot.recent_verification] == ["attempt 2"]
 
 
 def test_collect_status_snapshot_surfaces_planned_verification(
@@ -946,12 +954,13 @@ def test_collect_status_snapshot_surfaces_planned_verification(
     assert "verification_planned" in snapshot.latest_policy_summary
     assert "policy-outcome=planned" in snapshot.latest_policy_summary
     assert snapshot.latest_policy_observed_verification == [
-        "verification planned for `uv run pytest -q` [write changed src/loader/runtime/tool_batches.py]"
+        "verification planned for `uv run pytest -q` [write changed src/loader/runtime/tool_batches.py; attempt 3]"
     ]
     assert [item.status for item in snapshot.recent_verification] == ["planned"]
     assert [item.command for item in snapshot.recent_verification] == [
         "uv run pytest -q"
     ]
+    assert [item.attempt for item in snapshot.recent_verification] == ["attempt 3"]
     assert [item.detail for item in snapshot.recent_verification] == [
         "write changed src/loader/runtime/tool_batches.py"
     ]
@@ -970,11 +979,14 @@ def test_collect_status_snapshot_surfaces_stale_verification(
     assert "verification_stale" in snapshot.latest_policy_summary
     assert "policy-outcome=stale" in snapshot.latest_policy_summary
     assert snapshot.latest_policy_observed_verification == [
-        "verification became stale for `uv run pytest -q` after new mutating work [write changed src/loader/runtime/finalization.py]"
+        "verification became stale for `uv run pytest -q` after new mutating work [write changed src/loader/runtime/finalization.py; attempt 1 -> attempt 2]"
     ]
     assert [item.status for item in snapshot.recent_verification] == ["stale"]
     assert [item.command for item in snapshot.recent_verification] == [
         "uv run pytest -q"
+    ]
+    assert [item.attempt for item in snapshot.recent_verification] == [
+        "attempt 1 -> attempt 2"
     ]
     assert [item.detail for item in snapshot.recent_verification] == [
         "write changed src/loader/runtime/finalization.py"
