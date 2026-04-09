@@ -9,6 +9,7 @@ import pytest
 
 import loader.agent.loop as agent_loop_module
 import loader.cli.main as cli_main_module
+import loader.runtime.runtime_api as runtime_api_module
 import loader.runtime.runtime_handle as runtime_handle_module
 from loader.agent.loop import AgentConfig
 
@@ -34,7 +35,7 @@ def _install_fake_ollama_module(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "loader.llm.ollama", module)
 
 
-def test_build_cli_shell_owner_uses_runtime_handle_for_internal_paths(
+def test_build_runtime_shell_owner_uses_runtime_handle_for_runtime_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[dict[str, object]] = []
@@ -50,18 +51,25 @@ def test_build_cli_shell_owner_uses_runtime_handle_for_internal_paths(
     monkeypatch.setattr(runtime_handle_module, "RuntimeHandle", FakeHandle)
     monkeypatch.setattr(agent_loop_module, "Agent", FakeAgent)
 
-    owner = cli_main_module._build_cli_shell_owner(
+    owner = runtime_api_module.build_runtime_shell_owner(
         backend="backend",
         registry="registry",
         config="config",
-        require_public_agent=False,
+        owner_kind="runtime",
     )
 
     assert isinstance(owner, FakeHandle)
-    assert seen == [{"backend": "backend", "registry": "registry", "config": "config"}]
+    assert seen == [
+        {
+            "backend": "backend",
+            "registry": "registry",
+            "config": "config",
+            "project_root": None,
+        }
+    ]
 
 
-def test_build_cli_shell_owner_uses_agent_for_public_paths(
+def test_build_runtime_shell_owner_uses_agent_for_public_compat_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[dict[str, object]] = []
@@ -77,15 +85,22 @@ def test_build_cli_shell_owner_uses_agent_for_public_paths(
     monkeypatch.setattr(runtime_handle_module, "RuntimeHandle", FakeHandle)
     monkeypatch.setattr(agent_loop_module, "Agent", FakeAgent)
 
-    owner = cli_main_module._build_cli_shell_owner(
+    owner = runtime_api_module.build_runtime_shell_owner(
         backend="backend",
         registry="registry",
         config="config",
-        require_public_agent=True,
+        owner_kind="public-compat",
     )
 
     assert isinstance(owner, FakeAgent)
-    assert seen == [{"backend": "backend", "registry": "registry", "config": "config"}]
+    assert seen == [
+        {
+            "backend": "backend",
+            "registry": "registry",
+            "config": "config",
+            "project_root": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -125,18 +140,18 @@ async def test_main_uses_runtime_first_owner_for_tui_launch(
     fake_ui_app.LoaderApp = FakeApp
     monkeypatch.setitem(sys.modules, "loader.ui.app", fake_ui_app)
 
-    def fake_build_owner(*, backend, registry, config, require_public_agent):
+    def fake_build_owner(*, backend, registry, config, owner_kind):
         owner_calls.append(
             {
                 "backend": backend,
                 "registry": registry,
                 "config": config,
-                "require_public_agent": require_public_agent,
+                "owner_kind": owner_kind,
             }
         )
         return fake_owner
 
-    monkeypatch.setattr(cli_main_module, "_build_cli_shell_owner", fake_build_owner)
+    monkeypatch.setattr(cli_main_module, "build_runtime_shell_owner", fake_build_owner)
 
     await cli_main_module._main(
         model="fake-model",
@@ -162,7 +177,7 @@ async def test_main_uses_runtime_first_owner_for_tui_launch(
         prompt=None,
     )
 
-    assert owner_calls and owner_calls[0]["require_public_agent"] is False
+    assert owner_calls and owner_calls[0]["owner_kind"] == "runtime"
     assert app_calls[0]["shell_owner"] is fake_owner
     assert app_calls[-1] == {"ran": True}
 
@@ -193,13 +208,13 @@ async def test_main_uses_runtime_first_owner_for_single_prompt(
         lambda: SimpleNamespace(skip_confirmation=False),
     )
 
-    def fake_build_owner(*, backend, registry, config, require_public_agent):
+    def fake_build_owner(*, backend, registry, config, owner_kind):
         seen.append(
             {
                 "backend": backend,
                 "registry": registry,
                 "config": config,
-                "require_public_agent": require_public_agent,
+                "owner_kind": owner_kind,
             }
         )
         return fake_owner
@@ -211,7 +226,7 @@ async def test_main_uses_runtime_first_owner_for_single_prompt(
         captured["prompt"] = prompt
         captured["skip_confirmation"] = skip_confirmation
 
-    monkeypatch.setattr(cli_main_module, "_build_cli_shell_owner", fake_build_owner)
+    monkeypatch.setattr(cli_main_module, "build_runtime_shell_owner", fake_build_owner)
     monkeypatch.setattr(cli_main_module, "run_once", fake_run_once)
 
     await cli_main_module._main(
@@ -238,7 +253,7 @@ async def test_main_uses_runtime_first_owner_for_single_prompt(
         prompt="Summarize the runtime-first shell path.",
     )
 
-    assert seen and seen[0]["require_public_agent"] is False
+    assert seen and seen[0]["owner_kind"] == "runtime"
     assert isinstance(seen[0]["config"], AgentConfig)
     assert captured == {
         "owner": fake_owner,
@@ -267,18 +282,18 @@ async def test_explore_main_uses_runtime_first_owner(
 
     owner_calls: list[dict[str, object]] = []
 
-    def fake_build_owner(*, backend, registry, config, require_public_agent):
+    def fake_build_owner(*, backend, registry, config, owner_kind):
         owner_calls.append(
             {
                 "backend": backend,
                 "registry": registry,
                 "config": config,
-                "require_public_agent": require_public_agent,
+                "owner_kind": owner_kind,
             }
         )
         return FakeExploreOwner()
 
-    monkeypatch.setattr(cli_main_module, "_build_cli_shell_owner", fake_build_owner)
+    monkeypatch.setattr(cli_main_module, "build_runtime_shell_owner", fake_build_owner)
 
     await cli_main_module._explore_main(
         model="fake-model",
@@ -293,7 +308,7 @@ async def test_explore_main_uses_runtime_first_owner(
         prompt="Where should I start?",
     )
 
-    assert owner_calls and owner_calls[0]["require_public_agent"] is False
+    assert owner_calls and owner_calls[0]["owner_kind"] == "runtime"
     assert isinstance(owner_calls[0]["config"], AgentConfig)
     assert len(seen) == 1
     assert seen[0]["prompt"] == "Where should I start?"

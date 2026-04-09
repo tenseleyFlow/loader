@@ -39,6 +39,7 @@ from ..runtime.inspection import (
 )
 from ..runtime.owner_metadata import format_runtime_owner_label
 from ..runtime.permissions import PermissionMode
+from ..runtime.runtime_api import RuntimeShellOwner, build_runtime_shell_owner
 from ..runtime.workflow_timeline_read_model import (
     format_evidence_provenance_brief,
     summarize_observed_verification,
@@ -186,31 +187,6 @@ def clean_response(text: str) -> str:
     # Clean up multiple newlines
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
-
-
-def _build_cli_shell_owner(
-    *,
-    backend,
-    registry,
-    config,
-    require_public_agent: bool,
-):
-    """Build the CLI runtime owner for the requested integration path.
-
-    Non-TUI CLI flows use the runtime-first internal handle so internal
-    integrations stop depending on `Agent` by reflex. Public-shell construction
-    remains available for explicit compatibility paths, but the CLI can choose a
-    runtime-first owner even for interactive surfaces.
-    """
-
-    if require_public_agent:
-        from ..agent.loop import Agent
-
-        return Agent(backend=backend, registry=registry, config=config)
-
-    from ..runtime.runtime_handle import RuntimeHandle
-
-    return RuntimeHandle(backend=backend, registry=registry, config=config)
 
 
 @click.command()
@@ -391,11 +367,11 @@ async def _main(
         reasoning=reasoning_config,
     )
     try:
-        shell_owner = _build_cli_shell_owner(
+        shell_owner = build_runtime_shell_owner(
             backend=llm,
             registry=registry,
             config=config,
-            require_public_agent=False,
+            owner_kind="runtime",
         )
     except ValueError as exc:
         console.print(f"[red]Permission policy error:[/red] {exc}")
@@ -514,7 +490,11 @@ def _format_tool_args(args: dict | None) -> str:
     return ", ".join(parts)
 
 
-async def run_once(shell_owner, prompt: str, skip_confirmation: bool = False) -> None:
+async def run_once(
+    shell_owner: RuntimeShellOwner,
+    prompt: str,
+    skip_confirmation: bool = False,
+) -> None:
     """Run a single prompt through one shell-compatible runtime owner."""
     import time
 
@@ -614,7 +594,10 @@ async def run_once(shell_owner, prompt: str, skip_confirmation: bool = False) ->
             console.print("[red]Aborted.[/red]")
 
 
-async def run_interactive(shell_owner, skip_confirmation: bool = False) -> None:
+async def run_interactive(
+    shell_owner: RuntimeShellOwner,
+    skip_confirmation: bool = False,
+) -> None:
     """Run the simple interactive chat loop for one shell-compatible owner."""
     import os
 
@@ -1283,7 +1266,7 @@ async def _explore_main(
     set_last_model(model)
 
     try:
-        shell_owner = _build_cli_shell_owner(
+        shell_owner = build_runtime_shell_owner(
             backend=llm,
             registry=None,
             config=AgentConfig(
@@ -1292,7 +1275,7 @@ async def _explore_main(
                 permission_mode=PermissionMode.READ_ONLY,
                 stream=False,
             ),
-            require_public_agent=False,
+            owner_kind="runtime",
         )
     except ValueError as exc:
         console.print(f"[red]Permission policy error:[/red] {exc}")

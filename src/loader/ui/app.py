@@ -2,9 +2,7 @@
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Protocol
 
 from rich.markup import escape
 from textual import work
@@ -16,6 +14,7 @@ from textual.widgets import Footer, Input, Static
 from textual.worker import Worker, get_current_worker
 
 from ..runtime.events import AgentEvent
+from ..runtime.runtime_api import RuntimeShellOwner
 from .adapter import (
     ArtifactCreated,
     ClearStream,
@@ -52,38 +51,6 @@ from .widgets import (
 )
 
 
-class LoaderUIShellOwner(Protocol):
-    """Small shell-owner contract used by the Textual UI."""
-
-    backend: object
-    capability_profile: object
-    safeguards: object
-    is_running: bool
-
-    def steer(self, message: str) -> bool:
-        """Queue one steering message while the owner is running."""
-
-    def refresh_capability_profile(self) -> None:
-        """Refresh the active capability profile."""
-
-    async def run(
-        self,
-        user_message: str,
-        on_event: (
-            Callable[[AgentEvent], None]
-            | Callable[[AgentEvent], Awaitable[None]]
-            | None
-        ) = None,
-        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
-        on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
-        use_plan: bool | None = None,
-    ) -> str:
-        """Run one user message through the shell owner."""
-
-    def clear_history(self) -> None:
-        """Reset the owner history."""
-
-
 class LoaderApp(App):
     """Main Textual application for Loader."""
 
@@ -100,7 +67,7 @@ class LoaderApp(App):
 
     def __init__(
         self,
-        shell_owner: LoaderUIShellOwner,
+        shell_owner: RuntimeShellOwner,
         model_name: str = "",
         mode: str = "Native",
         capability_profile: str = "",
