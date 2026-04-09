@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from loader.agent.loop import Agent, AgentConfig, AgentEvent
+from loader.agent.loop import AgentConfig
 from loader.llm.base import CompletionResponse, LLMBackend, Message, StreamChunk
+from loader.runtime.events import AgentEvent
+from loader.runtime.runtime_handle import RuntimeHandle
 from loader.tools.base import ToolRegistry, create_default_registry
 
 
@@ -24,12 +26,12 @@ class BackendInvocation:
 
 @dataclass
 class ScenarioRun:
-    """Captured result of a scripted agent scenario."""
+    """Captured result of a scripted runtime-owner scenario."""
 
     response: str
     events: list[AgentEvent]
     invocations: list[BackendInvocation]
-    agent: Agent
+    agent: RuntimeHandle
 
 
 class ScriptedBackend(LLMBackend):
@@ -107,11 +109,11 @@ async def run_scenario(
     on_confirmation=None,
     on_user_question=None,
 ) -> ScenarioRun:
-    """Run a scripted agent scenario and collect emitted events."""
+    """Run a scripted runtime scenario and collect emitted events."""
 
-    agent = Agent(
+    agent = RuntimeHandle(
         backend=backend,
-        registry=registry or create_default_registry(),
+        registry=registry or create_default_registry(project_root),
         config=config or AgentConfig(auto_context=False),
         project_root=project_root,
     )
@@ -141,9 +143,9 @@ async def run_explore_scenario(
     config: AgentConfig | None = None,
     project_root: Path | str | None = None,
 ) -> ScenarioRun:
-    """Run a scripted explore query and collect emitted events."""
+    """Run a scripted explore query through the runtime-first harness."""
 
-    agent = Agent(
+    agent = RuntimeHandle(
         backend=backend,
         config=config or AgentConfig(auto_context=False),
         project_root=project_root,

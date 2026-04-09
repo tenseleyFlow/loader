@@ -12,7 +12,7 @@ from loader.runtime.bootstrap import RuntimeBootstrapView, build_runtime_context
 from loader.runtime.conversation import ConversationRuntime
 from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
 from loader.runtime.runtime_handle import RuntimeHandle
-from tests.helpers.runtime_harness import ScriptedBackend
+from tests.helpers.runtime_harness import ScriptedBackend, run_explore_scenario, run_scenario
 
 
 def test_runtime_handle_builds_runtime_bootstrap_contract(
@@ -129,3 +129,30 @@ async def test_runtime_handle_runs_explore_and_streaming_entrypoints_without_age
     assert explore_response == "Explore with runtime handle."
     assert handle.last_turn_summary is not None
     assert handle.last_turn_summary.workflow_mode == "explore"
+
+
+@pytest.mark.asyncio
+async def test_runtime_harness_uses_runtime_handle_for_scripted_runs(
+    temp_dir: Path,
+) -> None:
+    run = await run_scenario(
+        "Summarize the runtime-first harness.",
+        ScriptedBackend(
+            completions=[CompletionResponse(content="Runtime harness reply.")]
+        ),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+    explore_run = await run_explore_scenario(
+        "Where should I start?",
+        ScriptedBackend(
+            completions=[CompletionResponse(content="Explore harness reply.")]
+        ),
+        config=AgentConfig(auto_context=False, stream=False),
+        project_root=temp_dir,
+    )
+
+    assert isinstance(run.agent, RuntimeHandle)
+    assert run.response == "Runtime harness reply."
+    assert isinstance(explore_run.agent, RuntimeHandle)
+    assert explore_run.response == "Explore harness reply."
