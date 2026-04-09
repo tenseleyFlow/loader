@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .dod import DefinitionOfDone
+from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .reasoning_types import TaskCompletionCheck
 
 _ACTION_VERBS = ("create", "write", "make", "edit", "fix", "add", "delete", "run")
@@ -119,6 +120,14 @@ class _FollowThroughFacts:
     accomplished: list[str]
 
 
+@dataclass(slots=True)
+class CompletionAssessment:
+    """Runtime-owned completion assessment with typed evidence provenance."""
+
+    check: TaskCompletionCheck
+    evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
+
+
 def detect_premature_completion(
     task: str,
     response: str,
@@ -153,13 +162,13 @@ def get_continuation_prompt(
     ).continuation_prompt
 
 
-def assess_completion_follow_through(
+def assess_completion_follow_through_with_provenance(
     *,
     task: str,
     response: str,
     actions_taken: list[str],
     dod: DefinitionOfDone | None = None,
-) -> TaskCompletionCheck:
+) -> CompletionAssessment:
     """Build a typed follow-through assessment for one candidate response."""
 
     task_lower = task.lower().strip()
@@ -178,6 +187,16 @@ def assess_completion_follow_through(
         indicator in task_lower for indicator in _VERIFICATION_INDICATORS
     )
     requires_install = any(indicator in task_lower for indicator in _INSTALL_HINTS)
+    evidence_provenance = _observed_completion_provenance(
+        task_lower=task_lower,
+        response_lower=response_lower,
+        actions_taken=actions_taken,
+        facts=facts,
+        informational=informational,
+        requires_install=requires_install,
+        requires_verification=requires_verification,
+        dod=dod,
+    )
 
     accomplished = list(facts.accomplished)
     required_evidence = _required_evidence(
@@ -192,20 +211,23 @@ def assess_completion_follow_through(
     suggested_next_steps: list[str] = []
 
     if informational:
-        return TaskCompletionCheck(
-            original_task=task,
-            is_complete=bool(response.strip()),
-            accomplished=accomplished,
-            required_evidence=required_evidence,
-            missing_evidence=[],
-            remaining=[],
-            suggested_next_steps=[],
-            continuation_prompt=_format_continuation_prompt(
-                task=task,
+        return CompletionAssessment(
+            check=TaskCompletionCheck(
+                original_task=task,
+                is_complete=bool(response.strip()),
+                accomplished=accomplished,
+                required_evidence=required_evidence,
                 missing_evidence=[],
+                remaining=[],
                 suggested_next_steps=[],
-                action_count=len(actions_taken),
+                continuation_prompt=_format_continuation_prompt(
+                    task=task,
+                    missing_evidence=[],
+                    suggested_next_steps=[],
+                    action_count=len(actions_taken),
+                ),
             ),
+            evidence_provenance=evidence_provenance,
         )
 
     if facts.pending_items:
@@ -218,6 +240,16 @@ def assess_completion_follow_through(
             remaining_item="Finish the remaining tracked work items",
             next_step=f"Complete the tracked item: {next_item}",
         )
+        _append_unique_provenance(
+            evidence_provenance,
+            EvidenceProvenance(
+                category="tracked_work",
+                source="dod.pending_items",
+                summary=f"tracked work item still pending: {next_item}",
+                status=EvidenceProvenanceStatus.MISSING.value,
+                subject=next_item,
+            ),
+        )
 
     if _requires_action(task_lower) and not facts.has_recorded_work:
         _append_follow_through_gap(
@@ -228,6 +260,18 @@ def assess_completion_follow_through(
             remaining_item="Perform the requested work instead of stopping at intent or narration",
             next_step="Carry out the requested change or command now",
         )
+        _append_unique_provenance(
+            evidence_provenance,
+            EvidenceProvenance(
+                category="action",
+                source="actions_taken",
+                summary=(
+                    "runtime history still lacked concrete work showing the "
+                    "requested change or command happened"
+                ),
+                status=EvidenceProvenanceStatus.MISSING.value,
+            ),
+        )
 
     if requires_install and not facts.has_install_evidence:
         _append_follow_through_gap(
@@ -237,6 +281,15 @@ def assess_completion_follow_through(
             evidence=_INSTALL_EVIDENCE,
             remaining_item="Install or initialize the required dependencies",
             next_step=_install_follow_up(task_lower, facts.verification_command),
+        )
+        _append_unique_provenance(
+            evidence_provenance,
+            EvidenceProvenance(
+                category="install",
+                source="actions_taken",
+                summary="runtime history still lacked install or setup evidence",
+                status=EvidenceProvenanceStatus.MISSING.value,
+            ),
         )
 
     if requires_verification:
@@ -249,6 +302,12 @@ def assess_completion_follow_through(
                 remaining_item="Fix the failing verification result and rerun it",
                 next_step=_verification_retry_step(facts.verification_command),
             )
+            for entry in _verification_provenance(
+                dod=dod,
+                verification_command=facts.verification_command,
+                status=EvidenceProvenanceStatus.CONTRADICTS,
+            ):
+                _append_unique_provenance(evidence_provenance, entry)
         elif not facts.has_verification_evidence:
             _append_follow_through_gap(
                 missing_evidence,
@@ -261,6 +320,25 @@ def assess_completion_follow_through(
                     verification_command=facts.verification_command,
                 ),
             )
+            _append_unique_provenance(
+                evidence_provenance,
+                EvidenceProvenance(
+                    category="verification",
+                    source=(
+                        "dod.verification_commands"
+                        if facts.verification_command
+                        else "actions_taken"
+                    ),
+                    summary=(
+                        "verification evidence was still missing for "
+                        f"`{facts.verification_command}`"
+                        if facts.verification_command
+                        else "verification evidence was still missing"
+                    ),
+                    status=EvidenceProvenanceStatus.MISSING.value,
+                    subject=facts.verification_command,
+                ),
+            )
 
     if complex_task and len(actions_taken) < 3 and not facts.pending_items:
         _append_follow_through_gap(
@@ -268,8 +346,20 @@ def assess_completion_follow_through(
             remaining,
             suggested_next_steps,
             evidence=_COMPLEX_EVIDENCE,
-            remaining_item="Finish the larger end-to-end task instead of stopping after a partial step",
+            remaining_item=(
+                "Finish the larger end-to-end task instead of stopping after "
+                "a partial step"
+            ),
             next_step="Continue through the remaining setup or implementation steps",
+        )
+        _append_unique_provenance(
+            evidence_provenance,
+            EvidenceProvenance(
+                category="task_scope",
+                source="task_statement",
+                summary="the runtime only saw partial progress for a broader end-to-end task",
+                status=EvidenceProvenanceStatus.MISSING.value,
+            ),
         )
 
     if (
@@ -282,8 +372,23 @@ def assess_completion_follow_through(
             remaining,
             suggested_next_steps,
             evidence="showing execution evidence rather than instructions handed back to the user",
-            remaining_item="Perform the work yourself or state concretely what you already verified",
+            remaining_item=(
+                "Perform the work yourself or state concretely what you "
+                "already verified"
+            ),
             next_step="Continue the task instead of handing the next step to the user",
+        )
+        _append_unique_provenance(
+            evidence_provenance,
+            EvidenceProvenance(
+                category="response",
+                source="assistant_response",
+                summary=(
+                    "the response deflected the next step back to the user "
+                    "without runtime evidence"
+                ),
+                status=EvidenceProvenanceStatus.MISSING.value,
+            ),
         )
 
     if "write" in action_types and actions_taken and simple_task:
@@ -299,21 +404,41 @@ def assess_completion_follow_through(
         ]
 
     is_complete = not missing_evidence
-    return TaskCompletionCheck(
-        original_task=task,
-        is_complete=is_complete,
-        accomplished=accomplished,
-        required_evidence=required_evidence,
-        missing_evidence=missing_evidence,
-        remaining=remaining,
-        suggested_next_steps=suggested_next_steps,
-        continuation_prompt=_format_continuation_prompt(
-            task=task,
+    return CompletionAssessment(
+        check=TaskCompletionCheck(
+            original_task=task,
+            is_complete=is_complete,
+            accomplished=accomplished,
+            required_evidence=required_evidence,
             missing_evidence=missing_evidence,
+            remaining=remaining,
             suggested_next_steps=suggested_next_steps,
-            action_count=len(actions_taken),
+            continuation_prompt=_format_continuation_prompt(
+                task=task,
+                missing_evidence=missing_evidence,
+                suggested_next_steps=suggested_next_steps,
+                action_count=len(actions_taken),
+            ),
         ),
+        evidence_provenance=evidence_provenance,
     )
+
+
+def assess_completion_follow_through(
+    *,
+    task: str,
+    response: str,
+    actions_taken: list[str],
+    dod: DefinitionOfDone | None = None,
+) -> TaskCompletionCheck:
+    """Build the public completion-check contract for one candidate response."""
+
+    return assess_completion_follow_through_with_provenance(
+        task=task,
+        response=response,
+        actions_taken=actions_taken,
+        dod=dod,
+    ).check
 
 
 def parse_completion_check(response: str, original_task: str) -> TaskCompletionCheck:
@@ -463,6 +588,87 @@ def _append_follow_through_gap(
         remaining.append(remaining_item)
     if next_step not in suggested_next_steps:
         suggested_next_steps.append(next_step)
+
+
+def _observed_completion_provenance(
+    *,
+    task_lower: str,
+    response_lower: str,
+    actions_taken: list[str],
+    facts: _FollowThroughFacts,
+    informational: bool,
+    requires_install: bool,
+    requires_verification: bool,
+    dod: DefinitionOfDone | None,
+) -> list[EvidenceProvenance]:
+    entries: list[EvidenceProvenance] = []
+
+    if informational and response_lower.strip():
+        _append_unique_provenance(
+            entries,
+            EvidenceProvenance(
+                category="response",
+                source="assistant_response",
+                summary="the assistant provided a direct informational response",
+                status=EvidenceProvenanceStatus.SUPPORTS.value,
+            ),
+        )
+        return entries
+
+    has_concrete_task_work = bool(actions_taken) or bool(
+        dod
+        and (
+            dod.touched_files
+            or dod.mutating_actions
+            or any(
+                command and not _looks_like_verification_command(command)
+                for command in dod.successful_commands
+            )
+            or any(
+                item and item not in {_IMPLEMENTATION_ITEM, _VERIFY_ITEM}
+                for item in dod.completed_items
+            )
+        )
+    )
+    if _requires_action(task_lower) and has_concrete_task_work:
+        _append_unique_provenance(
+            entries,
+            EvidenceProvenance(
+                category="action",
+                source="dod" if dod is not None else "actions_taken",
+                summary="runtime history showed concrete work for the requested task",
+                status=EvidenceProvenanceStatus.SUPPORTS.value,
+            ),
+        )
+
+    if requires_install and facts.has_install_evidence:
+        _append_unique_provenance(
+            entries,
+            EvidenceProvenance(
+                category="install",
+                source="dod.successful_commands" if dod is not None else "actions_taken",
+                summary="runtime history included dependency or setup work",
+                status=EvidenceProvenanceStatus.SUPPORTS.value,
+            ),
+        )
+
+    if requires_verification:
+        status = (
+            EvidenceProvenanceStatus.CONTRADICTS
+            if facts.has_failed_verification
+            else EvidenceProvenanceStatus.SUPPORTS
+            if facts.has_verification_evidence
+            else None
+        )
+        if status is not None:
+            for entry in _verification_provenance(
+                dod=dod,
+                verification_command=facts.verification_command,
+                status=status,
+            ):
+                _append_unique_provenance(entries, entry)
+
+    return entries
 
 
 def _format_continuation_prompt(
@@ -625,6 +831,81 @@ def _verification_retry_step(verification_command: str | None) -> str:
     return "Fix the failing verification result and rerun it"
 
 
+def _verification_provenance(
+    *,
+    dod: DefinitionOfDone | None,
+    verification_command: str | None,
+    status: EvidenceProvenanceStatus,
+) -> list[EvidenceProvenance]:
+    entries: list[EvidenceProvenance] = []
+    if dod is not None:
+        for evidence in dod.evidence:
+            if status is EvidenceProvenanceStatus.SUPPORTS and not evidence.passed:
+                continue
+            if status is EvidenceProvenanceStatus.CONTRADICTS and evidence.passed:
+                continue
+            command = evidence.command or verification_command
+            summary = (
+                f"verification passed for `{command}`"
+                if status is EvidenceProvenanceStatus.SUPPORTS and command
+                else "verification passed"
+                if status is EvidenceProvenanceStatus.SUPPORTS
+                else f"verification failed for `{command}`"
+                if command
+                else "verification was still failing"
+            )
+            _append_unique_provenance(
+                entries,
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.evidence",
+                    summary=summary,
+                    status=status.value,
+                    subject=command,
+                    detail=_verification_detail(evidence),
+                ),
+            )
+    if entries or verification_command is None:
+        return entries
+    return [
+        EvidenceProvenance(
+            category="verification",
+            source="dod.verification_commands",
+            summary=(
+                f"verification passed for `{verification_command}`"
+                if status is EvidenceProvenanceStatus.SUPPORTS
+                else f"verification failed for `{verification_command}`"
+            ),
+            status=status.value,
+            subject=verification_command,
+        )
+    ]
+
+
+def _verification_detail(evidence) -> str | None:
+    for candidate in (evidence.stdout, evidence.stderr, evidence.output):
+        text = str(candidate).strip()
+        if text:
+            return text.splitlines()[0]
+    return None
+
+
 def _append_unique(items: list[str], item: str) -> None:
     if item not in items:
         items.append(item)
+
+
+def _append_unique_provenance(
+    items: list[EvidenceProvenance],
+    item: EvidenceProvenance,
+) -> None:
+    for existing in items:
+        if (
+            existing.category == item.category
+            and existing.source == item.source
+            and existing.summary == item.summary
+            and existing.status == item.status
+            and existing.subject == item.subject
+        ):
+            return
+    items.append(item)

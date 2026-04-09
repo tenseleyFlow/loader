@@ -10,6 +10,7 @@ import pytest
 from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, Message, Role, ToolCall
 from loader.runtime.completion_trace import CompletionTraceEntry
+from loader.runtime.evidence_provenance import EvidenceProvenance
 from loader.runtime.prompt_history import PromptSnapshot
 from loader.runtime.session import ConversationSession
 from loader.runtime.workflow_ledger import WorkflowLedger, WorkflowLedgerItem
@@ -214,7 +215,10 @@ def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
             stage="definition_of_done",
             outcome="continue",
             decision_code="verification_failed_reentry",
-            decision_summary="continued after verification failed and the runtime re-entered execute mode",
+            decision_summary=(
+                "continued after verification failed and the runtime "
+                "re-entered execute mode"
+            ),
             evidence_summary=["verification contradiction: pytest still failed"],
         )
     )
@@ -382,6 +386,15 @@ def test_session_projects_live_completion_trace_from_workflow_timeline(
             policy_stage="continuation_check",
             policy_outcome="finalize",
             evidence_summary=["a passing verification result from `pytest -q`"],
+            evidence_provenance=[
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.verification_commands",
+                    summary="verification evidence was still missing for `pytest -q`",
+                    status="missing",
+                    subject="pytest -q",
+                )
+            ],
         )
     )
     session.update_runtime_state(
@@ -399,6 +412,9 @@ def test_session_projects_live_completion_trace_from_workflow_timeline(
     assert session.completion_trace[-1].outcome == "finalize"
     assert session.completion_trace[-1].evidence_summary == [
         "a passing verification result from `pytest -q`"
+    ]
+    assert [item.summary for item in session.completion_trace[-1].evidence_provenance] == [
+        "verification evidence was still missing for `pytest -q`"
     ]
 
 

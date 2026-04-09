@@ -24,7 +24,7 @@ class CompletionTraceEntry:
     evidence_summary: list[str] = field(default_factory=list)
     evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize the entry into persisted session state."""
 
         return {

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,6 +17,11 @@ from .dod import (
     derive_verification_commands,
 )
 from .events import AgentEvent, TurnSummary
+from .evidence_provenance import (
+    EvidenceProvenance,
+    EvidenceProvenanceStatus,
+    summarize_evidence_provenance,
+)
 from .executor import ToolExecutor
 from .memory import MemoryStore
 from .session import normalize_usage
@@ -45,6 +50,7 @@ class CompletionGateResult:
     reason_code: str
     reason_summary: str
     final_response: str
+    evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
 
 
 class TurnFinalizer:
@@ -93,6 +99,16 @@ class TurnFinalizer:
         mutating_paths = [path for path in dod.touched_files if path]
         requires_verification = bool(mutating_paths or dod.mutating_actions)
         if tracked_pending_items and not requires_verification:
+            pending_provenance = [
+                EvidenceProvenance(
+                    category="tracked_work",
+                    source="dod.pending_items",
+                    summary=f"tracked work item still pending: {item}",
+                    status=EvidenceProvenanceStatus.MISSING.value,
+                    subject=item,
+                )
+                for item in tracked_pending_items
+            ]
             pending_text = "\n".join(f"- {item}" for item in tracked_pending_items)
             self.dod_store.save(dod)
             await self.emit_dod_status(emit, dod)
@@ -112,9 +128,18 @@ class TurnFinalizer:
                 reason_code="pending_items_continue",
                 reason_summary="continued because tracked work items still remained incomplete",
                 final_response="",
+                evidence_provenance=pending_provenance,
             )
 
         if not requires_verification:
+            skip_provenance = [
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.mutating_actions",
+                    summary="verification was skipped because no mutating work required checks",
+                    status=EvidenceProvenanceStatus.CONTEXT.value,
+                )
+            ]
             dod.status = "done"
             dod.last_verification_result = "skipped"
             summary.verification_status = "skipped"
@@ -129,6 +154,8 @@ class TurnFinalizer:
                     decision_kind=WorkflowDecisionKind.FORCED.value,
                     prompt_format=self._prompt_format,
                     prompt_sections=self._prompt_sections,
+                    evidence_summary=summarize_evidence_provenance(skip_provenance),
+                    evidence_provenance=skip_provenance,
                 )
             )
             summary.workflow_timeline = list(self.context.session.workflow_timeline)
@@ -137,8 +164,12 @@ class TurnFinalizer:
             return CompletionGateResult(
                 should_continue=False,
                 reason_code="non_mutating_response_accepted",
-                reason_summary="accepted the response because no mutating work required verification",
+                reason_summary=(
+                    "accepted the response because no mutating work required "
+                    "verification"
+                ),
                 final_response=candidate_response,
+                evidence_provenance=skip_provenance,
             )
 
         verify_item = "Collect verification evidence"
@@ -179,6 +210,7 @@ class TurnFinalizer:
             executor=executor,
         )
         if verification_passed:
+            passed_provenance = _verification_result_provenance(dod, passed=True)
             if verify_item in dod.pending_items:
                 dod.pending_items.remove(verify_item)
             if verify_item not in dod.completed_items:
@@ -203,11 +235,13 @@ class TurnFinalizer:
                 reason_code="verification_passed",
                 reason_summary="accepted the response after verification evidence passed",
                 final_response=verified_response,
+                evidence_provenance=passed_provenance,
             )
 
         dod.last_verification_result = "failed"
         summary.verification_status = "failed"
         summary.definition_of_done = dod
+        failed_provenance = _verification_result_provenance(dod, passed=False)
         if dod.retry_count >= dod.retry_budget:
             dod.status = "failed"
             dod.confidence = "low"
@@ -223,6 +257,7 @@ class TurnFinalizer:
                 reason_code="verification_retry_budget_exhausted",
                 reason_summary="stopped after verification retry budget was exhausted",
                 final_response=exhausted_response,
+                evidence_provenance=failed_provenance,
             )
 
         dod.retry_count += 1
@@ -253,8 +288,12 @@ class TurnFinalizer:
         return CompletionGateResult(
             should_continue=True,
             reason_code="verification_failed_reentry",
-            reason_summary="continued after verification failed and the runtime re-entered execute mode",
+            reason_summary=(
+                "continued after verification failed and the runtime re-entered "
+                "execute mode"
+            ),
             final_response="",
+            evidence_provenance=failed_provenance,
         )
 
     async def verify_definition_of_done(
@@ -318,7 +357,7 @@ class TurnFinalizer:
                 stdout=str(metadata.get("stdout", "")),
                 stderr=str(metadata.get("stderr", "")),
                 output=outcome.result_output,
-                kind=self.classify_verification_kind(command),
+                kind=_classify_verification_kind(command),
             )
             dod.evidence.append(evidence)
             all_passed = all_passed and evidence.passed
@@ -390,20 +429,81 @@ class TurnFinalizer:
             )
         )
 
-    @staticmethod
-    def classify_verification_kind(command: str) -> str:
-        """Classify the verification command into a summary kind."""
 
-        command_lower = command.lower()
-        if "lint" in command_lower or "ruff" in command_lower:
-            return "lint"
-        if "type" in command_lower or "mypy" in command_lower or "py_compile" in command_lower:
-            return "typecheck"
-        if "test" in command_lower or "pytest" in command_lower:
-            return "test"
-        if "build" in command_lower:
-            return "build"
-        return "runtime"
+def _verification_result_provenance(
+    dod: DefinitionOfDone,
+    *,
+    passed: bool,
+) -> list[EvidenceProvenance]:
+    entries: list[EvidenceProvenance] = []
+    target_status = (
+        EvidenceProvenanceStatus.SUPPORTS.value
+        if passed
+        else EvidenceProvenanceStatus.CONTRADICTS.value
+    )
+    for evidence in dod.evidence:
+        if evidence.passed != passed:
+            continue
+        command = evidence.command or "verification"
+        summary = (
+            f"verification passed for `{command}`"
+            if passed
+            else f"verification failed for `{command}`"
+        )
+        detail = _verification_detail(evidence)
+        entries.append(
+            EvidenceProvenance(
+                category="verification",
+                source="dod.evidence",
+                summary=summary,
+                status=target_status,
+                subject=command,
+                detail=detail,
+            )
+        )
+    if entries:
+        return entries
+
+    for command in dod.verification_commands:
+        if not command:
+            continue
+        entries.append(
+            EvidenceProvenance(
+                category="verification",
+                source="dod.verification_commands",
+                summary=(
+                    f"verification passed for `{command}`"
+                    if passed
+                    else f"verification failed for `{command}`"
+                ),
+                status=target_status,
+                subject=command,
+            )
+        )
+    return entries
+
+
+def _verification_detail(evidence: VerificationEvidence) -> str | None:
+    for candidate in (evidence.stdout, evidence.stderr, evidence.output):
+        text = str(candidate).strip()
+        if text:
+            return text.splitlines()[0]
+    return None
+
+
+def _classify_verification_kind(command: str) -> str:
+    """Classify the verification command into a summary kind."""
+
+    command_lower = command.lower()
+    if "lint" in command_lower or "ruff" in command_lower:
+        return "lint"
+    if "type" in command_lower or "mypy" in command_lower or "py_compile" in command_lower:
+        return "typecheck"
+    if "test" in command_lower or "pytest" in command_lower:
+        return "test"
+    if "build" in command_lower:
+        return "build"
+    return "runtime"
 
 
 def merge_usage(target: dict[str, int], update: dict[str, int]) -> None:

@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..llm.base import Message, Role
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
+from .evidence_provenance import EvidenceProvenance
 from .reasoning_types import TaskCompletionCheck
-from .task_completion import assess_completion_follow_through
+from .task_completion import assess_completion_follow_through_with_provenance
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -33,6 +34,7 @@ class ContinuationDecision:
     decision_code: str
     decision_summary: str
     completion_check: TaskCompletionCheck | None = None
+    evidence_provenance: list[EvidenceProvenance] = field(default_factory=list)
     should_finalize: bool = False
     final_response: str = ""
     failure: str | None = None
@@ -98,8 +100,8 @@ class CompletionPolicy:
         """Nudge non-mutating tasks to continue when completion looks premature."""
 
         cfg = self.context.config.reasoning
-        completion_check = (
-            assess_completion_follow_through(
+        assessment = (
+            assess_completion_follow_through_with_provenance(
                 task=task,
                 response=content,
                 actions_taken=actions_taken,
@@ -108,13 +110,20 @@ class CompletionPolicy:
             if cfg.use_quick_completion
             else None
         )
+        completion_check = assessment.check if assessment is not None else None
         is_premature = bool(completion_check is not None and not completion_check.is_complete)
         if not is_premature:
             return ContinuationDecision(
                 should_continue=False,
                 decision_code="completion_response_accepted",
-                decision_summary="accepted the response because completion heuristics found no missing follow-through",
+                decision_summary=(
+                    "accepted the response because completion heuristics found "
+                    "no missing follow-through"
+                ),
                 completion_check=completion_check,
+                evidence_provenance=(
+                    list(assessment.evidence_provenance) if assessment is not None else []
+                ),
             )
 
         if continuation_count >= cfg.max_continuation_prompts:
@@ -134,6 +143,9 @@ class CompletionPolicy:
                     "follow-through evidence was still missing"
                 ),
                 completion_check=completion_check,
+                evidence_provenance=(
+                    list(assessment.evidence_provenance) if assessment is not None else []
+                ),
                 final_response=self._format_budget_exhausted_response(completion_check),
                 failure="missing follow-through evidence after continuation budget exhaustion",
             )
@@ -152,8 +164,14 @@ class CompletionPolicy:
         return ContinuationDecision(
             should_continue=True,
             decision_code="premature_completion_nudge",
-            decision_summary="requested one continuation because the non-mutating response looked incomplete",
+            decision_summary=(
+                "requested one continuation because the non-mutating response "
+                "looked incomplete"
+            ),
             completion_check=completion_check,
+            evidence_provenance=(
+                list(assessment.evidence_provenance) if assessment is not None else []
+            ),
         )
 
     @staticmethod

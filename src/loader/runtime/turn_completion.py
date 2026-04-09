@@ -11,6 +11,7 @@ from .completion_policy import CompletionPolicy
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
+from .evidence_provenance import EvidenceProvenance
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer
 from .phases import TurnPhase, TurnPhaseTracker
@@ -84,6 +85,7 @@ class TurnCompletionController:
         decision_code: str,
         decision_summary: str,
         evidence_summary: list[str] | None = None,
+        evidence_provenance: list[EvidenceProvenance] | None = None,
     ) -> None:
         append_policy_timeline_entry(
             self.context,
@@ -94,6 +96,7 @@ class TurnCompletionController:
             policy_stage=stage,
             policy_outcome=outcome,
             evidence_summary=evidence_summary,
+            evidence_provenance=evidence_provenance,
         )
 
     async def handle_text_response(
@@ -176,8 +179,10 @@ class TurnCompletionController:
                 evidence_summary=(
                     continuation_decision.completion_check.missing_evidence
                     if continuation_decision.completion_check is not None
+                    and not continuation_decision.completion_check.is_complete
                     else None
                 ),
+                evidence_provenance=continuation_decision.evidence_provenance,
             )
             if continuation_decision.should_continue:
                 self._record_completion_decision(
@@ -238,6 +243,7 @@ class TurnCompletionController:
             outcome="continue" if gate_result.should_continue else "complete",
             decision_code=gate_result.reason_code,
             decision_summary=gate_result.reason_summary,
+            evidence_provenance=gate_result.evidence_provenance,
         )
         if gate_result.should_continue:
             self._record_completion_decision(

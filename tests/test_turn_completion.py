@@ -161,6 +161,9 @@ async def test_turn_completion_marks_non_mutating_response_done(
     ]
     assert policy_entries[0].policy_stage == "continuation_check"
     assert policy_entries[-1].policy_stage == "definition_of_done"
+    assert [item.summary for item in prepared.summary.completion_trace[-1].evidence_provenance] == [
+        "verification was skipped because no mutating work required checks"
+    ]
     assert prepared.definition_of_done.status == "done"
     assert prepared.definition_of_done.last_verification_result == "skipped"
     assert any(event.type == "response" for event in events)
@@ -419,6 +422,9 @@ async def test_turn_completion_finalizes_when_follow_through_budget_is_exhausted
     )
     assert prepared.summary.completion_trace[-1].evidence_summary == [
         "showing the requested work was actually carried out"
+    ]
+    assert [item.status for item in prepared.summary.completion_trace[-1].evidence_provenance] == [
+        "missing"
     ]
     assert prepared.summary.workflow_timeline[-1].kind == "completion_finalize"
     assert prepared.summary.workflow_timeline[-1].evidence_summary == [

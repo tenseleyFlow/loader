@@ -12,6 +12,7 @@ from loader.runtime.completion_policy import CompletionPolicy
 from loader.runtime.context import RuntimeContext
 from loader.runtime.dod import VerificationEvidence, create_definition_of_done
 from loader.runtime.events import TurnSummary
+from loader.runtime.evidence_provenance import EvidenceProvenanceStatus
 from loader.runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -19,6 +20,7 @@ from loader.runtime.permissions import (
 )
 from loader.runtime.task_completion import (
     assess_completion_follow_through,
+    assess_completion_follow_through_with_provenance,
     detect_premature_completion,
     get_continuation_prompt,
 )
@@ -216,6 +218,33 @@ def test_assess_completion_follow_through_surfaces_failing_verification() -> Non
     ]
 
 
+def test_completion_assessment_attaches_typed_verification_provenance() -> None:
+    dod = create_definition_of_done("Run pytest -q and make sure it works.")
+    dod.verification_commands = ["pytest -q"]
+    dod.evidence = [
+        VerificationEvidence(
+            command="pytest -q",
+            passed=False,
+            stderr="1 failed",
+            kind="test",
+        )
+    ]
+    dod.last_verification_result = "failed"
+
+    assessment = assess_completion_follow_through_with_provenance(
+        task="Run pytest -q and make sure it works.",
+        response="The tests are done.",
+        actions_taken=[],
+        dod=dod,
+    )
+
+    assert assessment.check.is_complete is False
+    assert [item.status for item in assessment.evidence_provenance] == [
+        EvidenceProvenanceStatus.CONTRADICTS.value
+    ]
+    assert assessment.evidence_provenance[0].summary == "verification failed for `pytest -q`"
+
+
 @pytest.mark.asyncio
 async def test_completion_policy_stops_for_text_loop_using_runtime_context(
     temp_dir: Path,
@@ -296,6 +325,10 @@ async def test_completion_policy_requests_continuation_using_runtime_context(
         "showing the requested work was actually carried out",
         "showing the result was run or verified",
     ]
+    assert [item.status for item in decision.evidence_provenance] == [
+        EvidenceProvenanceStatus.MISSING.value,
+        EvidenceProvenanceStatus.MISSING.value,
+    ]
 
 
 @pytest.mark.asyncio
@@ -339,6 +372,9 @@ async def test_completion_policy_accepts_passed_verification_from_dod(
     assert decision.completion_check is not None
     assert decision.completion_check.missing_evidence == []
     assert events == []
+    assert [item.summary for item in decision.evidence_provenance] == [
+        "verification passed for `pytest -q`"
+    ]
 
 
 @pytest.mark.asyncio
@@ -386,6 +422,9 @@ async def test_completion_policy_finalizes_with_concrete_failed_verification_gap
     ]
     assert "pytest -q" in decision.final_response
     assert events[0].type == "completion_check"
+    assert [item.status for item in decision.evidence_provenance] == [
+        EvidenceProvenanceStatus.CONTRADICTS.value
+    ]
 
 
 @pytest.mark.asyncio
