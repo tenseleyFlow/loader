@@ -87,6 +87,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 22](sprint22.md) — Runtime Entry API, Verification Observations, and Compatibility Narrowing
 
+## Phase 21: Runtime-First Integrations and Verification Producers
+
+- [Sprint 23](sprint23.md) — Runtime-First Integrations, Verification Producers, and Facade Narrowing
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
