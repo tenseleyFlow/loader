@@ -43,6 +43,7 @@ class ExploreSnapshot:
     turn_count: int = 0
     model_name: str | None = None
     messages: list[Message] = field(default_factory=list)
+    last_history_mode: str | None = None
     last_query: str | None = None
     last_response: str | None = None
     version: int = EXPLORE_STATE_VERSION
@@ -54,6 +55,7 @@ class ExploreSnapshot:
             "turn_count": self.turn_count,
             "model_name": self.model_name,
             "messages": [message.to_persisted_dict() for message in self.messages],
+            "last_history_mode": self.last_history_mode,
             "last_query": self.last_query,
             "last_response": self.last_response,
         }
@@ -66,6 +68,7 @@ class ExploreSnapshot:
             turn_count=int(data.get("turn_count", 0)),
             model_name=_optional_text(data.get("model_name")),
             messages=_normalize_messages(data.get("messages")),
+            last_history_mode=_optional_text(data.get("last_history_mode")),
             last_query=_optional_text(data.get("last_query")),
             last_response=_optional_text(data.get("last_response")),
         )
@@ -108,4 +111,3 @@ class ExploreStateStore:
         path = self.state_path
         if path.exists():
             path.unlink()
-

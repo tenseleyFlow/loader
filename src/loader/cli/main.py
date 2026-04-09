@@ -15,6 +15,7 @@ from rich.table import Table
 from ..runtime.inspection import (
     CheckStatus,
     DoctorReport,
+    ExploreContinuitySnapshot,
     PermissionCheckResult,
     PermissionSnapshot,
     PromptDiffSnapshot,
@@ -23,6 +24,7 @@ from ..runtime.inspection import (
     WorkflowArtifactDiffSnapshot,
     WorkflowTimelineSnapshot,
     collect_doctor_report,
+    collect_explore_continuity_snapshot,
     collect_permission_snapshot,
     collect_prompt_diff,
     collect_prompt_preview,
@@ -32,6 +34,7 @@ from ..runtime.inspection import (
     dry_run_permission_check,
     list_session_summaries,
     load_session_detail,
+    reset_explore_continuity,
 )
 from ..runtime.permissions import PermissionMode
 from .options import inject_resume_target
@@ -802,10 +805,12 @@ def status_cli(
 @click.option("--react", is_flag=True, help="Force ReAct mode")
 @click.option("--no-context", is_flag=True, help="Skip auto-detecting project context")
 @click.option("--fresh", is_flag=True, help="Ignore persisted explore history for this query")
+@click.option("--status", "show_status", is_flag=True, help="Show persisted explore continuity and exit")
+@click.option("--reset", is_flag=True, help="Clear persisted explore continuity before exiting or running")
 @click.option("--ctx", type=int, default=8192, help="Context window size")
 @click.option("--gpu", type=int, default=-1, help="GPU layers (-1 = all, 0 = CPU only)")
 @click.option("--timeout", type=int, default=None, help="Request timeout in seconds")
-@click.argument("prompt")
+@click.argument("prompt", required=False)
 def explore_cli(
     model: str | None,
     select_model: bool,
@@ -813,12 +818,35 @@ def explore_cli(
     react: bool,
     no_context: bool,
     fresh: bool,
+    show_status: bool,
+    reset: bool,
     ctx: int,
     gpu: int,
     timeout: int | None,
-    prompt: str,
+    prompt: str | None,
 ) -> None:
     """Run a read-only lookup query through the explore lane."""
+
+    if show_status:
+        _print_explore_continuity_snapshot(collect_explore_continuity_snapshot())
+        return
+
+    if reset:
+        had_state = reset_explore_continuity()
+        message = (
+            "Cleared persisted explore continuity."
+            if had_state
+            else "No persisted explore continuity was present."
+        )
+        console.print(Panel.fit(message, border_style="blue"))
+        if prompt is None:
+            return
+        fresh = True
+
+    if prompt is None:
+        raise click.UsageError(
+            "Missing prompt. Pass a lookup question or use --status/--reset."
+        )
 
     asyncio.run(
         _explore_main(
@@ -1368,6 +1396,7 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     table.add_row("Explore Turns", str(snapshot.explore_turn_count))
     table.add_row("Explore Messages", str(snapshot.explore_message_count))
     table.add_row("Explore Updated", snapshot.explore_updated_at or "none")
+    table.add_row("Explore History", snapshot.explore_history_mode or "none")
     table.add_row("Explore Query", _preview_text(snapshot.explore_last_query))
     table.add_row("DoD", snapshot.dod_status or "none")
     table.add_row("Pending", str(snapshot.dod_pending_items_count))
@@ -1397,6 +1426,28 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
             result = "[green]pass[/green]" if item.passed else "[red]fail[/red]"
             evidence.add_row(result, item.kind, item.command, item.detail or "-")
         console.print(evidence)
+
+
+def _print_explore_continuity_snapshot(snapshot: ExploreContinuitySnapshot) -> None:
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Workspace", str(snapshot.project_root))
+    table.add_row("Continuity", "present" if snapshot.exists else "none")
+    table.add_row("Turns", str(snapshot.turn_count))
+    table.add_row("Messages", str(snapshot.message_count))
+    table.add_row("Updated", snapshot.updated_at or "none")
+    table.add_row("History Mode", snapshot.last_history_mode or "none")
+    table.add_row("Model", snapshot.model_name or "unknown")
+    table.add_row("Last Query", _preview_text(snapshot.last_query))
+    table.add_row("Last Response", _preview_text(snapshot.last_response))
+    console.print(
+        Panel.fit(
+            table,
+            title="[bold blue]Loader Explore State[/bold blue]",
+            border_style="blue",
+        )
+    )
 
 
 def _preview_text(text: str | None, *, width: int = 80) -> str:

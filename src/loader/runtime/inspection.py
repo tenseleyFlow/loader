@@ -187,8 +187,24 @@ class StatusSnapshot:
     explore_updated_at: str | None = None
     explore_turn_count: int = 0
     explore_message_count: int = 0
+    explore_history_mode: str | None = None
     explore_last_query: str | None = None
     explore_last_response: str | None = None
+
+
+@dataclass(slots=True)
+class ExploreContinuitySnapshot:
+    """Operator-facing view of persisted explore continuity."""
+
+    project_root: Path
+    exists: bool
+    updated_at: str | None = None
+    turn_count: int = 0
+    message_count: int = 0
+    model_name: str | None = None
+    last_history_mode: str | None = None
+    last_query: str | None = None
+    last_response: str | None = None
 
 
 @dataclass(slots=True)
@@ -408,7 +424,7 @@ def collect_status_snapshot(
     capability_profile = resolve_capability_profile(resolved_model)
     default_permission_mode = _coerce_permission_mode(permission_mode).as_str()
     rule_status = load_permission_rules(resolved_root)
-    explore_snapshot = ExploreStateStore(resolved_root).load()
+    explore_continuity = collect_explore_continuity_snapshot(resolved_root)
 
     if snapshot is None:
         return StatusSnapshot(
@@ -449,21 +465,12 @@ def collect_status_snapshot(
             usage={},
             compaction_count=0,
             project_type=project_context.project_type,
-            explore_updated_at=(
-                explore_snapshot.updated_at if explore_snapshot is not None else None
-            ),
-            explore_turn_count=(
-                explore_snapshot.turn_count if explore_snapshot is not None else 0
-            ),
-            explore_message_count=(
-                len(explore_snapshot.messages) if explore_snapshot is not None else 0
-            ),
-            explore_last_query=(
-                explore_snapshot.last_query if explore_snapshot is not None else None
-            ),
-            explore_last_response=(
-                explore_snapshot.last_response if explore_snapshot is not None else None
-            ),
+            explore_updated_at=explore_continuity.updated_at,
+            explore_turn_count=explore_continuity.turn_count,
+            explore_message_count=explore_continuity.message_count,
+            explore_history_mode=explore_continuity.last_history_mode,
+            explore_last_query=explore_continuity.last_query,
+            explore_last_response=explore_continuity.last_response,
         )
 
     dod = _load_dod(snapshot.active_dod_path, project_root=resolved_root)
@@ -518,22 +525,48 @@ def collect_status_snapshot(
         usage=dict(snapshot.usage),
         compaction_count=(snapshot.compaction.count if snapshot.compaction else 0),
         project_type=project_context.project_type,
-        explore_updated_at=(
-            explore_snapshot.updated_at if explore_snapshot is not None else None
-        ),
-        explore_turn_count=(
-            explore_snapshot.turn_count if explore_snapshot is not None else 0
-        ),
-        explore_message_count=(
-            len(explore_snapshot.messages) if explore_snapshot is not None else 0
-        ),
-        explore_last_query=(
-            explore_snapshot.last_query if explore_snapshot is not None else None
-        ),
-        explore_last_response=(
-            explore_snapshot.last_response if explore_snapshot is not None else None
-        ),
+        explore_updated_at=explore_continuity.updated_at,
+        explore_turn_count=explore_continuity.turn_count,
+        explore_message_count=explore_continuity.message_count,
+        explore_history_mode=explore_continuity.last_history_mode,
+        explore_last_query=explore_continuity.last_query,
+        explore_last_response=explore_continuity.last_response,
     )
+
+
+def collect_explore_continuity_snapshot(
+    project_root: Path | str | None = None,
+) -> ExploreContinuitySnapshot:
+    """Return the current persisted explore continuity snapshot, if any."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    snapshot = ExploreStateStore(resolved_root).load()
+    if snapshot is None:
+        return ExploreContinuitySnapshot(
+            project_root=resolved_root,
+            exists=False,
+        )
+    return ExploreContinuitySnapshot(
+        project_root=resolved_root,
+        exists=True,
+        updated_at=snapshot.updated_at,
+        turn_count=snapshot.turn_count,
+        message_count=len(snapshot.messages),
+        model_name=snapshot.model_name,
+        last_history_mode=snapshot.last_history_mode,
+        last_query=snapshot.last_query,
+        last_response=snapshot.last_response,
+    )
+
+
+def reset_explore_continuity(project_root: Path | str | None = None) -> bool:
+    """Clear persisted explore continuity and report whether state existed."""
+
+    resolved_root = Path(project_root or Path.cwd()).expanduser().resolve()
+    store = ExploreStateStore(resolved_root)
+    had_state = store.load() is not None
+    store.clear()
+    return had_state
 
 
 def list_session_summaries(project_root: Path | str | None = None) -> list[SessionSummary]:

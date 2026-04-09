@@ -222,6 +222,7 @@ class ExploreRuntime:
             new_messages=messages[history_prefix_len:],
             prompt=prompt,
             response=summary.final_response,
+            fresh=fresh,
         )
         return summary
 
@@ -238,10 +239,12 @@ class ExploreRuntime:
         new_messages: list[Message],
         prompt: str,
         response: str,
+        fresh: bool,
     ) -> None:
         snapshot.turn_count += 1
         snapshot.last_query = prompt
         snapshot.last_response = response
+        snapshot.last_history_mode = "fresh" if fresh else "continue"
         model_name = getattr(self.context.backend, "model", None)
         snapshot.model_name = str(model_name) if model_name else None
         snapshot.messages.extend(new_messages)
