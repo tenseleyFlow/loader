@@ -91,6 +91,10 @@ The plan was reshaped after a deeper validation pass against `refs/claw-code` an
 
 - [Sprint 23](sprint23.md) — Runtime-First Integrations, Verification Producers, and Facade Narrowing
 
+## Phase 22: TUI Runtime Convergence and Verification Lifecycle
+
+- [Sprint 24](sprint24.md) — TUI Runtime Convergence, Verification Lifecycle, and Facade Narrowing
+
 ## Working principles
 
 - Each sprint must end with stronger runtime reliability, not just more features.
