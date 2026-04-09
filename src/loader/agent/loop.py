@@ -7,10 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..context.project import ProjectContext, detect_project
-from ..llm.base import LLMBackend, Message, Role
+from ..llm.base import LLMBackend, Message
 from ..runtime.bootstrap import build_runtime_bootstrap_source
 from ..runtime.capabilities import resolve_backend_capability_profile
-from ..runtime.dod import DefinitionOfDoneStore
 from ..runtime.events import AgentEvent, TurnSummary
 from ..runtime.launcher import build_runtime_launcher
 from ..runtime.permissions import (
@@ -18,12 +17,16 @@ from ..runtime.permissions import (
     build_permission_policy,
     load_permission_rules,
 )
-from ..runtime.prompt_history import PromptSnapshot
+from ..runtime.public_shell import (
+    build_runtime_few_shot_examples,
+    build_runtime_system_message,
+    create_runtime_session,
+    restore_runtime_session_state,
+)
 from ..runtime.safeguards import RuntimeSafeguards
 from ..runtime.session import ConversationSession
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
-from .prompts import build_system_prompt_result
 
 
 @dataclass
@@ -144,56 +147,38 @@ class Agent:
     ) -> ConversationSession:
         """Create a fresh persisted conversation session."""
 
-        session = ConversationSession(
-            system_message_factory=self._get_system_message,
-            few_shot_factory=self._get_few_shot_examples,
+        return create_runtime_session(
             project_root=self.project_root,
-            messages=messages or [],
-            permission_mode=self.permission_policy.active_mode.as_str(),
-            permission_prompting_enabled=self.permission_policy.prompting_enabled,
-            permission_rule_counts=self.permission_policy.rule_counts(),
-            permission_rules_source=str(self.permission_config_status.source_path),
+            messages=messages,
+            permission_policy=self.permission_policy,
+            permission_config_status=self.permission_config_status,
             prompt_format=self.prompt_format,
             prompt_sections=list(self.prompt_sections),
             workflow_mode=self.workflow_mode,
             rotate_after_bytes=self.config.session_rotate_after_bytes,
-            auto_compaction_input_tokens_threshold=(
-                self.config.session_auto_compaction_input_tokens_threshold
-            ),
-            compaction_keep_last_messages=(
-                self.config.session_compaction_keep_last_messages
-            ),
+            auto_compaction_input_tokens_threshold=self.config.session_auto_compaction_input_tokens_threshold,
+            compaction_keep_last_messages=self.config.session_compaction_keep_last_messages,
+            system_message_factory=self._get_system_message,
+            few_shot_factory=self._get_few_shot_examples,
         )
-        return session
 
     def _replace_session(self, session: ConversationSession) -> None:
         """Install a loaded session as the agent's active conversation."""
 
-        self.session = session
-        self.messages = session.messages
-        self._current_task = session.current_task
-        self.set_workflow_mode(session.workflow_mode)
-        self.permission_policy.active_mode = PermissionMode.from_str(
-            session.permission_mode
+        restored = restore_runtime_session_state(
+            project_root=self.project_root,
+            session=session,
         )
-        self.prompt_format = session.prompt_format
-        self.prompt_sections = list(session.prompt_sections)
-        self.last_turn_summary = None
-        if session.active_dod_path:
-            dod_path = Path(session.active_dod_path)
-            if dod_path.exists():
-                dod = DefinitionOfDoneStore(self.project_root).load(dod_path)
-                self.last_turn_summary = TurnSummary(
-                    final_response="",
-                    definition_of_done=dod,
-                    workflow_mode=session.workflow_mode,
-                    workflow_reason_code=session.workflow_reason_code,
-                    workflow_reason_summary=session.workflow_reason_summary,
-                    workflow_decision_kind=session.workflow_decision_kind,
-                    workflow_timeline=list(session.workflow_timeline),
-                    session_id=session.session_id,
-                    cumulative_usage=dict(session.usage_totals),
-                )
+        self.session = session
+        self.messages = restored.messages
+        self._current_task = restored.current_task
+        self.set_workflow_mode(restored.workflow_mode)
+        self.permission_policy.active_mode = PermissionMode.from_str(
+            restored.permission_mode
+        )
+        self.prompt_format = restored.prompt_format
+        self.prompt_sections = list(restored.prompt_sections)
+        self.last_turn_summary = restored.last_turn_summary
 
     def resume_session(self, session_id: str | None = None) -> bool:
         """Resume the latest or named persisted session."""
@@ -281,36 +266,19 @@ class Agent:
     def _get_system_message(self) -> Message:
         """Get the system message with current context."""
         if self._system_message is None:
-            tool_schemas = self.registry.get_schemas()
-            prompt_result = build_system_prompt_result(
-                tools=tool_schemas,
+            prompt_state = build_runtime_system_message(
+                registry=self.registry,
                 use_react=self.use_react,
                 project_context=self.project_context,
                 workflow_mode=self.workflow_mode,
                 permission_mode=self.active_permission_mode,
                 cwd=self.project_root,
                 current_task=self._current_task,
+                session=self.session,
             )
-            self.prompt_format = prompt_result.prompt_format
-            self.prompt_sections = list(prompt_result.dynamic_section_names)
-            self.session.update_runtime_state(
-                prompt_format=prompt_result.prompt_format,
-                prompt_sections=prompt_result.dynamic_section_names,
-            )
-            self.session.append_prompt_snapshot(
-                PromptSnapshot.create(
-                    workflow_mode=self.workflow_mode,
-                    permission_mode=self.active_permission_mode,
-                    current_task=self._current_task,
-                    prompt_format=prompt_result.prompt_format,
-                    prompt_sections=prompt_result.dynamic_section_names,
-                    content=prompt_result.content,
-                )
-            )
-            self._system_message = Message(
-                role=Role.SYSTEM,
-                content=prompt_result.content,
-            )
+            self.prompt_format = prompt_state.prompt_format
+            self.prompt_sections = list(prompt_state.prompt_sections)
+            self._system_message = prompt_state.system_message
         return self._system_message
 
     def set_workflow_mode(self, workflow_mode: str) -> None:
@@ -351,22 +319,7 @@ class Agent:
 
     def _get_few_shot_examples(self) -> list[Message]:
         """Get few-shot examples demonstrating proper tool use."""
-        if self.use_react:
-            # ReAct format examples
-            return [
-                Message(role=Role.USER, content="Create a file called hello.py that prints hello"),
-                Message(role=Role.ASSISTANT, content='<tool_call>\n{"name": "write", "arguments": {"file_path": "hello.py", "content": "print(\'hello\')"}}\n</tool_call>'),
-                Message(role=Role.TOOL, content="Created hello.py"),
-                Message(role=Role.ASSISTANT, content="Done."),
-            ]
-        else:
-            # Bracket format examples
-            return [
-                Message(role=Role.USER, content="Create a file called hello.py that prints hello"),
-                Message(role=Role.ASSISTANT, content='[write: file_path="hello.py", content="print(\'hello\')"]'),
-                Message(role=Role.TOOL, content="Created hello.py"),
-                Message(role=Role.ASSISTANT, content="Done."),
-            ]
+        return build_runtime_few_shot_examples(use_react=self.use_react)
 
     async def run(
         self,
