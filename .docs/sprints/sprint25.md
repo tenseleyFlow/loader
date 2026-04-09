@@ -169,3 +169,29 @@ The goal is to make Loader's runtime ownership and verification story easier to 
 - AST-aware semantic diffs
 - a broad visual workflow UI redesign
 - multi-agent or team orchestration
+
+## Audit
+
+### Status
+
+- Sprint 25 is complete, and the audit is green. Loader now has a runtime-owned outer API contract below `Agent`, explicit verification-attempt identity threaded through completion/freshness policy, and operator surfaces that can explain both the runtime boundary and the active versus superseded verification attempts.
+
+### Landed
+
+- Loader now has a narrower runtime-owned shell API below `Agent`: `src/loader/runtime/runtime_api.py`, `src/loader/cli/main.py`, and `src/loader/ui/app.py` now share one runtime-owned boundary for shell-owner construction instead of treating CLI and TUI ownership as adjacent but separate contracts
+- verification lifecycle is now represented with explicit attempt identity instead of only lifecycle labels: `src/loader/runtime/dod.py`, `src/loader/runtime/verification_observations.py`, `src/loader/runtime/tool_batches.py`, `src/loader/runtime/finalization.py`, `src/loader/runtime/task_completion.py`, and `src/loader/runtime/completion_policy.py` now preserve which attempt is planned, pending, stale, observed, skipped, or superseded
+- completion/freshness policy now explains itself in attempt-aware terms: when Loader continues, finalizes, or rejects stale proof, it can say which attempt was still active, which one was superseded, and why one attempt did or did not satisfy the stop condition
+- operator surfaces now expose the stronger boundary and attempt story without adding new commands: `src/loader/runtime/inspection.py`, `src/loader/cli/main.py`, `src/loader/runtime/owner_metadata.py`, `src/loader/ui/status_helpers.py`, `src/loader/ui/widgets/status_line.py`, and `src/loader/ui/app.py` now show runtime-boundary summaries plus attempt-aware verification state in `loader status`, `loader session show`, `loader workflow show`, and the TUI status line
+
+### Verification
+
+- `uv run pytest -q` is green: `416 passed`
+- `tests/test_cli_runtime_owner.py` now pins the runtime-owned shell API boundary for CLI and TUI ownership
+- `tests/test_completion_policy.py` and `tests/test_turn_completion.py` now pin attempt-aware completion/freshness reasoning, including superseded-attempt summaries
+- `tests/test_inspection.py` and `tests/test_status_surfaces.py` now pin runtime-boundary summaries, verification-state summaries, and TUI owner/attempt status rendering
+
+### Residual debt
+
+- `src/loader/runtime/runtime_api.py` narrows the boundary materially, but `Agent` plus `runtime.public_shell` still remain the documented public compatibility layer instead of Loader exposing a fully runtime-first external API to all callers
+- verification attempt identity is now explicit, but Loader still does not preserve richer attempt timing and queue semantics such as first-planned versus actively-started timestamps, or deeper multi-command attempt bundles
+- the operator surfaces now explain active versus superseded attempts clearly, but they are still concise rollups rather than a deeper attempt-history debugger or OMX-style verifier narrative
