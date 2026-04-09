@@ -1366,6 +1366,14 @@ def _print_status_snapshot(snapshot: StatusSnapshot) -> None:
     if snapshot.workflow_scheduled_next_mode:
         table.add_row("Scheduled Next", snapshot.workflow_scheduled_next_mode)
     table.add_row("Phase", snapshot.active_turn_phase or "idle")
+    if snapshot.completion_decision_summary or snapshot.completion_decision_code:
+        table.add_row(
+            "Completion Decision",
+            _format_completion_decision(
+                summary=snapshot.completion_decision_summary,
+                code=snapshot.completion_decision_code,
+            ),
+        )
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -1497,6 +1505,14 @@ def _session_list_main() -> None:
                 ),
             )
         table.add_row("Phase", entry.active_turn_phase or "idle")
+        if entry.completion_decision_summary or entry.completion_decision_code:
+            table.add_row(
+                "Completion Decision",
+                _format_completion_decision(
+                    summary=entry.completion_decision_summary,
+                    code=entry.completion_decision_code,
+                ),
+            )
         if entry.last_turn_transition_summary:
             table.add_row("Last Transition", entry.last_turn_transition_summary)
         table.add_row("Permission Mode", entry.permission_mode)
@@ -1544,6 +1560,17 @@ def _session_show_main(session_id: str) -> None:
             ),
         )
     table.add_row("Phase", snapshot.active_turn_phase or "idle")
+    if (
+        snapshot.last_completion_decision_summary
+        or snapshot.last_completion_decision_code
+    ):
+        table.add_row(
+            "Completion Decision",
+            _format_completion_decision(
+                summary=snapshot.last_completion_decision_summary,
+                code=snapshot.last_completion_decision_code,
+            ),
+        )
     if snapshot.last_turn_transition_summary:
         table.add_row("Last Transition", snapshot.last_turn_transition_summary)
     table.add_row("Permission Mode", snapshot.permission_mode)
@@ -2136,6 +2163,12 @@ def _format_workflow_filters(
 
 
 def _format_workflow_reason(*, summary: str | None, code: str | None) -> str:
+    if summary and code:
+        return f"{summary} ({code})"
+    return summary or code or "none"
+
+
+def _format_completion_decision(*, summary: str | None, code: str | None) -> str:
     if summary and code:
         return f"{summary} ({code})"
     return summary or code or "none"

@@ -164,6 +164,8 @@ class StatusSnapshot:
     workflow_complexity_score: float | None
     workflow_scheduled_next_mode: str | None
     active_turn_phase: str | None
+    completion_decision_code: str | None
+    completion_decision_summary: str | None
     last_turn_transition_summary: str | None
     last_turn_transition_kind: str | None
     last_turn_transition_reason_code: str | None
@@ -225,6 +227,8 @@ class SessionSummary:
     permission_rules_source: str | None
     prompt_format: str | None
     active_turn_phase: str | None
+    completion_decision_code: str | None
+    completion_decision_summary: str | None
     last_turn_transition_summary: str | None
     current_task: str | None
     active_dod_path: str | None
@@ -440,6 +444,8 @@ def collect_status_snapshot(
             workflow_complexity_score=None,
             workflow_scheduled_next_mode=None,
             active_turn_phase=None,
+            completion_decision_code=None,
+            completion_decision_summary=None,
             last_turn_transition_summary=None,
             last_turn_transition_kind=None,
             last_turn_transition_reason_code=None,
@@ -501,6 +507,8 @@ def collect_status_snapshot(
         workflow_complexity_score=snapshot.workflow_complexity_score,
         workflow_scheduled_next_mode=snapshot.workflow_scheduled_next_mode,
         active_turn_phase=snapshot.active_turn_phase,
+        completion_decision_code=snapshot.last_completion_decision_code,
+        completion_decision_summary=snapshot.last_completion_decision_summary,
         last_turn_transition_summary=snapshot.last_turn_transition_summary,
         last_turn_transition_kind=snapshot.last_turn_transition_kind,
         last_turn_transition_reason_code=snapshot.last_turn_transition_reason_code,
@@ -601,6 +609,8 @@ def list_session_summaries(project_root: Path | str | None = None) -> list[Sessi
                 permission_rules_source=snapshot.permission_rules_source,
                 prompt_format=snapshot.prompt_format,
                 active_turn_phase=snapshot.active_turn_phase,
+                completion_decision_code=snapshot.last_completion_decision_code,
+                completion_decision_summary=snapshot.last_completion_decision_summary,
                 last_turn_transition_summary=snapshot.last_turn_transition_summary,
                 current_task=snapshot.current_task,
                 active_dod_path=snapshot.active_dod_path,

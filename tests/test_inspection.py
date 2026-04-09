@@ -172,6 +172,10 @@ def _persist_session_with_dod(temp_dir: Path) -> tuple[str, str]:
         workflow_complexity_score=0.7,
         workflow_scheduled_next_mode="verify",
         active_turn_phase="completion",
+        last_completion_decision_code="verification_failed_reentry",
+        last_completion_decision_summary=(
+            "continued after verification failed and the runtime re-entered execute mode"
+        ),
         last_turn_transition_summary="completion -> finalize [terminal] Finalizing completed turn",
         last_turn_transition_kind="terminal",
         last_turn_transition_reason_code="turn_complete",
@@ -488,6 +492,10 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
     assert snapshot.workflow_decision_kind == "reentry"
     assert snapshot.workflow_scheduled_next_mode == "verify"
     assert snapshot.active_turn_phase == "completion"
+    assert snapshot.completion_decision_code == "verification_failed_reentry"
+    assert snapshot.completion_decision_summary == (
+        "continued after verification failed and the runtime re-entered execute mode"
+    )
     assert snapshot.last_turn_transition_summary == (
         "completion -> finalize [terminal] Finalizing completed turn"
     )
@@ -513,6 +521,10 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
         "verification failed; returning to execute for fixes"
     )
     assert sessions[0].workflow_decision_kind == "reentry"
+    assert sessions[0].completion_decision_code == "verification_failed_reentry"
+    assert sessions[0].completion_decision_summary == (
+        "continued after verification failed and the runtime re-entered execute mode"
+    )
     assert sessions[0].last_turn_transition_summary == (
         "completion -> finalize [terminal] Finalizing completed turn"
     )
@@ -525,6 +537,9 @@ def test_status_and_session_surfaces_reflect_persisted_state(temp_dir: Path) -> 
         temp_dir / ".loader" / "permission-rules.json"
     )
     assert detail.snapshot.workflow_reason_code == "verification_failed_reentry"
+    assert detail.snapshot.last_completion_decision_code == (
+        "verification_failed_reentry"
+    )
     assert detail.snapshot.last_turn_transition_reason_code == "turn_complete"
     assert len(detail.snapshot.workflow_timeline) == 2
     assert detail.snapshot.workflow_timeline[-1].scheduled_next_mode == "verify"
@@ -642,6 +657,8 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Runtime Config, Workflow Context, Mode Guidance" in status_result.output
     assert "Rules Source" in status_result.output
     assert "verification failed; returning to execute for fixes" in status_result.output
+    assert "Completion Decision" in status_result.output
+    assert "continued after verification failed" in status_result.output
     assert "completion -> finalize" in status_result.output
     assert "Finalizing completed turn" in status_result.output
     assert "Explore Turns" in status_result.output
@@ -655,6 +672,7 @@ def test_status_and_session_commands_render_persisted_state(
     assert "native" in list_result.output
     assert "Rules Source" in list_result.output
     assert "verification failed; returning to execute for fixes" in list_result.output
+    assert "Completion Decision" in list_result.output
     assert "completion -> finalize" in list_result.output
 
     assert show_result.exit_code == 0
@@ -665,6 +683,7 @@ def test_status_and_session_commands_render_persisted_state(
     assert "Runtime Config, Workflow Context, Mode Guidance" in show_result.output
     assert "Rules Source" in show_result.output
     assert "verification failed; returning to execute for fixes" in show_result.output
+    assert "Completion Decision" in show_result.output
     assert "completion -> finalize" in show_result.output
     assert "Finalizing completed turn" in show_result.output
     assert "Workflow Timeline" in show_result.output
