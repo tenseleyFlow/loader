@@ -1619,7 +1619,7 @@ async def test_explore_mode_ignores_global_allow_policy(temp_dir: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_mutating_completion_no_longer_forces_continuation(
+async def test_informational_completion_allows_explicit_done_without_continuation(
     temp_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1633,7 +1633,7 @@ async def test_non_mutating_completion_no_longer_forces_continuation(
     config = non_streaming_config(completion_check=True)
 
     run = await run_scenario(
-        "Create a hello.py file and run it.",
+        "Explain how a hello.py file would work.",
         backend,
         config=config,
         project_root=temp_dir,
