@@ -119,6 +119,8 @@ class _FollowThroughFacts:
     has_install_evidence: bool
     has_verification_evidence: bool
     has_failed_verification: bool
+    has_pending_verification: bool
+    has_planned_verification: bool
     has_stale_verification: bool
     verification_command: str | None
     pending_items: list[str]
@@ -320,6 +322,30 @@ def assess_completion_follow_through_with_provenance(
                 status=EvidenceProvenanceStatus.CONTRADICTS,
             ):
                 _append_unique_provenance(evidence_provenance, entry)
+        elif facts.has_pending_verification:
+            _append_follow_through_gap(
+                missing_evidence,
+                remaining,
+                suggested_next_steps,
+                evidence=_pending_verification_evidence(facts.verification_command),
+                remaining_item="Let the active verification run finish and capture the result",
+                next_step=_pending_verification_follow_up(facts.verification_command),
+            )
+            _append_unique_provenance(
+                evidence_provenance,
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.last_verification_result",
+                    summary=(
+                        "verification is already pending for "
+                        f"`{facts.verification_command}`"
+                        if facts.verification_command
+                        else "verification is already pending"
+                    ),
+                    status=EvidenceProvenanceStatus.MISSING.value,
+                    subject=facts.verification_command,
+                ),
+            )
         elif facts.has_stale_verification:
             _append_follow_through_gap(
                 missing_evidence,
@@ -339,6 +365,30 @@ def assess_completion_follow_through_with_provenance(
                         f"`{facts.verification_command}` after new mutating work"
                         if facts.verification_command
                         else "previous verification became stale after new mutating work"
+                    ),
+                    status=EvidenceProvenanceStatus.MISSING.value,
+                    subject=facts.verification_command,
+                ),
+            )
+        elif facts.has_planned_verification:
+            _append_follow_through_gap(
+                missing_evidence,
+                remaining,
+                suggested_next_steps,
+                evidence=_planned_verification_evidence(facts.verification_command),
+                remaining_item="Run the planned verification before claiming completion",
+                next_step=_planned_verification_follow_up(facts.verification_command),
+            )
+            _append_unique_provenance(
+                evidence_provenance,
+                EvidenceProvenance(
+                    category="verification",
+                    source="dod.verification_commands",
+                    summary=(
+                        "verification is planned for "
+                        f"`{facts.verification_command}`"
+                        if facts.verification_command
+                        else "verification is planned"
                     ),
                     status=EvidenceProvenanceStatus.MISSING.value,
                     subject=facts.verification_command,
@@ -751,6 +801,8 @@ def _build_follow_through_facts(
     has_install_evidence = _has_install_evidence(task_lower, action_types, actions_taken)
     has_verification_evidence = _has_verification_evidence(action_types, actions_taken)
     has_failed_verification = False
+    has_pending_verification = False
+    has_planned_verification = False
     has_stale_verification = False
     verification_command: str | None = None
     pending_items: list[str] = []
@@ -761,6 +813,8 @@ def _build_follow_through_facts(
             has_install_evidence=has_install_evidence,
             has_verification_evidence=has_verification_evidence,
             has_failed_verification=has_failed_verification,
+            has_pending_verification=has_pending_verification,
+            has_planned_verification=has_planned_verification,
             has_stale_verification=has_stale_verification,
             verification_command=verification_command,
             pending_items=pending_items,
@@ -785,6 +839,12 @@ def _build_follow_through_facts(
         dod.last_verification_result == "failed"
         or any(not evidence.passed for evidence in dod.evidence)
     )
+    has_pending_verification = (
+        dod.last_verification_result == VerificationObservationStatus.PENDING.value
+    )
+    has_planned_verification = (
+        dod.last_verification_result == VerificationObservationStatus.PLANNED.value
+    )
     has_stale_verification = dod.last_verification_result == "stale"
     has_recorded_work = has_recorded_work or bool(
         dod.touched_files
@@ -793,6 +853,8 @@ def _build_follow_through_facts(
         or dod.completed_items
         or has_verification_evidence
         or has_failed_verification
+        or has_pending_verification
+        or has_planned_verification
         or has_stale_verification
     )
     for evidence in dod.evidence:
@@ -814,6 +876,8 @@ def _build_follow_through_facts(
         has_install_evidence=has_install_evidence,
         has_verification_evidence=has_verification_evidence,
         has_failed_verification=has_failed_verification,
+        has_pending_verification=has_pending_verification,
+        has_planned_verification=has_planned_verification,
         has_stale_verification=has_stale_verification,
         verification_command=verification_command,
         pending_items=pending_items,
@@ -857,6 +921,24 @@ def _failed_verification_evidence(verification_command: str | None) -> str:
     return "a passing verification result (current verification is still failing)"
 
 
+def _pending_verification_evidence(verification_command: str | None) -> str:
+    if verification_command:
+        return (
+            f"a completed passing verification result from `{verification_command}` "
+            "(verification is still pending)"
+        )
+    return "a completed passing verification result (verification is still pending)"
+
+
+def _planned_verification_evidence(verification_command: str | None) -> str:
+    if verification_command:
+        return (
+            f"a passing verification result from `{verification_command}` "
+            "(verification is planned but has not run yet)"
+        )
+    return "a passing verification result (verification is planned but has not run yet)"
+
+
 def _stale_verification_evidence(verification_command: str | None) -> str:
     if verification_command:
         return (
@@ -880,6 +962,18 @@ def _verification_retry_step(verification_command: str | None) -> str:
     if verification_command:
         return f"Fix the failing `{verification_command}` result and rerun it"
     return "Fix the failing verification result and rerun it"
+
+
+def _pending_verification_follow_up(verification_command: str | None) -> str:
+    if verification_command:
+        return f"Finish running `{verification_command}` and capture the result"
+    return "Finish the active verification run and capture the result"
+
+
+def _planned_verification_follow_up(verification_command: str | None) -> str:
+    if verification_command:
+        return f"Run the planned verification `{verification_command}` now"
+    return "Run the planned verification now"
 
 
 def _stale_verification_follow_up(verification_command: str | None) -> str:
@@ -989,6 +1083,38 @@ def _observed_completion_verification(
                 )
             )
         return observations
+
+    if dod.last_verification_result == VerificationObservationStatus.PENDING.value:
+        if verification_command:
+            return [
+                VerificationObservation(
+                    status=VerificationObservationStatus.PENDING.value,
+                    summary=f"verification pending for `{verification_command}`",
+                    command=verification_command,
+                )
+            ]
+        return [
+            VerificationObservation(
+                status=VerificationObservationStatus.PENDING.value,
+                summary="verification is pending for the active command set",
+            )
+        ]
+
+    if dod.last_verification_result == VerificationObservationStatus.PLANNED.value:
+        if verification_command:
+            return [
+                VerificationObservation(
+                    status=VerificationObservationStatus.PLANNED.value,
+                    summary=f"verification planned for `{verification_command}`",
+                    command=verification_command,
+                )
+            ]
+        return [
+            VerificationObservation(
+                status=VerificationObservationStatus.PLANNED.value,
+                summary="verification is planned but has not run yet",
+            )
+        ]
 
     if dod.last_verification_result == VerificationObservationStatus.STALE.value:
         if verification_command:

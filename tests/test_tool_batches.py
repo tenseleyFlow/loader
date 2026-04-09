@@ -338,6 +338,70 @@ async def test_tool_batch_runner_verifies_with_context_services(temp_dir: Path) 
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_marks_verification_planned_after_new_mutation(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="write-1",
+        name="write",
+        arguments={"file_path": str(temp_dir / "README.md"), "content": "updated\n"},
+    )
+    executor = FakeExecutor(
+        [tool_outcome(tool_call=tool_call, output="wrote file", is_error=False)]
+    )
+    summary = TurnSummary(final_response="")
+    dod = create_definition_of_done("Update README and verify it still works.")
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert dod.last_verification_result == "planned"
+    assert dod.verification_commands
+    assert "Collect verification evidence" in dod.pending_items
+    assert summary.workflow_timeline[-1].reason_code == "verification_planned"
+    assert summary.workflow_timeline[-1].policy_outcome == "planned"
+    assert summary.workflow_timeline[-1].verification_observations[0].status == "planned"
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_marks_passed_verification_stale_after_new_mutation(
     temp_dir: Path,
 ) -> None:

@@ -10,6 +10,7 @@ from .context import RuntimeContext
 from .dod import (
     DefinitionOfDone,
     DefinitionOfDoneStore,
+    derive_verification_commands,
     is_state_mutating_tool_call,
     record_successful_tool_call,
 )
@@ -203,10 +204,18 @@ class ToolBatchRunner:
     ) -> str | None:
         """Update DoD bookkeeping after a successful tool execution."""
 
+        is_mutating = is_state_mutating_tool_call(tool_call)
         previously_verified = dod.last_verification_result == "passed"
         record_successful_tool_call(dod, tool_call)
-        if previously_verified and is_state_mutating_tool_call(tool_call):
+        if previously_verified and is_mutating:
             _mark_verification_stale(
+                context=self.context,
+                summary=summary,
+                dod=dod,
+                tool_call=tool_call,
+            )
+        elif is_mutating:
+            _mark_verification_planned(
                 context=self.context,
                 summary=summary,
                 dod=dod,
@@ -243,6 +252,65 @@ def _mark_verification_stale(
     )
     dod.last_verification_result = VerificationObservationStatus.STALE.value
     dod.evidence = []
+    while _VERIFY_ITEM in dod.completed_items:
+        dod.completed_items.remove(_VERIFY_ITEM)
+    if _VERIFY_ITEM not in dod.pending_items:
+        dod.pending_items.append(_VERIFY_ITEM)
+
+
+def _mark_verification_planned(
+    *,
+    context: RuntimeContext,
+    summary: TurnSummary,
+    dod: DefinitionOfDone,
+    tool_call: ToolCall,
+) -> None:
+    if dod.last_verification_result in {
+        VerificationObservationStatus.PLANNED.value,
+        VerificationObservationStatus.PENDING.value,
+        VerificationObservationStatus.STALE.value,
+    }:
+        return
+    if not dod.verification_commands:
+        dod.verification_commands = derive_verification_commands(
+            dod,
+            project_root=context.project_root,
+            task_statement=dod.task_statement,
+        )
+    commands = [command for command in dod.verification_commands if command]
+    if not commands:
+        return
+
+    detail = _stale_verification_detail(tool_call)
+    append_verification_timeline_entry(
+        context,
+        summary,
+        reason_code="verification_planned",
+        reason_summary="verification is planned after new mutating work",
+        evidence_summary=[f"verification planned for `{command}`" for command in commands[:2]],
+        evidence_provenance=[
+            EvidenceProvenance(
+                category="verification",
+                source="dod.verification_commands",
+                summary=f"verification planned for `{command}`",
+                status=EvidenceProvenanceStatus.MISSING.value,
+                subject=command,
+                detail=detail,
+            )
+            for command in commands
+        ],
+        verification_observations=[
+            VerificationObservation(
+                status=VerificationObservationStatus.PLANNED.value,
+                summary=f"verification planned for `{command}`",
+                command=command,
+                kind="runtime",
+                detail=detail,
+            )
+            for command in commands
+        ],
+    )
+    dod.last_verification_result = VerificationObservationStatus.PLANNED.value
     while _VERIFY_ITEM in dod.completed_items:
         dod.completed_items.remove(_VERIFY_ITEM)
     if _VERIFY_ITEM not in dod.pending_items:

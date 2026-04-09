@@ -10,6 +10,7 @@ from typing import Any
 class VerificationObservationStatus(StrEnum):
     """How one verification observation resolved at runtime."""
 
+    PLANNED = "planned"
     PENDING = "pending"
     STALE = "stale"
     PASSED = "passed"

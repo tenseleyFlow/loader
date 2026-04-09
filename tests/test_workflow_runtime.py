@@ -1142,11 +1142,19 @@ async def test_complex_prompt_routes_to_plan_and_uses_verification_artifact(
         "definition_of_done_requires_verification"
     )
     assert run.agent.last_turn_summary.workflow_decision_kind == "handoff"
-    assert [entry.mode for entry in run.agent.last_turn_summary.workflow_timeline[:3]] == [
-        "plan",
-        "execute",
-        "verify",
-    ]
+    timeline = run.agent.last_turn_summary.workflow_timeline
+    assert any(
+        entry.mode == "execute"
+        and entry.reason_code == "verification_planned"
+        and entry.policy_outcome == "planned"
+        for entry in timeline
+    )
+    assert any(
+        entry.mode == "verify"
+        and entry.reason_code == "verification_pending"
+        and entry.policy_outcome == "pending"
+        for entry in timeline
+    )
     verify_calls = [
         event
         for event in run.events

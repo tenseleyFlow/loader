@@ -221,6 +221,8 @@ class TurnFinalizer:
             summary=summary,
         )
         if dod.verification_commands:
+            dod.last_verification_result = VerificationObservationStatus.PENDING.value
+            self.dod_store.save(dod)
             append_verification_timeline_entry(
                 self.context,
                 summary,
