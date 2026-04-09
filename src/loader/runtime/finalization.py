@@ -220,6 +220,21 @@ class TurnFinalizer:
             emit=emit,
             summary=summary,
         )
+        if dod.verification_commands:
+            append_verification_timeline_entry(
+                self.context,
+                summary,
+                reason_code="verification_pending",
+                reason_summary=(
+                    "verification is pending for the active command set"
+                ),
+                evidence_summary=[
+                    f"verification command pending: {command}"
+                    for command in dod.verification_commands[:2]
+                ],
+                evidence_provenance=_pending_verification_provenance(dod),
+                verification_observations=_pending_verification_observations(dod),
+            )
         verification_passed = await self.verify_definition_of_done(
             dod=dod,
             emit=emit,
@@ -703,6 +718,38 @@ def _missing_verification_provenance() -> list[EvidenceProvenance]:
             status=EvidenceProvenanceStatus.MISSING.value,
         )
     ]
+
+
+def _pending_verification_observations(
+    dod: DefinitionOfDone,
+) -> list[VerificationObservation]:
+    observations: list[VerificationObservation] = []
+    for command in dod.verification_commands:
+        observations.append(
+            VerificationObservation(
+                status=VerificationObservationStatus.PENDING.value,
+                summary=f"verification pending for `{command}`",
+                command=command,
+            )
+        )
+    return observations
+
+
+def _pending_verification_provenance(
+    dod: DefinitionOfDone,
+) -> list[EvidenceProvenance]:
+    provenance: list[EvidenceProvenance] = []
+    for command in dod.verification_commands:
+        provenance.append(
+            EvidenceProvenance(
+                category="verification",
+                source="dod.verification_commands",
+                summary=f"verification command pending: {command}",
+                status=EvidenceProvenanceStatus.MISSING.value,
+                subject=command,
+            )
+        )
+    return provenance
 
 
 def _verification_detail(evidence: VerificationEvidence) -> str | None:

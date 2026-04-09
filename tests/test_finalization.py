@@ -339,6 +339,16 @@ async def test_turn_finalizer_records_passed_verification_observation(
     assert result.verification_observations[0].command == "uv run pytest -q"
     assert result.verification_observations[0].detail == "219 passed"
     assert summary.verification_status == "passed"
+    assert [entry.reason_code for entry in session.workflow_timeline[-2:]] == [
+        "verification_pending",
+        "verification_command_passed",
+    ]
+    assert [item.status for item in session.workflow_timeline[-2].verification_observations] == [
+        VerificationObservationStatus.PENDING.value
+    ]
+    assert session.workflow_timeline[-2].verification_observations[0].command == (
+        "uv run pytest -q"
+    )
     assert session.workflow_timeline[-1].kind == "verify_observation"
     assert session.workflow_timeline[-1].reason_code == "verification_command_passed"
     assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
