@@ -15,6 +15,10 @@ from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer
 from .phases import TurnPhase, TurnPhaseTracker
+from .policy_timeline import (
+    append_policy_timeline_entry,
+    completion_timeline_kind,
+)
 from .repair import ResponseRepairer
 from .rollback import RollbackPlan
 
@@ -88,6 +92,15 @@ class TurnCompletionController:
         )
         summary.completion_trace.append(entry)
         self.context.session.append_completion_trace_entry(entry)
+        append_policy_timeline_entry(
+            self.context,
+            summary,
+            kind=completion_timeline_kind(stage=stage, outcome=outcome),
+            reason_code=decision_code,
+            reason_summary=decision_summary,
+            policy_stage=stage,
+            policy_outcome=outcome,
+        )
 
     async def handle_text_response(
         self,

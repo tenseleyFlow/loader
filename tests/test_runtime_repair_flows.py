@@ -82,6 +82,16 @@ async def test_empty_response_retry_injects_honest_user_reminder_and_recovers(
 
     assert tool_event_names(run) == ["read"]
     assert "Recovered after the empty response." in run.response
+    policy_entries = [
+        entry
+        for entry in run.agent.last_turn_summary.workflow_timeline
+        if entry.kind.startswith(("repair_", "completion_"))
+    ]
+    assert [entry.kind for entry in policy_entries] == [
+        "repair_retry",
+        "completion_complete",
+    ]
+    assert policy_entries[0].policy_stage == "empty_response"
     assert any(
         message.role == Role.USER
         and "[EMPTY ASSISTANT RESPONSE]" in message.content
@@ -113,6 +123,13 @@ async def test_repeated_empty_responses_fail_honestly_after_one_retry(
         "Please try again or switch to a different backend/model."
     )
     assert len(backend.invocations) == 2
+    assert [entry.kind for entry in run.agent.last_turn_summary.workflow_timeline[-2:]] == [
+        "repair_retry",
+        "repair_fail",
+    ]
+    assert run.agent.last_turn_summary.workflow_timeline[-1].reason_code == (
+        "empty_response_retry_exhausted"
+    )
 
 
 @pytest.mark.asyncio
@@ -151,5 +168,14 @@ async def test_raw_text_tool_recovery_budget_fails_honestly(
         "I couldn't safely continue because the model kept emitting raw-text "
         "tool calls instead of proper tool invocations. Please try again or "
         "switch to a different backend/model."
+    )
+    assert [entry.kind for entry in run.agent.last_turn_summary.workflow_timeline[-4:]] == [
+        "repair_retry",
+        "repair_retry",
+        "repair_retry",
+        "repair_fail",
+    ]
+    assert run.agent.last_turn_summary.workflow_timeline[-1].reason_code == (
+        "raw_text_tool_recovery_exhausted"
     )
     assert "Let me know if you'd like me to continue" not in run.response

@@ -14,6 +14,7 @@ from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import merge_usage
 from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
+from .policy_timeline import append_policy_timeline_entry
 from .repair import ResponseRepairer
 from .response_routing import (
     AssistantResponseRouter,
@@ -21,6 +22,7 @@ from .response_routing import (
     ResponseRouteContext,
 )
 from .rollback import RollbackPlan
+from .workflow_policy import WorkflowTimelineEntryKind
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
@@ -140,6 +142,20 @@ class TurnIterationController:
                 reason_code="repair_raw_text_tool_fallback",
                 kind=TurnTransitionKind.REROUTE,
             )
+            if (
+                not analysis.should_stop
+                and analysis.reason_code
+                and analysis.reason_summary
+            ):
+                append_policy_timeline_entry(
+                    self.context,
+                    summary,
+                    kind=WorkflowTimelineEntryKind.REPAIR_RETRY,
+                    reason_code=analysis.reason_code,
+                    reason_summary=analysis.reason_summary,
+                    policy_stage="raw_text_tool_fallback",
+                    policy_outcome="retry",
+                )
             await emit(AgentEvent(type="clear_stream"))
 
         route_decision = await self.response_router.route_response(
@@ -220,6 +236,16 @@ class TurnIterationController:
             max_empty_retries=max_empty_retries,
         )
         if empty_decision.should_continue and empty_decision.retry_message:
+            if empty_decision.reason_code and empty_decision.reason_summary:
+                append_policy_timeline_entry(
+                    self.context,
+                    summary,
+                    kind=WorkflowTimelineEntryKind.REPAIR_RETRY,
+                    reason_code=empty_decision.reason_code,
+                    reason_summary=empty_decision.reason_summary,
+                    policy_stage="empty_response",
+                    policy_outcome="retry",
+                )
             self.context.session.append(
                 Message(
                     role=Role.USER,
@@ -238,6 +264,16 @@ class TurnIterationController:
         summary.final_response = final_response
         if empty_decision.failure:
             summary.failures.append(empty_decision.failure)
+        if empty_decision.reason_code and empty_decision.reason_summary:
+            append_policy_timeline_entry(
+                self.context,
+                summary,
+                kind=WorkflowTimelineEntryKind.REPAIR_FAIL,
+                reason_code=empty_decision.reason_code,
+                reason_summary=empty_decision.reason_summary,
+                policy_stage="empty_response",
+                policy_outcome="failed",
+            )
         await emit(AgentEvent(type="response", content=final_response))
         return TurnIterationDecision(
             action=TurnIterationAction.COMPLETE,

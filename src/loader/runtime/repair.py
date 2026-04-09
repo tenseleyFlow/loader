@@ -14,6 +14,8 @@ class EmptyResponseDecision:
     """Decision for an empty assistant response."""
 
     should_continue: bool
+    reason_code: str | None = None
+    reason_summary: str | None = None
     retry_message: str | None = None
     final_response: str | None = None
     failure: str | None = None
@@ -30,6 +32,8 @@ class ToolCallAnalysis:
     clear_stream: bool = False
     is_final_answer: bool = False
     should_stop: bool = False
+    reason_code: str | None = None
+    reason_summary: str | None = None
     final_response: str | None = None
     failure: str | None = None
     extracted_iterations: int = 0
@@ -55,6 +59,8 @@ class ResponseRepairer:
         if empty_retry_count == 1:
             return EmptyResponseDecision(
                 should_continue=True,
+                reason_code="empty_response_retry",
+                reason_summary="retried after the assistant returned an empty response",
                 retry_message=(
                     "[EMPTY ASSISTANT RESPONSE]\n"
                     "Your last response was empty. Respond directly to the task "
@@ -64,6 +70,8 @@ class ResponseRepairer:
 
         return EmptyResponseDecision(
             should_continue=False,
+            reason_code="empty_response_retry_exhausted",
+            reason_summary="stopped after the assistant returned empty responses twice",
             final_response=(
                 "I didn't get a usable response from the model after retrying once. "
                 "Please try again or switch to a different backend/model."
@@ -119,6 +127,10 @@ class ResponseRepairer:
                     clear_stream=clear_stream,
                     extracted_iterations=next_extracted_iterations,
                     should_stop=True,
+                    reason_code="raw_text_tool_recovery_exhausted",
+                    reason_summary=(
+                        "stopped after raw-text tool recovery budget was exhausted"
+                    ),
                     final_response=(
                         "I couldn't safely continue because the model kept emitting "
                         "raw-text tool calls instead of proper tool invocations. "
@@ -133,6 +145,14 @@ class ResponseRepairer:
             tool_calls=normalized_tool_calls,
             tool_source=tool_source,
             clear_stream=clear_stream,
+            reason_code=(
+                "raw_text_tool_recovered" if tool_source == "raw_text" else None
+            ),
+            reason_summary=(
+                "recovered raw-text tool calls into executable tool invocations"
+                if tool_source == "raw_text"
+                else None
+            ),
             extracted_iterations=next_extracted_iterations,
         )
 

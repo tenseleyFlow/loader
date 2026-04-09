@@ -76,6 +76,11 @@ async def test_turn_completion_requests_continuation_for_premature_text_response
         entry.decision_code for entry in prepared.summary.completion_trace
     ] == ["premature_completion_nudge"]
     assert prepared.summary.completion_trace[0].stage == "continuation_check"
+    assert [entry.kind for entry in prepared.summary.workflow_timeline[-1:]] == [
+        "completion_continue"
+    ]
+    assert prepared.summary.workflow_timeline[-1].policy_stage == "continuation_check"
+    assert prepared.summary.workflow_timeline[-1].policy_outcome == "continue"
     assert agent.session.messages[-1].role.value == "user"
     assert "If there's more to do, continue" in agent.session.messages[-1].content
     assert any(event.type == "completion_check" for event in events)
@@ -144,6 +149,17 @@ async def test_turn_completion_marks_non_mutating_response_done(
         "completion_response_accepted",
         "non_mutating_response_accepted",
     ]
+    policy_entries = [
+        entry
+        for entry in prepared.summary.workflow_timeline
+        if entry.kind.startswith("completion_")
+    ]
+    assert [entry.kind for entry in policy_entries] == [
+        "completion_check",
+        "completion_complete",
+    ]
+    assert policy_entries[0].policy_stage == "continuation_check"
+    assert policy_entries[-1].policy_stage == "definition_of_done"
     assert prepared.definition_of_done.status == "done"
     assert prepared.definition_of_done.last_verification_result == "skipped"
     assert any(event.type == "response" for event in events)

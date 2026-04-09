@@ -6,6 +6,7 @@ from ..llm.base import Message, Role
 from .context import RuntimeContext
 from .events import AgentEvent
 from .phases import TurnPhase, TurnPhaseTracker
+from .policy_timeline import append_policy_timeline_entry
 from .repair import ToolCallAnalysis
 from .response_route_types import (
     ConfirmationHandler,
@@ -18,6 +19,7 @@ from .response_route_types import (
 from .tool_batches import ToolBatchRunner
 from .tracing import RuntimeTracer
 from .turn_completion import TurnCompletionAction, TurnCompletionController
+from .workflow_policy import WorkflowTimelineEntryKind
 
 
 class FinalAnswerRouteHandler:
@@ -79,6 +81,16 @@ class ToolBatchRouteHandler:
         emit_confirmation,
     ) -> ResponseRouteDecision:
         if analysis.should_stop:
+            if analysis.reason_code and analysis.reason_summary:
+                append_policy_timeline_entry(
+                    self.context,
+                    context.summary,
+                    kind=WorkflowTimelineEntryKind.REPAIR_FAIL,
+                    reason_code=analysis.reason_code,
+                    reason_summary=analysis.reason_summary,
+                    policy_stage="raw_text_tool_fallback",
+                    policy_outcome="failed",
+                )
             assistant_message = Message(
                 role=Role.ASSISTANT,
                 content=analysis.response_content,
