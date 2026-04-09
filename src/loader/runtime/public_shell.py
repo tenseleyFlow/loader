@@ -36,6 +36,8 @@ class RestoredSessionState:
     permission_mode: str
     prompt_format: str | None
     prompt_sections: list[str]
+    last_completion_decision_code: str | None
+    last_completion_decision_summary: str | None
     last_turn_summary: TurnSummary | None
 
 
@@ -95,6 +97,8 @@ def restore_runtime_session_state(
                 workflow_reason_code=session.workflow_reason_code,
                 workflow_reason_summary=session.workflow_reason_summary,
                 workflow_decision_kind=session.workflow_decision_kind,
+                completion_decision_code=session.last_completion_decision_code,
+                completion_decision_summary=session.last_completion_decision_summary,
                 workflow_timeline=list(session.workflow_timeline),
                 session_id=session.session_id,
                 cumulative_usage=dict(session.usage_totals),
@@ -107,6 +111,8 @@ def restore_runtime_session_state(
         permission_mode=session.permission_mode,
         prompt_format=session.prompt_format,
         prompt_sections=list(session.prompt_sections),
+        last_completion_decision_code=session.last_completion_decision_code,
+        last_completion_decision_summary=session.last_completion_decision_summary,
         last_turn_summary=last_turn_summary,
     )
 
