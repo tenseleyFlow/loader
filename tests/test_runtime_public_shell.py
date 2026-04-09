@@ -21,13 +21,17 @@ from loader.runtime.public_shell import (
     clear_runtime_shell_history,
     create_runtime_session,
     create_runtime_session_install,
+    get_runtime_shell_few_shot_examples,
+    get_runtime_shell_system_message,
     load_runtime_session_install,
     refresh_runtime_capability_state,
     refresh_runtime_shell_capability_profile,
+    resolve_runtime_shell_use_react,
     restore_runtime_session_state,
     resume_runtime_shell_session,
     run_runtime_shell,
     run_runtime_shell_explore,
+    set_runtime_shell_workflow_mode,
     stream_runtime_shell,
 )
 from loader.runtime.session import ConversationSession
@@ -112,6 +116,88 @@ def test_build_runtime_few_shot_examples_switches_tool_format() -> None:
 
     assert "<tool_call>" in react_examples[1].content
     assert native_examples[1].content.startswith("[write:")
+
+
+def test_resolve_runtime_shell_use_react_respects_force_react_and_capabilities(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(supports_native_tools=True),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+
+    assert resolve_runtime_shell_use_react(agent) is False
+    assert agent._use_react is False
+
+    forced = Agent(
+        backend=ScriptedBackend(supports_native_tools=True),
+        config=AgentConfig(auto_context=False, force_react=True),
+        project_root=temp_dir,
+    )
+
+    assert resolve_runtime_shell_use_react(forced) is True
+    assert forced._use_react is True
+
+
+def test_get_runtime_shell_system_message_caches_prompt_state_on_owner(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+
+    first = get_runtime_shell_system_message(agent)
+    second = get_runtime_shell_system_message(agent)
+
+    assert first is second
+    assert agent.prompt_format in {"native", "react"}
+    assert agent.prompt_sections
+    assert len(agent.session.prompt_history) == 1
+
+
+def test_set_runtime_shell_workflow_mode_invalidates_prompt_cache(
+    temp_dir: Path,
+) -> None:
+    agent = Agent(
+        backend=ScriptedBackend(),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+    original = get_runtime_shell_system_message(agent)
+
+    set_runtime_shell_workflow_mode(agent, "plan")
+
+    assert agent.workflow_mode == "plan"
+    assert agent._system_message is None
+
+    updated = get_runtime_shell_system_message(agent)
+
+    assert updated is not original
+    assert agent.session.prompt_history[-1].workflow_mode == "plan"
+
+
+def test_get_runtime_shell_few_shot_examples_uses_owner_prompt_mode(
+    temp_dir: Path,
+) -> None:
+    native_agent = Agent(
+        backend=ScriptedBackend(supports_native_tools=True),
+        config=AgentConfig(auto_context=False),
+        project_root=temp_dir,
+    )
+    react_agent = Agent(
+        backend=ScriptedBackend(supports_native_tools=True),
+        config=AgentConfig(auto_context=False, force_react=True),
+        project_root=temp_dir,
+    )
+
+    native_examples = get_runtime_shell_few_shot_examples(native_agent)
+    react_examples = get_runtime_shell_few_shot_examples(react_agent)
+
+    assert native_examples[1].content.startswith("[write:")
+    assert "<tool_call>" in react_examples[1].content
 
 
 @pytest.mark.asyncio
