@@ -557,15 +557,22 @@ async def test_workspace_write_denies_write_outside_root(temp_dir: Path) -> None
         ]
     )
 
+    async def decline_confirmation(_name: str, _msg: str, _details: str) -> bool:
+        return False
+
     run = await run_scenario(
         "Write a file outside the workspace.",
         backend,
         config=config,
         project_root=temp_dir,
+        on_confirmation=decline_confirmation,
     )
 
     assert not outside.exists()
-    assert any("escapes workspace boundary" in message for message in tool_result_messages(run))
+    assert any(
+        "declined" in message.lower() or "outside workspace" in message.lower()
+        for message in tool_result_messages(run)
+    )
 
 
 @pytest.mark.asyncio

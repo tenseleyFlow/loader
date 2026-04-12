@@ -39,14 +39,23 @@ async def test_read_tool_blocks_symlink_escape(temp_dir: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_write_tool_blocks_workspace_escape(temp_dir: Path) -> None:
+async def test_write_tool_prompts_for_workspace_escape(temp_dir: Path) -> None:
+    from loader.tools.base import ConfirmationRequired
+
     outside = temp_dir.parent / "outside-write.txt"
     tool = WriteTool(workspace_root=temp_dir)
 
-    result = await tool.execute(file_path=str(outside), content="outside\n")
+    # First attempt raises ConfirmationRequired
+    with pytest.raises(ConfirmationRequired):
+        await tool.execute(file_path=str(outside), content="outside\n")
 
-    assert result.is_error
-    assert "workspace boundary" in result.output.lower()
+    assert not outside.exists()
+
+    # Second attempt (simulating retry after user approval) succeeds
+    result = await tool.execute(file_path=str(outside), content="outside\n")
+    assert not result.is_error
+    assert outside.exists()
+    outside.unlink()
 
 
 @pytest.mark.asyncio

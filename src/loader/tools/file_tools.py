@@ -127,6 +127,7 @@ class WriteTool(Tool):
         self.workspace_root = (
             Path(workspace_root).expanduser().resolve() if workspace_root else None
         )
+        self._pending_escape_approvals: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -177,6 +178,7 @@ class WriteTool(Tool):
         content: str,
         **kwargs: Any,
     ) -> ToolResult:
+        kwargs.pop("_skip_confirmation", None)
         try:
             ensure_safe_to_write(content)
             path = resolve_workspace_path(
@@ -184,8 +186,19 @@ class WriteTool(Tool):
                 workspace_root=self.workspace_root,
                 allow_missing=True,
             )
-        except PermissionError as exc:
-            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except PermissionError:
+            resolved = Path(file_path).expanduser().resolve()
+            key = str(resolved)
+            if key in self._pending_escape_approvals:
+                self._pending_escape_approvals.discard(key)
+                path = resolved
+            else:
+                self._pending_escape_approvals.add(key)
+                raise ConfirmationRequired(
+                    tool_name=self.name,
+                    message=f"Write outside workspace: {file_path}",
+                    details=f"Target is outside the workspace root ({self.workspace_root})",
+                )
         except Exception as exc:
             return ToolResult(f"Error writing file: {exc}", is_error=True)
 
@@ -229,6 +242,7 @@ class EditTool(Tool):
         self.workspace_root = (
             Path(workspace_root).expanduser().resolve() if workspace_root else None
         )
+        self._pending_escape_approvals: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -286,6 +300,7 @@ class EditTool(Tool):
         new_string: str,
         **kwargs: Any,
     ) -> ToolResult:
+        kwargs.pop("_skip_confirmation", None)
         try:
             path = resolve_workspace_path(
                 file_path,
@@ -293,8 +308,19 @@ class EditTool(Tool):
             )
         except FileNotFoundError:
             return ToolResult(f"File not found: {file_path}", is_error=True)
-        except PermissionError as exc:
-            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except PermissionError:
+            resolved = Path(file_path).expanduser().resolve()
+            key = str(resolved)
+            if key in self._pending_escape_approvals:
+                self._pending_escape_approvals.discard(key)
+                path = resolved
+            else:
+                self._pending_escape_approvals.add(key)
+                raise ConfirmationRequired(
+                    tool_name=self.name,
+                    message=f"Edit outside workspace: {file_path}",
+                    details=f"Target is outside the workspace root ({self.workspace_root})",
+                )
         except Exception as exc:
             return ToolResult(f"Error resolving file path: {exc}", is_error=True)
 
@@ -351,6 +377,7 @@ class PatchTool(Tool):
         self.workspace_root = (
             Path(workspace_root).expanduser().resolve() if workspace_root else None
         )
+        self._pending_escape_approvals: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -430,6 +457,7 @@ class PatchTool(Tool):
         except Exception as exc:
             return ToolResult(f"Invalid structured patch: {exc}", is_error=True)
 
+        kwargs.pop("_skip_confirmation", None)
         try:
             path = resolve_workspace_path(
                 file_path,
@@ -437,8 +465,20 @@ class PatchTool(Tool):
             )
         except FileNotFoundError:
             return ToolResult(f"File not found: {file_path}", is_error=True)
-        except PermissionError as exc:
-            return ToolResult(f"Permission denied: {exc}", is_error=True)
+        except PermissionError:
+            resolved = Path(file_path).expanduser().resolve()
+            key = str(resolved)
+            if key in self._pending_escape_approvals:
+                self._pending_escape_approvals.discard(key)
+                path = resolved
+            else:
+                self._pending_escape_approvals.add(key)
+                raise ConfirmationRequired(
+                    tool_name=self.name,
+                    message=f"Patch outside workspace: {file_path}",
+                    details=f"Target is outside the workspace root ({self.workspace_root})",
+                )
+
         except Exception as exc:
             return ToolResult(f"Error resolving file path: {exc}", is_error=True)
 
