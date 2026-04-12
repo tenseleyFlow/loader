@@ -127,7 +127,10 @@ KNOWN_CAPABILITY_PROFILES: dict[str, CapabilityProfile] = {
     ),
 }
 
-NATIVE_TOOL_FAMILIES = {"llama3", "qwen2", "qwen2.5", "mistral", "mixtral", "command-r", "granite"}
+NATIVE_TOOL_FAMILIES = {
+    "llama3", "qwen2", "qwen2.5", "qwen3", "mistral", "mixtral",
+    "command-r", "granite", "devstral", "gemma4",
+}
 NO_TOOL_FAMILIES = {
     "llama2",
     "phi",
