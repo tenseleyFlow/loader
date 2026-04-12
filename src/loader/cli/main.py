@@ -338,7 +338,11 @@ async def _main(
 
     await llm.describe_model()
 
-    # Determine actual mode based on resolved model capabilities (not just CLI flag)
+    # Probe the model's actual tool calling behavior (not just family heuristics)
+    if not react and hasattr(llm, "probe_native_tool_support"):
+        console.print("[dim]Probing tool support...[/dim]", end="")
+        native = await llm.probe_native_tool_support()
+        console.print(f" [dim]{'native' if native else 'react'}[/dim]")
     mode_str = "ReAct" if react or not llm.supports_native_tools() else "Native"
 
     # Save this model as the new default

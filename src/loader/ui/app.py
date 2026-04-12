@@ -319,33 +319,40 @@ class LoaderApp(App):
             self._add_message(f"[red]Error listing models: {e}[/red]")
 
     def _switch_model(self, model_name: str) -> None:
-        """Switch to a different model."""
+        """Switch to a different model and re-probe tool support."""
         if hasattr(self.shell_owner.backend, "model"):
             old_model = self.shell_owner.backend.model
             self.shell_owner.backend.model = model_name
-            if hasattr(self.shell_owner, "refresh_capability_profile"):
-                self.shell_owner.refresh_capability_profile()
-            self.model_name = model_name
-            # Update status line
-            status = self.query_one(StatusLine)
-            status.model = model_name
-            # Update mode based on new model's capabilities
-            if hasattr(self.shell_owner.backend, "supports_native_tools"):
-                supports_native = self.shell_owner.backend.supports_native_tools()
-                self.mode = "Native" if supports_native else "ReAct"
-                status.mode = self.mode
-            if hasattr(self.shell_owner, "capability_profile"):
-                self.capability_profile = (
-                    f"{self.shell_owner.capability_profile.preferred_tool_call_format}/"
-                    f"{self.shell_owner.capability_profile.verification_strictness}"
-                )
-                status.capability_profile = self.capability_profile
             self._add_message(
-                "[green]Switched model:[/green] "
-                f"{old_model} → [bold]{model_name}[/bold]"
+                f"[green]Switching model:[/green] {old_model} → [bold]{model_name}[/bold] "
+                "[dim](probing tool support...)[/dim]"
             )
+            self.run_worker(self._probe_and_update_model(model_name))
         else:
             self._add_message("[red]Model switching not supported for this backend[/red]")
+
+    async def _probe_and_update_model(self, model_name: str) -> None:
+        """Probe a newly selected model for tool support and update UI."""
+        backend = self.shell_owner.backend
+        await backend.describe_model()
+        native = await backend.probe_native_tool_support()
+        if hasattr(self.shell_owner, "refresh_capability_profile"):
+            self.shell_owner.refresh_capability_profile()
+        self.model_name = model_name
+        self.mode = "Native" if native else "ReAct"
+        status = self.query_one(StatusLine)
+        status.model = model_name
+        status.mode = self.mode
+        if hasattr(self.shell_owner, "capability_profile"):
+            self.capability_profile = (
+                f"{self.shell_owner.capability_profile.preferred_tool_call_format}/"
+                f"{self.shell_owner.capability_profile.verification_strictness}"
+            )
+            status.capability_profile = self.capability_profile
+        self._add_message(
+            f"[green]Model ready:[/green] [bold]{model_name}[/bold] — "
+            f"{'[green]native[/green]' if native else '[yellow]react[/yellow]'} tool calling"
+        )
 
     async def _request_confirmation(
         self,

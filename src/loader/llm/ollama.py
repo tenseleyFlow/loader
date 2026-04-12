@@ -202,6 +202,61 @@ class OllamaBackend(LLMBackend):
         self._supports_native_tools = self.capability_profile().supports_native_tools
         return self._supports_native_tools
 
+    async def probe_native_tool_support(self) -> bool:
+        """Send a minimal tool call to the model and check if it responds with
+        native ``tool_calls`` rather than text.  Caches the result so subsequent
+        calls are free.
+
+        This replaces relying solely on family-name heuristics — it tests the
+        model's *actual* behavior.
+        """
+        if self.force_react:
+            self._supports_native_tools = False
+            return False
+
+        probe_tool = [{
+            "type": "function",
+            "function": {
+                "name": "probe",
+                "description": "Return the word OK",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+            },
+        }]
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Call the probe tool with value OK"}],
+            "tools": probe_tool,
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": 64, "num_ctx": 2048},
+        }
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/api/chat", json=payload,
+            )
+            if response.status_code == 400:
+                error = response.json().get("error", "")
+                if "does not support tools" in error:
+                    self._supports_native_tools = False
+                    return False
+            response.raise_for_status()
+            data = response.json()
+            message = data.get("message", {})
+            has_tool_calls = bool(message.get("tool_calls"))
+            self._supports_native_tools = has_tool_calls
+            self._debug_log(
+                f"probe_native_tool_support: {has_tool_calls} "
+                f"(content_len={len(message.get('content', ''))})"
+            )
+            return has_tool_calls
+        except Exception:
+            # On any failure, fall back to heuristic
+            self._supports_native_tools = self.capability_profile().supports_native_tools
+            return self._supports_native_tools
+
     def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Format messages for Ollama API.
 
