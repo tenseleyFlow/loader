@@ -47,7 +47,23 @@ class ToolCallWidget(Vertical):
             id="tool-header",
             classes="tool-header",
         )
-        yield Static("", id="tool-summary", classes="tool-summary")
+
+        # For write/edit tools, show the content as a pre-approval preview
+        initial_summary = Text()
+        if self.tool_name in ("write", "edit", "patch"):
+            content = self.tool_args.get("content", "")
+            file_path = self.tool_args.get("file_path", "")
+            if content and file_path:
+                initial_summary.append(f"  ► {file_path}\n", style="bold")
+                lines = content.splitlines()
+                for i, line in enumerate(lines[:20]):
+                    initial_summary.append(f"  {i + 1:>3} ", style="dim")
+                    initial_summary.append(f"{line}\n")
+                if len(lines) > 20:
+                    initial_summary.append(
+                        f"  ... ({len(lines) - 20} more lines)\n", style="dim"
+                    )
+        yield Static(initial_summary, id="tool-summary", classes="tool-summary")
 
         # Toggle button for expand/collapse (hidden by default until result has more lines)
         toggle = Button("▶ Show full output", id="tool-toggle", classes="tool-toggle", variant="default")
