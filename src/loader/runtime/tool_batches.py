@@ -15,6 +15,7 @@ from .dod import (
     ensure_active_verification_attempt,
     is_state_mutating_tool_call,
     record_successful_tool_call,
+    synthesize_todo_items,
 )
 from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
@@ -152,6 +153,13 @@ class ToolBatchRunner:
                     emit=emit,
                     summary=summary,
                 )
+                # Emit live todo progress from DoD state after each success
+                todo_items = synthesize_todo_items(dod)
+                if todo_items:
+                    await emit(AgentEvent(
+                        type="todo_update",
+                        todo_items=todo_items,
+                    ))
                 if loop_response is not None:
                     result.halted = True
                     result.final_response = loop_response

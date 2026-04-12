@@ -37,6 +37,7 @@ class AgentEvent:
     confirm_details: str | None = None
     is_error: bool = False
     dod_status: str | None = None
+    todo_items: list[dict[str, str]] | None = None
     pending_items_count: int | None = None
     last_verification_result: str | None = None
     workflow_mode: str | None = None

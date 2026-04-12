@@ -16,6 +16,7 @@ from .dod import (
     build_verification_summary,
     derive_verification_commands,
     ensure_active_verification_attempt,
+    synthesize_todo_items,
 )
 from .events import AgentEvent, TurnSummary
 from .evidence_provenance import (
@@ -186,6 +187,10 @@ class TurnFinalizer:
             summary.workflow_timeline = list(self.context.session.workflow_timeline)
             self.dod_store.save(dod)
             await self.emit_dod_status(emit, dod)
+            await emit(AgentEvent(
+                type="todo_update",
+                todo_items=synthesize_todo_items(dod),
+            ))
             return CompletionGateResult(
                 should_continue=False,
                 reason_code="non_mutating_response_accepted",
@@ -280,6 +285,11 @@ class TurnFinalizer:
             summary.definition_of_done = dod
             self.dod_store.save(dod)
             await self.emit_dod_status(emit, dod)
+            # Auto-complete all todo items when DoD is done
+            await emit(AgentEvent(
+                type="todo_update",
+                todo_items=synthesize_todo_items(dod),
+            ))
             verified_response = candidate_response
             verification_summary = build_verification_summary(dod.evidence)
             if verification_summary not in verified_response:

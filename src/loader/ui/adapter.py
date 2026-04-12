@@ -417,6 +417,10 @@ class EventAdapter:
             case "response":
                 self.app.post_message(ResponseComplete(content=event.content))
 
+            case "todo_update":
+                if event.todo_items:
+                    self.app.post_message(TodoListUpdated(todos=event.todo_items))
+
             case "confirmation":
                 # Confirmation is handled via async callback, but we can post a message
                 # for UI updates if needed

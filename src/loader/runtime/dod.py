@@ -385,6 +385,27 @@ def _append_unique(items: list[str], value: str) -> None:
         items.append(value)
 
 
+def synthesize_todo_items(dod: DefinitionOfDone) -> list[dict[str, str]]:
+    """Build a todo item list from the current DoD state.
+
+    This allows the TUI to show live progress without the model needing
+    to call TodoWrite explicitly.
+    """
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for label in dod.completed_items:
+        if label in seen:
+            continue
+        seen.add(label)
+        items.append({"content": label, "status": "completed", "active_form": label})
+    for label in dod.pending_items:
+        if label in seen:
+            continue
+        seen.add(label)
+        items.append({"content": label, "status": "in_progress", "active_form": label})
+    return items
+
+
 def _count_lines(content: str) -> int:
     if not content:
         return 0
