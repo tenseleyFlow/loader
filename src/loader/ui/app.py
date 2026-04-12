@@ -34,6 +34,7 @@ from .adapter import (
     StreamChunk,
     SubtaskStarted,
     ThinkingStarted,
+    TodoListUpdated,
     ToolCallCompleted,
     ToolCallStarted,
     TurnPhaseChanged,
@@ -47,6 +48,7 @@ from .widgets import (
     QuestionModal,
     StatusLine,
     StreamingText,
+    TodoListWidget,
     ToolCallWidget,
 )
 
@@ -109,6 +111,7 @@ class LoaderApp(App):
         yield Container(
             ScrollableContainer(id="message-area"),
             ApprovalBar(id="approval-bar"),
+            TodoListWidget(id="todo-list"),
             InputArea(id="input-area"),
             StatusLine(id="status-line"),
             id="main-container",
@@ -694,6 +697,10 @@ class LoaderApp(App):
             )
 
         msg_area.scroll_end(animate=False)
+
+    def on_todo_list_updated(self, message: TodoListUpdated) -> None:
+        """Update the persistent todo widget when TodoWrite fires."""
+        self.query_one("#todo-list", TodoListWidget).update_todos(message.todos)
 
     def on_plan_created(self, message: PlanCreated) -> None:
         """Handle plan creation."""

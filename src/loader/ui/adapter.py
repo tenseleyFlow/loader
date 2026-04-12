@@ -73,6 +73,13 @@ class StepStarted(Message):
 
 
 @dataclass
+class TodoListUpdated(Message):
+    """Agent updated its todo list."""
+
+    todos: list
+
+
+@dataclass
 class RecoveryAttempted(Message):
     """Error recovery was attempted."""
 
@@ -242,6 +249,29 @@ class EventAdapter:
         except Exception:
             pass
 
+    @staticmethod
+    def _extract_todos(content: str, tool_args: dict) -> list[dict]:
+        """Extract todo items from TodoWrite result or args."""
+        import json
+
+        # Try parsing the content as JSON (may be wrapped in Observation prefix)
+        for candidate in [content, content.split("Result: ", 1)[-1] if "Result:" in content else ""]:
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    todos = data.get("new_todos", [])
+                    if isinstance(todos, list):
+                        return todos
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Fall back to the original tool args
+        todos = tool_args.get("todos", [])
+        return todos if isinstance(todos, list) else []
+
     def handle_event(self, event: AgentEvent) -> None:
         """Convert AgentEvent to appropriate Textual message and post it."""
         self._debug_log(f"handle_event: type={event.type}")
@@ -366,6 +396,12 @@ class EventAdapter:
                         file_path=file_path,
                     )
                 )
+
+                # Update the todo list widget when TodoWrite succeeds
+                if tool_name == "TodoWrite" and not event.is_error:
+                    new_todos = self._extract_todos(event.content, tool_args)
+                    if new_todos:
+                        self.app.post_message(TodoListUpdated(todos=new_todos))
 
             case "recovery":
                 self.app.post_message(

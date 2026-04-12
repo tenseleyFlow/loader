@@ -8,12 +8,14 @@ from .model_select import ModelSelectModal
 from .question import QuestionModal
 from .status_line import StatusLine
 from .streaming import StreamingText
+from .todo_list import TodoListWidget
 from .tool_widget import ToolCallWidget
 
 __all__ = [
     "ApprovalBar",
     "InputArea",
     "StatusLine",
+    "TodoListWidget",
     "ToolCallWidget",
     "DiffWidget",
     "StreamingText",
