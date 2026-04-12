@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.widget import Widget
+from textual.containers import Vertical
 from textual.widgets import Static
 
 _STATUS_ICONS = {
@@ -14,8 +14,13 @@ _STATUS_ICONS = {
 }
 
 
-class TodoListWidget(Widget):
-    """Renders the agent's current todo list with checkboxes and strikethrough."""
+class TodoListWidget(Vertical):
+    """Renders the agent's current todo list with checkboxes and strikethrough.
+
+    Extends Vertical (not Widget) so Textual delegates rendering to the
+    child Static — a bare Widget requires a render() method and returns
+    visual=None without one, crashing the render pipeline.
+    """
 
     DEFAULT_CSS = """
     TodoListWidget {
