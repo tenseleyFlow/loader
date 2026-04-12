@@ -26,7 +26,7 @@ class OllamaBackend(LLMBackend):
         base_url: str = "http://localhost:11434",
         timeout: float | None = None,
         force_react: bool = False,
-        num_ctx: int = 8192,  # Reasonable context, not too slow
+        num_ctx: int = 16384,  # 16K context; most models support 32K+
         num_gpu: int = -1,  # Use all GPU layers by default (fast)
     ):
         self.model = model

@@ -89,7 +89,7 @@ class AgentConfig:
     workflow_mode_override: str | None = None
     stream: bool = True  # Stream LLM responses for real-time output
     session_rotate_after_bytes: int = 256 * 1024
-    session_auto_compaction_input_tokens_threshold: int = 100_000
+    session_auto_compaction_input_tokens_threshold: int = 12_000  # ~75% of default 16K context
     session_compaction_keep_last_messages: int = 4
 
     # Reasoning stages configuration
