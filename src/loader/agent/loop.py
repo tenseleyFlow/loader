@@ -75,7 +75,7 @@ class ReasoningConfig:
 @dataclass
 class AgentConfig:
     """Configuration for the agent."""
-    max_iterations: int = 15  # Reduced from 20
+    max_iterations: int = 200  # High cap; text loop detector is the real termination mechanism
     temperature: float = 0.3  # Low for better instruction following
     max_tokens: int = 2048  # Reduced from 4096, most responses are shorter
     force_react: bool = False  # Force ReAct even if model supports native tools

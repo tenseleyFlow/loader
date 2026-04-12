@@ -142,6 +142,23 @@ class TurnLoopController:
                 rlog.loop_exit(state.iterations, exit.reason_code, exit.reason_summary)
                 return exit
             break
+        else:
+            # Loop exhausted max_iterations without breaking — notify user
+            await emit(
+                AgentEvent(
+                    type="error",
+                    content=(
+                        f"Reached iteration limit ({self.context.config.max_iterations}). "
+                        "Stopping — the work above may be incomplete."
+                    ),
+                )
+            )
+            exit = TurnLoopExit(
+                reason_code="max_iterations_reached",
+                reason_summary=f"Stopped after {state.iterations} iterations (limit reached)",
+            )
+            rlog.loop_exit(state.iterations, exit.reason_code, exit.reason_summary)
+            return exit
 
         exit = TurnLoopExit(
             reason_code="turn_complete",
