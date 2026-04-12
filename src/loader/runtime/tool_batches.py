@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..llm.base import ToolCall
 from .context import RuntimeContext
@@ -84,6 +85,26 @@ class ToolBatchRunner:
 
         result = ToolBatchResult(consecutive_errors=consecutive_errors)
 
+        # Pre-populate planned items for the entire batch so the todo
+        # widget shows what's coming, not just what's done.
+        planned_labels = _batch_planned_labels(tool_calls)
+        completed_labels: list[str] = []
+
+        async def _emit_batch_todos() -> None:
+            """Emit a todo update combining DoD state with batch progress."""
+            items = synthesize_todo_items(dod)
+            for label in planned_labels:
+                if label in completed_labels:
+                    continue
+                # Don't duplicate items already in DoD
+                if any(item["content"] == label for item in items):
+                    continue
+                items.append({"content": label, "status": "in_progress", "active_form": label})
+            if items:
+                await emit(AgentEvent(type="todo_update", todo_items=items))
+
+        await _emit_batch_todos()
+
         for tool_call in tool_calls:
             cfg = self.context.config.reasoning
 
@@ -153,13 +174,11 @@ class ToolBatchRunner:
                     emit=emit,
                     summary=summary,
                 )
-                # Emit live todo progress from DoD state after each success
-                todo_items = synthesize_todo_items(dod)
-                if todo_items:
-                    await emit(AgentEvent(
-                        type="todo_update",
-                        todo_items=todo_items,
-                    ))
+                # Mark this tool's label as completed and emit live progress
+                label = _tool_call_label(tool_call)
+                if label:
+                    completed_labels.append(label)
+                await _emit_batch_todos()
                 if loop_response is not None:
                     result.halted = True
                     result.final_response = loop_response
@@ -414,3 +433,37 @@ def _stale_verification_detail(tool_call: ToolCall) -> str:
         if command:
             return f"bash ran `{command}`"
     return f"{tool_call.name} changed the workspace"
+
+
+def _tool_call_label(tool_call: ToolCall) -> str:
+    """Human-readable label for one tool call."""
+    name = tool_call.name
+    if name in ("write", "edit", "patch"):
+        path = str(tool_call.arguments.get("file_path", "")).strip()
+        if path:
+            short = Path(path).name
+            verb = "Write" if name == "write" else "Edit"
+            return f"{verb} {short}"
+    if name == "bash":
+        cmd = str(tool_call.arguments.get("command", "")).strip()
+        if cmd:
+            return f"Run {cmd[:40]}"
+    if name == "read":
+        path = str(tool_call.arguments.get("file_path", "")).strip()
+        if path:
+            return f"Read {Path(path).name}"
+    if name == "glob":
+        pattern = str(tool_call.arguments.get("pattern", "")).strip()
+        if pattern:
+            return f"Search {pattern[:30]}"
+    return ""
+
+
+def _batch_planned_labels(tool_calls: list[ToolCall]) -> list[str]:
+    """Build labels for all tool calls in a batch (for upfront planning display)."""
+    labels = []
+    for tc in tool_calls:
+        label = _tool_call_label(tc)
+        if label and label not in labels:
+            labels.append(label)
+    return labels

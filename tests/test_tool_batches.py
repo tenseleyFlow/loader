@@ -227,7 +227,8 @@ async def test_tool_batch_runner_uses_context_for_confidence_gate(temp_dir: Path
     assert "Please inspect the project." in captured["context"]
     assert context.session.messages[-1].role == Role.USER
     assert "[LOW CONFIDENCE WARNING]" in context.session.messages[-1].content
-    assert [event.type for event in events] == ["confidence"]
+    event_types = [event.type for event in events]
+    assert "confidence" in event_types
 
 
 @pytest.mark.asyncio
