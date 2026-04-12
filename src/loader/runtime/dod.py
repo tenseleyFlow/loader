@@ -388,11 +388,23 @@ def _append_unique(items: list[str], value: str) -> None:
 def synthesize_todo_items(dod: DefinitionOfDone) -> list[dict[str, str]]:
     """Build a todo item list from the current DoD state.
 
-    This allows the TUI to show live progress without the model needing
-    to call TodoWrite explicitly.
+    Combines abstract DoD items (pending/completed) with concrete file
+    operations (touched_files) so the TUI shows live progress as each
+    tool call completes — not just a batch update at the end.
     """
     items: list[dict[str, str]] = []
     seen: set[str] = set()
+
+    # Concrete file operations — these update in real time
+    for path in dod.touched_files:
+        short = Path(path).name if "/" in path else path
+        label = f"Write {short}"
+        if label in seen:
+            continue
+        seen.add(label)
+        items.append({"content": label, "status": "completed", "active_form": label})
+
+    # Abstract DoD items
     for label in dod.completed_items:
         if label in seen:
             continue
@@ -402,7 +414,9 @@ def synthesize_todo_items(dod: DefinitionOfDone) -> list[dict[str, str]]:
         if label in seen:
             continue
         seen.add(label)
-        items.append({"content": label, "status": "in_progress", "active_form": label})
+        status = "completed" if dod.status == "done" else "in_progress"
+        items.append({"content": label, "status": status, "active_form": label})
+
     return items
 
 
