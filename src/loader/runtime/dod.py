@@ -166,20 +166,20 @@ def record_successful_tool_call(
         _append_unique(dod.mutating_actions, tool_call.name)
 
     if tool_call.name == "write":
-        file_path = str(tool_call.arguments.get("file_path", "")).strip()
+        file_path = _resolve_touched_path(tool_call.arguments.get("file_path", ""))
         content = str(tool_call.arguments.get("content", ""))
         if file_path:
             _append_unique(dod.touched_files, file_path)
         dod.line_changes += _count_lines(content)
     elif tool_call.name == "edit":
-        file_path = str(tool_call.arguments.get("file_path", "")).strip()
+        file_path = _resolve_touched_path(tool_call.arguments.get("file_path", ""))
         old_string = str(tool_call.arguments.get("old_string", ""))
         new_string = str(tool_call.arguments.get("new_string", ""))
         if file_path:
             _append_unique(dod.touched_files, file_path)
         dod.line_changes += max(_count_lines(old_string), _count_lines(new_string))
     elif tool_call.name == "patch":
-        file_path = str(tool_call.arguments.get("file_path", "")).strip()
+        file_path = _resolve_touched_path(tool_call.arguments.get("file_path", ""))
         if file_path:
             _append_unique(dod.touched_files, file_path)
         for hunk in tool_call.arguments.get("hunks", []):
@@ -370,6 +370,14 @@ def slugify(task_statement: str) -> str:
     text = re.sub(r"[^a-z0-9]+", "-", text)
     text = text.strip("-")
     return text[:64] or "task"
+
+
+def _resolve_touched_path(raw: object) -> str:
+    """Expand ~ and resolve a file path from tool arguments for DoD tracking."""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    return str(Path(text).expanduser().resolve())
 
 
 def _append_unique(items: list[str], value: str) -> None:
