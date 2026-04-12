@@ -338,10 +338,15 @@ async def _main(
 
     await llm.describe_model()
 
-    # Probe the model's actual tool calling behavior (not just family heuristics)
+    # Probe the model's actual tool calling behavior at runtime temperature.
+    # Runs 3 rounds — model must pass all 3 to be considered native.
+    # This catches models like devstral that work at temp=0 but are
+    # unreliable at the actual runtime temperature.
     if not react and hasattr(llm, "probe_native_tool_support"):
-        console.print("[dim]Probing tool support...[/dim]", end="")
-        native = await llm.probe_native_tool_support()
+        from .agent.loop import AgentConfig as _ProbeCfg
+        probe_temp = _ProbeCfg.temperature
+        console.print(f"[dim]Probing tool support (temp={probe_temp}, 3 rounds)...[/dim]", end="")
+        native = await llm.probe_native_tool_support(temperature=probe_temp)
         console.print(f" [dim]{'native' if native else 'react'}[/dim]")
     mode_str = "ReAct" if react or not llm.supports_native_tools() else "Native"
 

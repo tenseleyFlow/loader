@@ -202,13 +202,18 @@ class OllamaBackend(LLMBackend):
         self._supports_native_tools = self.capability_profile().supports_native_tools
         return self._supports_native_tools
 
-    async def probe_native_tool_support(self) -> bool:
-        """Send a minimal tool call to the model and check if it responds with
-        native ``tool_calls`` rather than text.  Caches the result so subsequent
-        calls are free.
+    async def probe_native_tool_support(
+        self,
+        temperature: float = 0.3,
+        rounds: int = 3,
+        required_passes: int = 3,
+    ) -> bool:
+        """Probe whether the model *reliably* produces native tool calls.
 
-        This replaces relying solely on family-name heuristics — it tests the
-        model's *actual* behavior.
+        Runs ``rounds`` probe calls at the actual runtime ``temperature``.
+        The model must produce ``tool_calls`` in at least ``required_passes``
+        of those rounds to be considered native.  This catches models like
+        devstral that pass at temp=0 but are unreliable at higher temps.
         """
         if self.force_react:
             self._supports_native_tools = False
@@ -226,36 +231,47 @@ class OllamaBackend(LLMBackend):
                 },
             },
         }]
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": "Call the probe tool with value OK"}],
-            "tools": probe_tool,
-            "stream": False,
-            "options": {"temperature": 0, "num_predict": 64, "num_ctx": 2048},
-        }
-        try:
-            response = await self._client.post(
-                f"{self.base_url}/api/chat", json=payload,
-            )
-            if response.status_code == 400:
-                error = response.json().get("error", "")
-                if "does not support tools" in error:
-                    self._supports_native_tools = False
-                    return False
-            response.raise_for_status()
-            data = response.json()
-            message = data.get("message", {})
-            has_tool_calls = bool(message.get("tool_calls"))
-            self._supports_native_tools = has_tool_calls
-            self._debug_log(
-                f"probe_native_tool_support: {has_tool_calls} "
-                f"(content_len={len(message.get('content', ''))})"
-            )
-            return has_tool_calls
-        except Exception:
-            # On any failure, fall back to heuristic
-            self._supports_native_tools = self.capability_profile().supports_native_tools
-            return self._supports_native_tools
+
+        passes = 0
+        for i in range(rounds):
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "user", "content": "Call the probe tool with value OK"},
+                ],
+                "tools": probe_tool,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": 64,
+                    "num_ctx": 2048,
+                },
+            }
+            try:
+                response = await self._client.post(
+                    f"{self.base_url}/api/chat", json=payload,
+                )
+                if response.status_code == 400:
+                    error = response.json().get("error", "")
+                    if "does not support tools" in error:
+                        self._supports_native_tools = False
+                        self._debug_log("probe: model rejected tools (400)")
+                        return False
+                response.raise_for_status()
+                data = response.json()
+                message = data.get("message", {})
+                if message.get("tool_calls"):
+                    passes += 1
+            except Exception:
+                pass  # treat failures as non-passes
+
+        native = passes >= required_passes
+        self._supports_native_tools = native
+        self._debug_log(
+            f"probe_native_tool_support: {passes}/{rounds} passed "
+            f"(need {required_passes}) → {'native' if native else 'react'}"
+        )
+        return native
 
     def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Format messages for Ollama API.
