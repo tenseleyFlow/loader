@@ -10,6 +10,7 @@ from ..llm.base import Message, Role
 from .assistant_turns import AssistantTurnRequester
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
+from .logging import get_runtime_logger
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import merge_usage
@@ -112,6 +113,15 @@ class TurnIterationController:
         response_content = assistant_turn.response_content
         tool_calls = list(assistant_turn.tool_calls)
         pending_tool_calls_seen = set(assistant_turn.pending_tool_calls_seen)
+
+        rlog = get_runtime_logger()
+        rlog.turn_response(
+            iteration=iterations,
+            content_len=len(assistant_turn.content),
+            tool_call_count=len(tool_calls),
+            tool_names=[tc.name for tc in tool_calls],
+            usage=assistant_turn.usage,
+        )
 
         if not assistant_turn.content.strip():
             return await self._handle_empty_response(

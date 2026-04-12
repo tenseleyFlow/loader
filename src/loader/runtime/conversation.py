@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 
 from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
+from .logging import reset_runtime_logger
 from .bootstrap import (
     RuntimeBootstrapSource,
     RuntimeBootstrapView,
@@ -139,6 +140,8 @@ class ConversationRuntime:
         original_task: str | None = None,
     ) -> TurnSummary:
         """Run one task turn and return a structured summary."""
+
+        reset_runtime_logger()
 
         prepared_turn = await self.turn_preparation.prepare(
             task=task,

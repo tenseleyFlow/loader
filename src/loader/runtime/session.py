@@ -533,6 +533,14 @@ class ConversationSession:
         if len(self.messages) <= 2:
             request_messages.extend(self.few_shot_factory())
         request_messages.extend(self.messages)
+
+        from .logging import get_runtime_logger
+        rlog = get_runtime_logger()
+        roles: dict[str, int] = {}
+        for msg in request_messages:
+            roles[msg.role.value] = roles.get(msg.role.value, 0) + 1
+        rlog.session_context(message_count=len(request_messages), roles=roles)
+
         return request_messages
 
     def append(self, message: Message) -> None:

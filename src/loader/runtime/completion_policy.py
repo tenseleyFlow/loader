@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from ..llm.base import Message, Role
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
+from .logging import get_runtime_logger
 from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance
 from .reasoning_types import TaskCompletionCheck
@@ -62,6 +63,9 @@ class CompletionPolicy:
         """Stop the turn when the assistant starts repeating textually."""
 
         is_text_loop, loop_description = self.context.safeguards.detect_text_loop(content)
+        rlog = get_runtime_logger()
+        rlog.completion_check("text_loop", "detected" if is_text_loop else "clear",
+                              reason=loop_description if is_text_loop else None)
         if not is_text_loop:
             return TextLoopDecision(
                 should_stop=False,
@@ -118,6 +122,16 @@ class CompletionPolicy:
         )
         completion_check = assessment.check if assessment is not None else None
         is_premature = bool(completion_check is not None and not completion_check.is_complete)
+        rlog = get_runtime_logger()
+        rlog.completion_check(
+            "follow_through",
+            "premature" if is_premature else "accepted",
+            reason=(
+                "; ".join(completion_check.missing_evidence[:2])
+                if is_premature and completion_check
+                else None
+            ),
+        )
         if not is_premature:
             return ContinuationDecision(
                 should_continue=False,

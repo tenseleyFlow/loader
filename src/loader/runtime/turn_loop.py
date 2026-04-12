@@ -9,6 +9,7 @@ from .context import RuntimeContext
 from .dod import DefinitionOfDone
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
+from .logging import get_runtime_logger
 from .rollback import RollbackPlan
 from .turn_iteration import TurnIterationAction, TurnIterationController
 from .turn_preamble import TurnPreludeController
@@ -73,8 +74,14 @@ class TurnLoopController:
         """Run the bounded main turn loop and report how it finished."""
 
         state = TurnLoopState()
+        rlog = get_runtime_logger()
         while state.iterations < self.context.config.max_iterations:
             state.iterations += 1
+            rlog.turn_start(
+                iteration=state.iterations,
+                message_count=len(self.context.session.messages),
+                task=effective_task,
+            )
             prelude_decision = await self.turn_preamble.prepare_iteration(
                 task=task,
                 original_task=original_task,
@@ -116,18 +123,29 @@ class TurnLoopController:
             state.extracted_iterations = iteration_decision.extracted_iterations
             state.consecutive_errors = iteration_decision.consecutive_errors
             state.actions_taken.extend(iteration_decision.new_actions_taken)
+            rlog.turn_decision(
+                iteration=state.iterations,
+                action=iteration_decision.action.value,
+                continuation_count=state.continuation_count,
+                consecutive_errors=state.consecutive_errors,
+                reason=iteration_decision.finalize_reason_code,
+            )
             if iteration_decision.action == TurnIterationAction.CONTINUE:
                 continue
             if iteration_decision.action == TurnIterationAction.FINALIZE:
-                return TurnLoopExit(
+                exit = TurnLoopExit(
                     reason_code=iteration_decision.finalize_reason_code
                     or "turn_complete",
                     reason_summary=iteration_decision.finalize_reason_summary
                     or "Finalizing completed turn",
                 )
+                rlog.loop_exit(state.iterations, exit.reason_code, exit.reason_summary)
+                return exit
             break
 
-        return TurnLoopExit(
+        exit = TurnLoopExit(
             reason_code="turn_complete",
             reason_summary="Finalizing completed turn",
         )
+        rlog.loop_exit(state.iterations, exit.reason_code, exit.reason_summary)
+        return exit

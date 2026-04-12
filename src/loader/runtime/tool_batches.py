@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from ..llm.base import ToolCall
 from .context import RuntimeContext
+from .logging import get_runtime_logger
 from .dod import (
     DefinitionOfDone,
     DefinitionOfDoneStore,
@@ -176,7 +177,18 @@ class ToolBatchRunner:
                 outcome=outcome,
                 emit=emit,
             )
+
+            rlog = get_runtime_logger()
+            appended = not should_continue
+            rlog.tool_exec(
+                name=tool_call.name,
+                state=outcome.state.value,
+                is_error=outcome.is_error,
+                result_preview=outcome.event_content,
+                appended_to_session=appended,
+            )
             if should_continue:
+                rlog.verification_gate(tool_call.name, should_continue=True)
                 continue
 
             self.context.session.append(outcome.message)
