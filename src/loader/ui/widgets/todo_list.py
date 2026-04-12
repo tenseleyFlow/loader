@@ -40,16 +40,20 @@ class TodoListWidget(Widget):
         self._items: list[dict[str, str]] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="todo-content")
+        # Use a space so the Static always has valid renderable content.
+        # An empty string can produce visual=None and crash Textual's
+        # render pipeline when the widget is visible.
+        yield Static(" ", id="todo-content")
 
     def update_todos(self, todos: list[dict[str, str]]) -> None:
         """Replace the displayed todo list."""
         self._items = list(todos)
         if not self._items:
             self.remove_class("has-items")
+            self.query_one("#todo-content", Static).update(" ")
             return
-        self.add_class("has-items")
         self._render()
+        self.add_class("has-items")
 
     def _render(self) -> None:
         content = Text()
@@ -69,4 +73,7 @@ class TodoListWidget(Widget):
                 content.append(label)
             content.append("\n")
 
-        self.query_one("#todo-content", Static).update(content)
+        try:
+            self.query_one("#todo-content", Static).update(content)
+        except Exception:
+            pass  # widget not mounted yet; will render on next update
