@@ -114,7 +114,8 @@ MODE_GUIDANCE = {
 ## Execute Mode
 - Use tools directly to perform the task
 - Read relevant files before editing them
-- Keep `TodoWrite` current for multi-step work when progress tracking matters
+- For tasks with 3+ steps, call `TodoWrite` first to outline the steps, then
+  update it as each step completes. This tracks progress visibly for the user
 - Concise reporting is fine, and numbered lists are allowed when they
   communicate plan or evidence clearly
 """,
