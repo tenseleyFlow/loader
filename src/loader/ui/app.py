@@ -634,7 +634,7 @@ class LoaderApp(App):
 
         # Check if this is an edit tool with diff info
         # Note: old_string can be empty string (inserting), so check `is not None`
-        if message.tool_name == "edit" and message.new_string and message.old_string is not None:
+        if message.tool_name == "edit" and message.new_string and message.old_string is not None and not message.is_error:
             # Replace tool widget with diff widget
             self._debug_log(
                 "  -> showing EDIT diff widget "
@@ -650,8 +650,8 @@ class LoaderApp(App):
                 new_string=message.new_string,
             )
             msg_area.mount(diff_widget)
-        # Check if this is a write tool - show as diff (new file)
-        elif message.tool_name == "write" and message.new_string:
+        # Check if this is a write tool - show as diff (new file), but only on success
+        elif message.tool_name == "write" and message.new_string and not message.is_error:
             self._debug_log(f"  -> showing WRITE diff widget ({len(message.new_string)} chars)")
             if tool_widget:
                 tool_widget.remove()
