@@ -149,7 +149,11 @@ NO_TOOL_FAMILIES = {
 def _family_tokens(model_name: str, model_details: dict[str, Any] | None) -> set[str]:
     """Collect lowercase family tokens from model name and model details."""
 
-    tokens = {model_name.lower()}
+    name = model_name.lower()
+    tokens = {name}
+    # Strip :tag so "devstral:24b" also produces "devstral"
+    if ":" in name:
+        tokens.add(name.split(":")[0])
     if model_details:
         details = model_details.get("details", model_details)
         families = details.get("families", [])
@@ -159,6 +163,15 @@ def _family_tokens(model_name: str, model_details: dict[str, Any] | None) -> set
         if family:
             tokens.add(str(family).lower())
     return tokens
+
+
+def _any_prefix_match(tokens: set[str], family_set: set[str]) -> bool:
+    """Check if any family entry is a prefix of any token."""
+    for token in tokens:
+        for family in family_set:
+            if token.startswith(family):
+                return True
+    return False
 
 
 def resolve_capability_profile(
@@ -179,21 +192,23 @@ def resolve_capability_profile(
         return override
 
     normalized = model_name.lower().strip()
-    if normalized in KNOWN_CAPABILITY_PROFILES:
-        known = KNOWN_CAPABILITY_PROFILES[normalized]
-        return CapabilityProfile(
-            model_name=model_name,
-            supports_native_tools=known.supports_native_tools,
-            supports_streaming=known.supports_streaming,
-            context_window=known.context_window,
-            preferred_tool_call_format=known.preferred_tool_call_format,
-            verification_strictness=known.verification_strictness,
-            notes=list(known.notes),
-        )
+    # Try full name first, then without :tag (e.g. "deepseek-r1:14b" -> "deepseek-r1")
+    for key in (normalized, normalized.split(":")[0]):
+        if key in KNOWN_CAPABILITY_PROFILES:
+            known = KNOWN_CAPABILITY_PROFILES[key]
+            return CapabilityProfile(
+                model_name=model_name,
+                supports_native_tools=known.supports_native_tools,
+                supports_streaming=known.supports_streaming,
+                context_window=known.context_window,
+                preferred_tool_call_format=known.preferred_tool_call_format,
+                verification_strictness=known.verification_strictness,
+                notes=list(known.notes),
+            )
 
     tokens = _family_tokens(normalized, model_details)
 
-    if any(token in NATIVE_TOOL_FAMILIES for token in tokens):
+    if _any_prefix_match(tokens, NATIVE_TOOL_FAMILIES):
         return _profile(
             model_name,
             supports_native_tools=True,
@@ -202,7 +217,7 @@ def resolve_capability_profile(
             notes=["Resolved from model family heuristic."],
         )
 
-    if any(token in NO_TOOL_FAMILIES for token in tokens):
+    if _any_prefix_match(tokens, NO_TOOL_FAMILIES):
         return _profile(
             model_name,
             supports_native_tools=False,
