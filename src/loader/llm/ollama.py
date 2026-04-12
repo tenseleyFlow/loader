@@ -430,6 +430,8 @@ class OllamaBackend(LLMBackend):
         display_content = ""  # Content to show (filtered)
         in_think_block = False  # For reasoning models like deepseek-r1
         in_tool_call_block = False  # For ReAct <tool_call> tags
+        # Ollama sends native tool_calls in non-final chunks; collect them.
+        accumulated_tool_calls: list[ToolCall] = []
 
         async for line in response.aiter_lines():
             if not line:
@@ -446,14 +448,30 @@ class OllamaBackend(LLMBackend):
 
             is_done = data.get("done", False)
 
+            # Collect native tool_calls from non-final chunks
+            if not is_done and "tool_calls" in message:
+                for i, tc in enumerate(message["tool_calls"]):
+                    func = tc.get("function", {})
+                    args = func.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {}
+                    accumulated_tool_calls.append(ToolCall(
+                        id=tc.get("id", f"call_{len(accumulated_tool_calls)}"),
+                        name=func.get("name", ""),
+                        arguments=args,
+                    ))
+                continue
+
             if is_done:
-                tool_calls = []
-                # Check for native tool calls first
+                tool_calls: list[ToolCall] = []
+                # Check for native tool calls in the final chunk
                 if "tool_calls" in message:
                     self._debug_log(f"is_done: found native tool_calls in message: {len(message['tool_calls'])}")
                     for i, tc in enumerate(message["tool_calls"]):
                         func = tc.get("function", {})
-                        # Arguments may be a JSON string or dict
                         args = func.get("arguments", {})
                         if isinstance(args, str):
                             try:
@@ -465,7 +483,12 @@ class OllamaBackend(LLMBackend):
                             name=func.get("name", ""),
                             arguments=args,
                         ))
-                else:
+
+                # Use accumulated tool_calls from earlier chunks
+                if not tool_calls and accumulated_tool_calls:
+                    tool_calls = accumulated_tool_calls
+
+                if not tool_calls:
                     self._debug_log(f"is_done: parsing tool calls from text (len={len(full_content)})")
                     self._debug_log(f"is_done: full_content = {repr(full_content[:500])}")
                     clean_content, tool_calls = self._parse_tool_calls(
