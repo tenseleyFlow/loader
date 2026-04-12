@@ -1,7 +1,6 @@
 """Approval bar widget for command confirmation (Claude Code style)."""
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Static
 from textual.binding import Binding
@@ -25,7 +24,8 @@ class ApprovalBar(Widget, can_focus=True):
 
     DEFAULT_CSS = """
     ApprovalBar {
-        height: 3;
+        height: auto;
+        max-height: 4;
         display: none;
         padding: 0 1;
         background: $warning 15%;
@@ -37,31 +37,8 @@ class ApprovalBar(Widget, can_focus=True):
         display: block;
     }
 
-    ApprovalBar #approval-container {
+    ApprovalBar #approval-content {
         width: 100%;
-        height: 3;
-    }
-
-    ApprovalBar #approval-tool {
-        color: $warning;
-        text-style: bold;
-        padding-right: 1;
-    }
-
-    ApprovalBar #approval-preview {
-        color: $text;
-    }
-
-    ApprovalBar #approval-keys {
-        color: $text-muted;
-        text-align: right;
-        width: auto;
-        dock: right;
-    }
-
-    ApprovalBar #approval-keys .key {
-        color: $success;
-        text-style: bold;
     }
     """
 
@@ -88,13 +65,7 @@ class ApprovalBar(Widget, can_focus=True):
         self.can_focus = True
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="approval-container"):
-            yield Static("", id="approval-tool")
-            yield Static("", id="approval-preview")
-            yield Static(
-                "[Y]es  [n]o  [e]dit",
-                id="approval-keys",
-            )
+        yield Static("", id="approval-content")
 
     def show_approval(self, tool_name: str, message: str, details: str = "") -> None:
         """Show the approval bar with a pending action.
@@ -107,17 +78,14 @@ class ApprovalBar(Widget, can_focus=True):
         self._tool_name = tool_name
         self._full_command = details
 
-        # Update the display
-        tool_label = self.query_one("#approval-tool", Static)
-        preview_label = self.query_one("#approval-preview", Static)
-
-        tool_label.update(f"[{tool_name}]")
-
-        # Truncate preview if too long
         preview = details if details else message
-        if len(preview) > 60:
-            preview = preview[:57] + "..."
-        preview_label.update(preview)
+        if len(preview) > 70:
+            preview = preview[:67] + "..."
+        content = self.query_one("#approval-content", Static)
+        content.update(
+            f"[bold $warning]\\[{tool_name}][/] {preview}  "
+            f"[bold green]\\[Y][/]es  [bold red]\\[n][/]o  [bold]\\[e][/]dit"
+        )
 
         # Show the bar
         self.add_class("visible")
