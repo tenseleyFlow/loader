@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.widget import Widget
 
 
-class ApprovalBar(Widget):
+class ApprovalBar(Widget, can_focus=True):
     """Inline approval bar that appears above the input when confirmation is needed.
 
     Shows: [tool_name] command_preview                    [Y]es [n]o [e]dit
@@ -119,30 +119,34 @@ class ApprovalBar(Widget):
             preview = preview[:57] + "..."
         preview_label.update(preview)
 
-        # Show the bar and focus it after the CSS transition completes
+        # Show the bar
         self.add_class("visible")
-        self.can_focus = True
-
-        def _grab_focus() -> None:
-            self.focus()
-            try:
-                with open("/tmp/loader_debug.log", "a") as f:
-                    f.write(
-                        f"[approval-bar] deferred focus: has_focus={self.has_focus}\n"
-                    )
-            except Exception:
-                pass
 
         try:
             with open("/tmp/loader_debug.log", "a") as f:
                 f.write(
                     f"[approval-bar] show_approval: tool={tool_name}, "
-                    f"visible=True, deferring focus...\n"
+                    f"visible=True, scheduling focus...\n"
                 )
         except Exception:
             pass
 
-        self.call_after_refresh(_grab_focus)
+        # Use a short timer to let Textual complete the layout pass
+        # before attempting focus. call_after_refresh is too early.
+        self.set_timer(0.15, self._deferred_focus)
+
+    def _deferred_focus(self) -> None:
+        """Attempt focus after layout has settled."""
+        self.focus()
+        try:
+            with open("/tmp/loader_debug.log", "a") as f:
+                f.write(f"[approval-bar] deferred focus: has_focus={self.has_focus}\n")
+        except Exception:
+            pass
+        if not self.has_focus:
+            # Last resort: try scrolling into view and focusing again
+            self.scroll_visible()
+            self.focus()
 
     def hide_approval(self) -> None:
         """Hide the approval bar."""
