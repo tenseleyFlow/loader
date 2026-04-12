@@ -6,7 +6,6 @@ from textual.events import Key
 from textual.message import Message
 from textual.widgets import Input, Static
 
-
 # Available slash commands for suggestions
 SLASH_COMMANDS = [
     "/help",

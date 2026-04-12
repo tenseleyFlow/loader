@@ -1,7 +1,6 @@
 """Streaming text widget for LLM responses."""
 
 from rich.text import Text
-
 from textual.reactive import reactive
 from textual.widgets import Static
 

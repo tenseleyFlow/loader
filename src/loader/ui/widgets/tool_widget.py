@@ -2,11 +2,10 @@
 
 from rich.markup import escape
 from rich.text import Text
-
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.reactive import reactive
-from textual.widgets import Static, Button
+from textual.widgets import Button, Static
 
 
 class ToolCallWidget(Vertical):

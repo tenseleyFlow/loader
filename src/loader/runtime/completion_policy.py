@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 from ..llm.base import Message, Role
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
-from .logging import get_runtime_logger
 from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance
+from .logging import get_runtime_logger
 from .reasoning_types import TaskCompletionCheck
 from .task_completion import assess_completion_follow_through_with_provenance
 from .verification_observations import (

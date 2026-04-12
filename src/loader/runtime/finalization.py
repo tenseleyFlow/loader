@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from .logging import get_runtime_logger
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +24,7 @@ from .evidence_provenance import (
     summarize_evidence_provenance,
 )
 from .executor import ToolExecutor
+from .logging import get_runtime_logger
 from .memory import MemoryStore
 from .policy_timeline import append_verification_timeline_entry
 from .session import normalize_usage

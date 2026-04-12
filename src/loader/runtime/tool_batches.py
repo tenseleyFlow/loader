@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 from ..llm.base import ToolCall
 from .context import RuntimeContext
-from .logging import get_runtime_logger
 from .dod import (
     DefinitionOfDone,
     DefinitionOfDoneStore,
@@ -20,6 +19,7 @@ from .dod import (
 from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .executor import ToolExecutionState, ToolExecutor
+from .logging import get_runtime_logger
 from .policy_timeline import append_verification_timeline_entry
 from .tool_batch_checks import ToolBatchConfidenceGate, ToolBatchVerificationGate
 from .tool_batch_recovery import ToolBatchRecoveryController

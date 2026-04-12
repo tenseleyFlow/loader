@@ -1,8 +1,8 @@
 """Legacy compatibility exports for runtime-owned recovery services."""
 
-from ..runtime.recovery import (
-    ErrorCategory,
+from ..runtime.recovery import (  # noqa: F401
     RECOVERY_PROMPT,
+    ErrorCategory,
     RecoveryContext,
     ToolAttempt,
     categorize_error,

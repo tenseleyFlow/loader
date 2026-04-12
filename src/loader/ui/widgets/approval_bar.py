@@ -1,10 +1,10 @@
 """Approval bar widget for command confirmation (Claude Code style)."""
 
 from textual.app import ComposeResult
-from textual.message import Message
-from textual.widgets import Static
 from textual.binding import Binding
+from textual.message import Message
 from textual.widget import Widget
+from textual.widgets import Static
 
 
 class ApprovalBar(Widget, can_focus=True):
@@ -127,7 +127,7 @@ class ApprovalBar(Widget, can_focus=True):
         """Handle 'y' key - approve the action."""
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval-bar] action_approve called, posting Approved message\n")
+                f.write("[approval-bar] action_approve called, posting Approved message\n")
         except Exception:
             pass
         self.post_message(self.Approved())
@@ -137,7 +137,7 @@ class ApprovalBar(Widget, can_focus=True):
         """Handle 'n' or escape - reject the action."""
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval-bar] action_reject called, posting Rejected message\n")
+                f.write("[approval-bar] action_reject called, posting Rejected message\n")
         except Exception:
             pass
         self.post_message(self.Rejected())
@@ -147,7 +147,7 @@ class ApprovalBar(Widget, can_focus=True):
         """Handle 'e' key - edit the command."""
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval-bar] action_edit called, posting EditRequested message\n")
+                f.write("[approval-bar] action_edit called, posting EditRequested message\n")
         except Exception:
             pass
         self.post_message(self.EditRequested(self._full_command))

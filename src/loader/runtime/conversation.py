@@ -6,7 +6,6 @@ from collections.abc import Awaitable, Callable
 
 from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
-from .logging import reset_runtime_logger
 from .bootstrap import (
     RuntimeBootstrapSource,
     RuntimeBootstrapView,
@@ -19,6 +18,7 @@ from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .finalization import TurnFinalizer
+from .logging import reset_runtime_logger
 from .phases import TurnPhase, TurnPhaseTracker, TurnTransitionKind
 from .repair import ResponseRepairer
 from .response_routing import AssistantResponseRouter

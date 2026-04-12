@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-
 ProjectType = Literal["python", "node", "rust", "go", "unknown"]
 PackageManager = Literal["pip", "uv", "poetry", "pipenv", "npm", "yarn", "pnpm", "cargo", "go", "unknown"]
 TestFramework = Literal["pytest", "unittest", "jest", "mocha", "vitest", "cargo-test", "go-test", "unknown"]
