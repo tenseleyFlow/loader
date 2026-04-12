@@ -123,7 +123,7 @@ class TurnIterationController:
             usage=assistant_turn.usage,
         )
 
-        if not assistant_turn.content.strip():
+        if not assistant_turn.content.strip() and not tool_calls:
             return await self._handle_empty_response(
                 task=task,
                 original_task=original_task,
