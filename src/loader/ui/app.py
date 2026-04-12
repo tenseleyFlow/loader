@@ -657,7 +657,19 @@ class LoaderApp(App):
             pass
 
         # Get the corresponding tool widget from queue (FIFO)
-        tool_widget = self._tool_widget_queue.pop(0) if self._tool_widget_queue else None
+        # Match widget by tool name instead of blind FIFO to prevent
+        # result/widget mismatches when events arrive out of order
+        tool_widget = None
+        if self._tool_widget_queue:
+            for i, w in enumerate(self._tool_widget_queue):
+                # Match on tool name (strip "verify " prefix for verification phase)
+                widget_name = w.tool_name.removeprefix("verify ")
+                if widget_name == message.tool_name:
+                    tool_widget = self._tool_widget_queue.pop(i)
+                    break
+            else:
+                # No name match — fall back to FIFO
+                tool_widget = self._tool_widget_queue.pop(0)
 
         # Check if this is an edit tool with diff info
         # Note: old_string can be empty string (inserting), so check `is not None`
