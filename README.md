@@ -1,56 +1,78 @@
 # Loader
 
-Loader is a local-first coding assistant that runs against Ollama and drives a small tool-using agent loop from the terminal or a Textual TUI.
-
-## Current state
-
-Loader is still early-stage. The project already has:
-
-- a working terminal and TUI interface
-- a default tool set for file reads/writes, editing, search, globbing, and shell commands
-- project-context detection
-- runtime safeguards, recovery logic, and heuristic completion checks
-
-It does not yet have the stronger runtime architecture described in [`.docs/REPORT.md`](.docs/REPORT.md). The current implementation plan lives under [`.docs/sprints/`](.docs/sprints/index.md), and the Sprint 00 runtime baseline is tracked in [`.docs/PARITY.md`](.docs/PARITY.md).
+Loader is a local-first coding assistant that runs against Ollama and drives a tool-using agent loop from the terminal or a Textual TUI.
 
 ## Requirements
 
 - Python 3.11+
-- `uv`
-- a running local Ollama server on `http://localhost:11434`
-- at least one pulled Ollama model
+- [uv](https://docs.astral.sh/uv/)
+- a running Ollama server on `http://localhost:11434`
+- at least one pulled Ollama model (see [MODELS.md](MODELS.md))
 
-## Setup
+## Install
 
 ```bash
-uv sync
+# Global install — use loader from any directory
+uv tool install git+https://github.com/tenseleyFlow/loader
+loader "write a hello world program"
+
+# Or install from a local clone
+git clone https://github.com/tenseleyFlow/loader
+cd loader
+uv tool install -e .
+```
+
+## Development setup
+
+```bash
 uv sync --extra dev
+
+uv run loader                          # TUI mode
+uv run loader --no-tui                 # terminal mode
+uv run loader --select-model           # pick an Ollama model
+
+uv run pytest                          # run all tests
+uv run pytest tests/test_foo.py -q     # single file
+uv run ruff check src tests            # lint
+uv run mypy src                        # type check (strict)
 ```
 
-## Common commands
+## How it works
 
-```bash
-uv run loader
-uv run loader "write a hello world program"
-uv run loader --no-tui
-uv run loader --select-model
+Loader sends your prompt to a local Ollama model with tool schemas attached. The model calls tools (read, write, edit, bash, glob, grep, git) to complete the task. A typed turn loop drives the agent cycle:
 
-uv run pytest
-uv run pytest tests/test_runtime_harness.py -q
-uv run ruff check src tests
-uv run mypy src
+1. **Prepare** — detect project context, build system prompt, set workflow mode
+2. **Assistant** — stream the model response, extract tool calls
+3. **Tools** — execute the tool batch, record results to session
+4. **Completion** — check definition-of-done, run verification if needed
+5. **Repeat** or **finalize** based on whether the task is complete
+
+The TUI shows tool calls with previews, an approval bar for writes outside the workspace, streaming output, and a status line with session state.
+
+## Key options
+
+```
+--permission-mode    read-only | workspace-write (default) | danger-full-access | prompt | allow
+--select-model       choose from installed Ollama models
+--plan               start in plan mode (outline before coding)
+--clarify            start in clarify mode (ask questions first)
+--react              force text-based tool calling (for models without native support)
+--ctx N              context window size (default 8192)
 ```
 
-## Repository notes
+## Repository layout
 
-- Loader source lives under `src/loader/`
-- tests live under `tests/`
-- reference repos used for comparison live under `refs/` and are gitignored
-- `uv run pytest` is scoped to Loader's own `tests/` directory
+- `src/loader/runtime/` — turn engine, tool execution, verification, workflow routing
+- `src/loader/tools/` — tool implementations (file, shell, search, git, workflow)
+- `src/loader/llm/` — Ollama backend with native tool calling and streaming
+- `src/loader/ui/` — Textual TUI with tool widgets, approval bar, status line
+- `src/loader/cli/` — Click CLI entry point
+- `tests/` — 416 deterministic tests with scripted backend harness
+- `.docs/` — sprint planning, parity checkpoints, architecture analysis
 
-## Known limitations
+## Documentation
 
-- the agent loop is still monolithic and heuristic-heavy
-- there is a known tool-result contract regression captured by the runtime harness and left red for Sprint 01
-- permissions are still confirmation-based rather than mode-based
-- session persistence, planning artifacts, and verification loops are not implemented yet
+- [MODELS.md](MODELS.md) — recommended Ollama models
+- [.docs/REPORT.md](.docs/REPORT.md) — deep analysis vs reference implementations
+- [.docs/PARITY.md](.docs/PARITY.md) — runtime feature inventory
+- [.docs/sprints/](.docs/sprints/index.md) — sprint planning
