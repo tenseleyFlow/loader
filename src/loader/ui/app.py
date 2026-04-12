@@ -335,7 +335,8 @@ class LoaderApp(App):
         """Probe a newly selected model for tool support and update UI."""
         backend = self.shell_owner.backend
         await backend.describe_model()
-        native = await backend.probe_native_tool_support()
+        schemas = self.shell_owner.registry.get_schemas()
+        native = await backend.probe_native_tool_support(tools=schemas)
         if hasattr(self.shell_owner, "refresh_capability_profile"):
             self.shell_owner.refresh_capability_profile()
         self.model_name = model_name

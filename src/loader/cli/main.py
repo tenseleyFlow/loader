@@ -344,9 +344,13 @@ async def _main(
     # unreliable at the actual runtime temperature.
     if not react and hasattr(llm, "probe_native_tool_support"):
         from ..agent.loop import AgentConfig as _ProbeCfg
+        from ..tools.base import create_default_registry as _probe_registry
         probe_temp = _ProbeCfg.temperature
+        probe_schemas = _probe_registry().get_schemas()
         console.print(f"[dim]Probing tool support (temp={probe_temp}, 3 rounds)...[/dim]", end="")
-        native = await llm.probe_native_tool_support(temperature=probe_temp)
+        native = await llm.probe_native_tool_support(
+            temperature=probe_temp, tools=probe_schemas,
+        )
         console.print(f" [dim]{'native' if native else 'react'}[/dim]")
     mode_str = "ReAct" if react or not llm.supports_native_tools() else "Native"
 

@@ -207,44 +207,47 @@ class OllamaBackend(LLMBackend):
         temperature: float = 0.3,
         rounds: int = 3,
         required_passes: int = 3,
+        tools: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Probe whether the model *reliably* produces native tool calls.
 
-        Runs ``rounds`` probe calls at the actual runtime ``temperature``.
-        The model must produce ``tool_calls`` in at least ``required_passes``
-        of those rounds to be considered native.  This catches models like
-        devstral that pass at temp=0 but are unreliable at higher temps.
+        Runs ``rounds`` probe calls at the actual runtime ``temperature``
+        using the real tool schemas (when provided).  The model must produce
+        ``tool_calls`` in at least ``required_passes`` of those rounds.
         """
         if self.force_react:
             self._supports_native_tools = False
             return False
 
-        probe_tool = [{
-            "type": "function",
-            "function": {
-                "name": "probe",
-                "description": "Return the word OK",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                    "required": ["value"],
+        if tools:
+            probe_tools = self._format_tools(tools)
+        else:
+            probe_tools = [{
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "description": "Run a command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
                 },
-            },
-        }]
+            }]
 
         passes = 0
         for i in range(rounds):
             payload = {
                 "model": self.model,
                 "messages": [
-                    {"role": "user", "content": "Call the probe tool with value OK"},
+                    {"role": "user", "content": "Run: echo hello"},
                 ],
-                "tools": probe_tool,
+                "tools": probe_tools,
                 "stream": False,
                 "options": {
                     "temperature": temperature,
-                    "num_predict": 64,
-                    "num_ctx": 2048,
+                    "num_predict": 128,
+                    "num_ctx": 4096,
                 },
             }
             try:
