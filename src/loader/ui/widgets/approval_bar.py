@@ -25,12 +25,12 @@ class ApprovalBar(Widget, can_focus=True):
 
     DEFAULT_CSS = """
     ApprovalBar {
-        height: auto;
-        dock: bottom;
+        height: 3;
         display: none;
         padding: 0 1;
-        background: $surface;
-        border-top: solid $warning;
+        background: $warning 15%;
+        border-top: tall $warning;
+        border-bottom: tall $warning;
     }
 
     ApprovalBar.visible {
@@ -39,7 +39,7 @@ class ApprovalBar(Widget, can_focus=True):
 
     ApprovalBar #approval-container {
         width: 100%;
-        height: auto;
+        height: 3;
     }
 
     ApprovalBar #approval-tool {
