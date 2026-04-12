@@ -432,6 +432,26 @@ class LoaderApp(App):
         finally:
             self._pending_question = None
 
+    def on_key(self, event) -> None:
+        """Intercept Y/n/e keys at app level when a confirmation is pending.
+
+        This bypasses the approval bar focus issue — the bar may not receive
+        focus reliably, so we handle the keys here instead.
+        """
+        if self._pending_confirmation is None or self._pending_confirmation.done():
+            return
+        key = event.key
+        if key in ("y", "Y"):
+            event.prevent_default()
+            event.stop()
+            self._pending_confirmation.set_result(True)
+            self.query_one("#approval-bar", ApprovalBar).hide_approval()
+        elif key in ("n", "N", "escape"):
+            event.prevent_default()
+            event.stop()
+            self._pending_confirmation.set_result(False)
+            self.query_one("#approval-bar", ApprovalBar).hide_approval()
+
     def on_approval_bar_approved(self, event: ApprovalBar.Approved) -> None:
         """Handle approval from the bar."""
         try:
