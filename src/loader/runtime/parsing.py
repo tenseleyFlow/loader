@@ -131,6 +131,43 @@ def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
     return "".join(parts)
 
 
+def _extract_function_tag_tool_calls(
+    text: str,
+    tool_names: dict[str, str] | None = None,
+) -> tuple[list[ToolCall], list[tuple[int, int]]]:
+    """Extract tool calls from ``<function=name><parameter=k>v</parameter></function>`` format.
+
+    Several Ollama model renderers (qwen3-coder, qwen2) emit this format
+    when the tool schema is too large for the native tool-calling path.
+    """
+
+    pattern = r"<function=(\w+)>(.*?)</function>"
+    param_pattern = r"<parameter=(\w+)>\s*(.*?)\s*</parameter>"
+    tool_calls: list[ToolCall] = []
+    spans: list[tuple[int, int]] = []
+
+    for match in re.finditer(pattern, text, re.DOTALL):
+        raw_name = match.group(1)
+        canonical = _canonicalize_tool_name(raw_name, tool_names)
+        if canonical is None:
+            continue
+        body = match.group(2)
+        arguments: dict[str, str] = {}
+        for param_match in re.finditer(param_pattern, body, re.DOTALL):
+            arguments[param_match.group(1)] = param_match.group(2).strip()
+        if arguments:
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_{len(tool_calls)}",
+                    name=canonical,
+                    arguments=arguments,
+                )
+            )
+            spans.append(match.span())
+
+    return tool_calls, spans
+
+
 def parse_tool_calls(
     text: str,
     *,
@@ -153,32 +190,39 @@ def parse_tool_calls(
         is_final = True
         final_content = final_match.group(1).strip()
 
+    # Try <function=name> format first (qwen3-coder fallback)
+    func_calls, func_spans = _extract_function_tag_tool_calls(text, tool_names)
+    if func_calls:
+        tool_calls = func_calls
+        content = _remove_spans(content, func_spans)
+
     tool_call_pattern = r"(?:</tool_call>\s*)?<tool_call>\s*(\{.*?\})\s*</tool_call>"
     xml_spans: list[tuple[int, int]] = []
-    for index, match in enumerate(re.finditer(tool_call_pattern, text, re.DOTALL)):
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
+    if not tool_calls:
+        for index, match in enumerate(re.finditer(tool_call_pattern, text, re.DOTALL)):
+            try:
+                data = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
 
-        name = data.get("name", "")
-        arguments = _extract_arguments(data)
-        canonical_name = (
-            _canonicalize_tool_name(name, tool_names)
-            if isinstance(name, str)
-            else None
-        )
-        if canonical_name:
-            tool_calls.append(
-                ToolCall(
-                    id=f"call_{index}",
-                    name=canonical_name,
-                    arguments=arguments,
-                )
+            name = data.get("name", "")
+            arguments = _extract_arguments(data)
+            canonical_name = (
+                _canonicalize_tool_name(name, tool_names)
+                if isinstance(name, str)
+                else None
             )
-            xml_spans.append(match.span())
+            if canonical_name:
+                tool_calls.append(
+                    ToolCall(
+                        id=f"call_{index}",
+                        name=canonical_name,
+                        arguments=arguments,
+                    )
+                )
+                xml_spans.append(match.span())
 
-    content = _remove_spans(content, xml_spans)
+        content = _remove_spans(content, xml_spans)
 
     if not tool_calls:
         tool_calls, spans = _extract_json_tool_calls(text, tool_names)

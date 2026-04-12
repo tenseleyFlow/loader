@@ -207,11 +207,16 @@ class OllamaBackend(LLMBackend):
         return [message.to_dict() for message in messages]
 
     def _format_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-        """Format tools for Ollama API."""
+        """Format tools for Ollama API.
+
+        Parameter-level ``description`` fields are stripped because several
+        Ollama model renderers (qwen3-coder, qwen2) emit text-based tool
+        calls instead of structured ``tool_calls`` when descriptions are
+        present in the schema.
+        """
         if not tools:
             return None
 
-        # Ollama uses a slightly different format
         formatted = []
         for tool in tools:
             formatted.append({
@@ -219,10 +224,25 @@ class OllamaBackend(LLMBackend):
                 "function": {
                     "name": tool["name"],
                     "description": tool.get("description", ""),
-                    "parameters": tool.get("parameters", {}),
+                    "parameters": self._strip_param_descriptions(
+                        tool.get("parameters", {}),
+                    ),
                 },
             })
         return formatted
+
+    @staticmethod
+    def _strip_param_descriptions(params: dict[str, Any]) -> dict[str, Any]:
+        """Remove description fields from parameter properties."""
+        if "properties" not in params:
+            return params
+        cleaned: dict[str, Any] = {k: v for k, v in params.items() if k != "properties"}
+        cleaned["properties"] = {}
+        for name, prop in params["properties"].items():
+            cleaned["properties"][name] = {
+                k: v for k, v in prop.items() if k != "description"
+            }
+        return cleaned
 
     @staticmethod
     def _allowed_tool_names(tools: list[dict[str, Any]] | None) -> list[str] | None:
