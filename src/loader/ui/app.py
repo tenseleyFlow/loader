@@ -571,7 +571,11 @@ class LoaderApp(App):
             self.query_one(StatusLine).set_generating(False)
             self.query_one(StatusLine).update_turn_phase("")
             # Restore input focus so user can type the next message
-            self.query_one(InputArea).focus_input()
+            self._debug_log("worker done — restoring input focus")
+            input_area = self.query_one(InputArea)
+            input_area.focus_input()
+            # Deferred retry in case the immediate focus is too early
+            self.set_timer(0.2, input_area.focus_input)
 
     # Message handlers from adapter
     def on_thinking_started(self, message: ThinkingStarted) -> None:
