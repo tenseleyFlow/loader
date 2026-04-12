@@ -1,6 +1,7 @@
 """Tool call widget with collapsible result preview."""
 
 from rich.markup import escape
+from rich.text import Text
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -99,37 +100,35 @@ class ToolCallWidget(Vertical):
         # Update header
         self._update_header()
 
-        # Build status prefix
+        # Build summary as a Rich Text object to avoid markup parsing errors
+        # when tool results contain brackets or other Rich-like syntax
+        summary = Text()
         if is_error:
-            status_line = "[bold red]✗ Failed[/bold red]\n"
+            summary.append("✗ Failed\n", style="bold red")
         else:
-            status_line = "[bold green]✓ Success[/bold green]\n"
+            summary.append("✓ Success\n", style="bold green")
 
-        # Update summary - escape to prevent markup interpretation
-        escaped_result = escape(result)
-        lines = escaped_result.splitlines()
+        lines = result.splitlines()
 
         toggle_widget = self.query_one("#tool-toggle", Button)
         full_result_widget = self.query_one("#tool-full-result", Static)
 
         if len(lines) <= self.preview_lines:
-            # Show all content in summary, hide toggle
-            summary = status_line + escaped_result
+            summary.append(result)
             toggle_widget.display = False
             full_result_widget.display = False
             self._has_more = False
         else:
-            # Show preview with expand toggle
             preview = "\n".join(lines[: self.preview_lines])
             remaining = len(lines) - self.preview_lines
-            summary = f"{status_line}{preview}\n[dim]... ({remaining} more lines)[/dim]"
+            summary.append(preview)
+            summary.append(f"\n... ({remaining} more lines)", style="dim")
 
-            # Store full result and show toggle
-            self._full_result = escaped_result
+            self._full_result = escape(result)
             self._has_more = True
             self._update_toggle()
             toggle_widget.display = True
-            full_result_widget.display = False  # Hidden until expanded
+            full_result_widget.display = False
 
         self.query_one("#tool-summary", Static).update(summary)
 
