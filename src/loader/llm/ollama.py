@@ -203,8 +203,33 @@ class OllamaBackend(LLMBackend):
         return self._supports_native_tools
 
     def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
-        """Format messages for Ollama API."""
-        return [message.to_dict() for message in messages]
+        """Format messages for Ollama API.
+
+        Ollama expects tool_calls wrapped in ``{"function": {...}}`` and tool
+        results with ``role: "tool"``.  The generic ``Message.to_dict()``
+        uses a flat layout, so we re-wrap here.
+        """
+        formatted = []
+        for message in messages:
+            entry: dict[str, Any] = {
+                "role": message.role.value,
+                "content": message.content,
+            }
+            if message.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        }
+                    }
+                    for tc in message.tool_calls
+                ]
+            if message.tool_results:
+                # Ollama expects tool results as role=tool with the content
+                entry["role"] = "tool"
+            formatted.append(entry)
+        return formatted
 
     def _format_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         """Format tools for Ollama API.
