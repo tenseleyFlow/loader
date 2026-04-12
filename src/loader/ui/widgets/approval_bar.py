@@ -119,24 +119,30 @@ class ApprovalBar(Widget):
             preview = preview[:57] + "..."
         preview_label.update(preview)
 
-        # Show the bar and focus it
+        # Show the bar and focus it after the CSS transition completes
         self.add_class("visible")
-        self.can_focus = True  # Make sure it can receive focus
+        self.can_focus = True
 
-        # Debug logging
+        def _grab_focus() -> None:
+            self.focus()
+            try:
+                with open("/tmp/loader_debug.log", "a") as f:
+                    f.write(
+                        f"[approval-bar] deferred focus: has_focus={self.has_focus}\n"
+                    )
+            except Exception:
+                pass
+
         try:
             with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval-bar] show_approval: tool={tool_name}, visible=True, focusing...\n")
+                f.write(
+                    f"[approval-bar] show_approval: tool={tool_name}, "
+                    f"visible=True, deferring focus...\n"
+                )
         except Exception:
             pass
 
-        self.focus()
-
-        try:
-            with open("/tmp/loader_debug.log", "a") as f:
-                f.write(f"[approval-bar] focus() called, has_focus={self.has_focus}\n")
-        except Exception:
-            pass
+        self.call_after_refresh(_grab_focus)
 
     def hide_approval(self) -> None:
         """Hide the approval bar."""
