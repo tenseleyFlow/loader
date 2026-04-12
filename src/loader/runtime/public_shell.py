@@ -682,18 +682,9 @@ def build_runtime_few_shot_examples(*, use_react: bool) -> list[Message]:
             Message(role=Role.TOOL, content="Created hello.py"),
             Message(role=Role.ASSISTANT, content="Done."),
         ]
-    return [
-        Message(
-            role=Role.USER,
-            content="Create a file called hello.py that prints hello",
-        ),
-        Message(
-            role=Role.ASSISTANT,
-            content='[write: file_path="hello.py", content="print(\'hello\')"]',
-        ),
-        Message(role=Role.TOOL, content="Created hello.py"),
-        Message(role=Role.ASSISTANT, content="Done."),
-    ]
+    # Native tool calling: no text-based few-shot examples needed.
+    # The model uses the API tool-calling mechanism directly.
+    return []
 
 
 def _copy_rule_counts(rule_counts: dict[str, int]) -> dict[str, int]:

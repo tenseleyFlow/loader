@@ -360,16 +360,8 @@ def _tool_call_instructions(use_react: bool) -> str:
             ]
         )
 
-    return "\n".join(
-            [
-                "Call tools directly using bracket syntax.",
-                "",
-                "Examples:",
-                '- `[bash: command="pwd"]`',
-                '- `[write: file_path="hello.py", content="print(\'hello\')"]`',
-                (
-                    '- `[TodoWrite: todos=[{content="Run tests", '
-                    'active_form="Running tests", status="in_progress"}]]`'
-                ),
-            ]
-        )
+    return (
+        "Call tools directly when needed. Do not narrate or describe tool "
+        "usage — invoke the tool instead. The runtime handles tool call "
+        "formatting automatically."
+    )
