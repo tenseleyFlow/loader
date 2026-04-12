@@ -74,9 +74,11 @@ class ToolCallWidget(Vertical):
         parts = []
         for k, v in self.tool_args.items():
             if isinstance(v, str):
-                # Truncate long strings
-                if len(v) > 40:
-                    v = v[:37] + "..."
+                # Show file paths in full, truncate content at 80 chars,
+                # other args at 40
+                limit = 200 if k in ("file_path", "path") else (80 if k == "content" else 40)
+                if len(v) > limit:
+                    v = v[: limit - 3] + "..."
                 parts.append(f'{k}="[dim]{v}[/dim]"')
             else:
                 parts.append(f"{k}={v!r}")
