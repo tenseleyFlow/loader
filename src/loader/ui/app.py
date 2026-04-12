@@ -198,9 +198,10 @@ class LoaderApp(App):
             self.action_clear_messages()
             return
 
-        # If the runtime owner is running, this is a steering message
-        if self.is_generating and self.shell_owner.is_running:
-            # Finalize current streaming so new content appears below user's message
+        # Any input during generation is a steering message — don't require
+        # shell_owner.is_running since there's a race between worker completion
+        # and the is_running flag being cleared.
+        if self.is_generating:
             if self._current_streaming is not None:
                 self._current_streaming.stop_streaming()
                 self._current_streaming = None
@@ -552,11 +553,14 @@ class LoaderApp(App):
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Handle worker state changes."""
+        self._debug_log(f"worker state: {event.state.name}")
         if event.state.name in ("SUCCESS", "ERROR", "CANCELLED"):
             self.is_generating = False
             self._stop_timer()
             self.query_one(StatusLine).set_generating(False)
             self.query_one(StatusLine).update_turn_phase("")
+            # Restore input focus so user can type the next message
+            self.query_one(InputArea).focus_input()
 
     # Message handlers from adapter
     def on_thinking_started(self, message: ThinkingStarted) -> None:
