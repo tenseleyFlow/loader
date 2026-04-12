@@ -587,3 +587,7 @@ class RuntimeSafeguards:
         Returns (is_loop, description).
         """
         return self.action_tracker.detect_text_loop(response)
+
+    def reset_response_history(self) -> None:
+        """Clear response history between turns."""
+        self.action_tracker.reset_response_history()

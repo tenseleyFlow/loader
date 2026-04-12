@@ -142,6 +142,7 @@ class ConversationRuntime:
         """Run one task turn and return a structured summary."""
 
         reset_runtime_logger()
+        self.context.safeguards.reset_response_history()
 
         prepared_turn = await self.turn_preparation.prepare(
             task=task,

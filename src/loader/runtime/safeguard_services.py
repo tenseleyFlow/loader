@@ -181,42 +181,44 @@ class ActionTracker:
             self._response_history.pop(0)
 
     def detect_text_loop(self, response: str) -> tuple[bool, str]:
-        if len(self._response_history) < 1:
+        if len(self._response_history) < 2:
             return False, ""
 
         normalized = self._normalize_response(response)
         exact_matches = sum(1 for r in self._response_history if r == normalized)
-        if exact_matches >= 1:
+        if exact_matches >= 2:
             return True, f"Agent repeated the same response {exact_matches + 1} times"
 
         repetitive_phrases = [
             "apologies for any confusion",
             "let me proceed",
             "i will now use the",
-            "let's proceed with creating",
-            "i'll create the",
         ]
         response_lower = response.lower()
         for phrase in repetitive_phrases:
             if phrase in response_lower:
                 phrase_count = sum(1 for r in self._response_history if phrase in r)
-                if phrase_count >= 1:
+                if phrase_count >= 2:
                     return True, f"Agent is stuck repeating '{phrase}'"
 
         current_words = set(normalized.split())
         similarity_matches = 0
         for prev in self._response_history[-3:]:
             prev_words = set(prev.split())
-            if len(current_words) > 5 and len(prev_words) > 5:
+            if len(current_words) > 10 and len(prev_words) > 10:
                 overlap = len(current_words & prev_words)
                 similarity = overlap / max(len(current_words), len(prev_words))
-                if similarity > 0.7:
+                if similarity > 0.85:
                     similarity_matches += 1
 
-        if similarity_matches >= 1:
+        if similarity_matches >= 2:
             return True, "Agent responses are highly repetitive"
 
         return False, ""
+
+    def reset_response_history(self) -> None:
+        """Clear response history between turns to prevent cross-turn false positives."""
+        self._response_history.clear()
 
 
 @dataclass

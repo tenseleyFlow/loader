@@ -71,7 +71,7 @@ class ScriptedBackend(LLMBackend):
             )
         )
         if not self._completions:
-            raise AssertionError("No scripted completion left for this scenario")
+            return CompletionResponse(content="Done.")
         return self._completions.pop(0)
 
     async def stream(
