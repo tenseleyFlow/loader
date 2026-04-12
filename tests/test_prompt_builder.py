@@ -84,4 +84,4 @@ def test_prompt_builder_keeps_sections_stable_across_formats(temp_dir: Path) -> 
     assert "`native`" in native.content
     assert "`react`" in react.content
     assert "<tool_call>" in react.content
-    assert "[bash: command=" in native.content
+    assert "call tools" in native.content.lower()

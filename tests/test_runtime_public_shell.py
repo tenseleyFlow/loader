@@ -125,7 +125,7 @@ def test_build_runtime_few_shot_examples_switches_tool_format() -> None:
     native_examples = build_runtime_few_shot_examples(use_react=False)
 
     assert "<tool_call>" in react_examples[1].content
-    assert native_examples[1].content.startswith("[write:")
+    assert native_examples == []
 
 
 def test_resolve_runtime_shell_use_react_respects_force_react_and_capabilities(
@@ -196,7 +196,7 @@ def test_get_runtime_shell_few_shot_examples_uses_owner_prompt_mode(
     native_examples = get_runtime_shell_few_shot_examples(native_handle)
     react_examples = get_runtime_shell_few_shot_examples(react_handle)
 
-    assert native_examples[1].content.startswith("[write:")
+    assert native_examples == []
     assert "<tool_call>" in react_examples[1].content
 
 
