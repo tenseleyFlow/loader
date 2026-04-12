@@ -51,12 +51,17 @@ StatusLine {
     color: $text-muted;
 }
 
-/* Tool widgets */
+/* Tool widgets — height:auto so the colored border matches content */
 ToolCallWidget {
     height: auto;
+    max-height: 30;
     margin: 0 0 1 0;
     padding: 0 1;
     border-left: thick $accent;
+}
+
+ToolCallWidget > Static {
+    height: auto;
 }
 
 ToolCallWidget.pending {
