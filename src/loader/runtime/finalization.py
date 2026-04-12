@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from .logging import get_runtime_logger
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -105,6 +106,13 @@ class TurnFinalizer:
 
         mutating_paths = [path for path in dod.touched_files if path]
         requires_verification = bool(mutating_paths or dod.mutating_actions)
+        rlog = get_runtime_logger()
+        rlog.completion_check(
+            "dod_gate",
+            "requires_verification" if requires_verification else "no_verification",
+            reason=f"files={mutating_paths[:3]}, actions={len(dod.mutating_actions)}"
+            if requires_verification else None,
+        )
         if tracked_pending_items and not requires_verification:
             pending_provenance = [
                 EvidenceProvenance(
