@@ -68,14 +68,13 @@ class ReadTool(Tool):
         **kwargs: Any,
     ) -> ToolResult:
         try:
+            # Reads are safe — don't enforce workspace boundary
             path = resolve_workspace_path(
                 file_path,
-                workspace_root=self.workspace_root,
+                workspace_root=None,
             )
         except FileNotFoundError:
             return ToolResult(f"File not found: {file_path}", is_error=True)
-        except PermissionError as exc:
-            return ToolResult(f"Permission denied: {exc}", is_error=True)
         except Exception as exc:
             return ToolResult(f"Error resolving file path: {exc}", is_error=True)
 
@@ -552,14 +551,13 @@ class GlobTool(Tool):
         **kwargs: Any,
     ) -> ToolResult:
         try:
+            # Glob is read-only — don't enforce workspace boundary
             base_path = resolve_workspace_path(
                 path,
-                workspace_root=self.workspace_root,
+                workspace_root=None,
             )
         except FileNotFoundError:
             return ToolResult(f"Directory not found: {path}", is_error=True)
-        except PermissionError as exc:
-            return ToolResult(f"Permission denied: {exc}", is_error=True)
         except Exception as exc:
             return ToolResult(f"Error resolving directory: {exc}", is_error=True)
 

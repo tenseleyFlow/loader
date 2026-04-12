@@ -110,7 +110,7 @@ async def test_turn_iteration_executes_native_tool_batch_and_continues(
                     ToolCall(
                         id="read-1",
                         name="read",
-                        arguments={"file_path": "README.md"},
+                        arguments={"file_path": str(readme)},
                     )
                 ],
             )
@@ -129,7 +129,7 @@ async def test_turn_iteration_executes_native_tool_batch_and_continues(
     )
 
     assert decision.action == TurnIterationAction.CONTINUE
-    assert decision.new_actions_taken == ["read: {'file_path': 'README.md'}"]
+    assert decision.new_actions_taken == [f"read: {{'file_path': '{readme}'}}"]
     assert prepared.summary.assistant_messages[-1].tool_calls[0].name == "read"
     assert len(prepared.summary.tool_result_messages) == 1
     assert "Loader runtime notes" in prepared.summary.tool_result_messages[0].content

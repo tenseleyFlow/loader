@@ -73,14 +73,13 @@ class GrepTool(Tool):
         **kwargs: Any,
     ) -> ToolResult:
         try:
+            # Grep is read-only — don't enforce workspace boundary
             base_path = resolve_workspace_path(
                 path,
-                workspace_root=self.workspace_root,
+                workspace_root=None,
             )
         except FileNotFoundError:
             return ToolResult(f"Path not found: {path}", is_error=True)
-        except PermissionError as exc:
-            return ToolResult(f"Permission denied: {exc}", is_error=True)
         except Exception as exc:
             return ToolResult(f"Error resolving search path: {exc}", is_error=True)
 

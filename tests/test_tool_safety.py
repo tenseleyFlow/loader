@@ -25,17 +25,17 @@ async def test_read_tool_blocks_binary_file(temp_dir: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_tool_blocks_symlink_escape(temp_dir: Path) -> None:
+async def test_read_tool_allows_outside_workspace(temp_dir: Path) -> None:
+    """Reads are safe and should not enforce workspace boundaries."""
     outside = temp_dir.parent / "outside.txt"
     outside.write_text("outside\n")
-    inside_link = temp_dir / "escape.txt"
-    inside_link.symlink_to(outside)
     tool = ReadTool(workspace_root=temp_dir)
 
-    result = await tool.execute(file_path=str(inside_link))
+    result = await tool.execute(file_path=str(outside))
 
-    assert result.is_error
-    assert "workspace boundary" in result.output.lower()
+    assert not result.is_error
+    assert "outside" in result.output
+    outside.unlink()
 
 
 @pytest.mark.asyncio
