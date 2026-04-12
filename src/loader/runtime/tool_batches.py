@@ -172,6 +172,13 @@ class ToolBatchRunner:
                 )
             )
 
+            # Always append tool results to the session so the model sees
+            # its own output.  The verification gate may inject a correction
+            # prompt, but the original result must still be in context —
+            # otherwise the model operates blind and loops.
+            self.context.session.append(outcome.message)
+            summary.tool_result_messages.append(outcome.message)
+
             should_continue = await self.verification_gate.should_continue(
                 tool_call=tool_call,
                 outcome=outcome,
@@ -179,20 +186,16 @@ class ToolBatchRunner:
             )
 
             rlog = get_runtime_logger()
-            appended = not should_continue
             rlog.tool_exec(
                 name=tool_call.name,
                 state=outcome.state.value,
                 is_error=outcome.is_error,
                 result_preview=outcome.event_content,
-                appended_to_session=appended,
+                appended_to_session=True,
             )
             if should_continue:
                 rlog.verification_gate(tool_call.name, should_continue=True)
                 continue
-
-            self.context.session.append(outcome.message)
-            summary.tool_result_messages.append(outcome.message)
 
         if result.consecutive_errors >= 3:
             final_response = (
