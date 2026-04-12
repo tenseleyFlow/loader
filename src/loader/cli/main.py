@@ -343,7 +343,7 @@ async def _main(
     # This catches models like devstral that work at temp=0 but are
     # unreliable at the actual runtime temperature.
     if not react and hasattr(llm, "probe_native_tool_support"):
-        from .agent.loop import AgentConfig as _ProbeCfg
+        from ..agent.loop import AgentConfig as _ProbeCfg
         probe_temp = _ProbeCfg.temperature
         console.print(f"[dim]Probing tool support (temp={probe_temp}, 3 rounds)...[/dim]", end="")
         native = await llm.probe_native_tool_support(temperature=probe_temp)
