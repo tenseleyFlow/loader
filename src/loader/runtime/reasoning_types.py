@@ -194,6 +194,8 @@ class TaskCompletionCheck:
     original_task: str
     is_complete: bool = False
     accomplished: list[str] = field(default_factory=list)
+    required_evidence: list[str] = field(default_factory=list)
+    missing_evidence: list[str] = field(default_factory=list)
     remaining: list[str] = field(default_factory=list)
     suggested_next_steps: list[str] = field(default_factory=list)
     continuation_prompt: str = ""
