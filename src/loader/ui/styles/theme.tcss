@@ -51,10 +51,9 @@ StatusLine {
     color: $text-muted;
 }
 
-/* Tool widgets — height:auto so the colored border matches content */
+/* Tool widgets — no max-height; parent ScrollableContainer handles scrolling */
 ToolCallWidget {
     height: auto;
-    max-height: 30;
     margin: 0 0 1 0;
     padding: 0 1;
     border-left: thick $accent;
@@ -88,47 +87,6 @@ ToolCallWidget.running {
     color: $text;
     padding-left: 2;
     margin-top: 0;
-}
-
-.tool-args {
-    color: $text-muted;
-}
-
-.tool-toggle {
-    background: transparent;
-    border: none;
-    color: $accent;
-    padding: 0;
-    margin-left: 2;
-    min-width: 0;
-    width: auto;
-    height: 1;
-    text-style: underline;
-}
-
-.tool-toggle:hover {
-    background: transparent;
-    color: $primary;
-    text-style: bold underline;
-}
-
-.tool-toggle:focus {
-    background: transparent;
-    text-style: bold underline;
-}
-
-.tool-full-result {
-    color: $text;
-    padding-left: 2;
-    margin-top: 1;
-    border-left: solid $accent;
-    padding: 0 0 0 1;
-}
-
-.tool-preview {
-    color: $text;
-    padding-left: 2;
-    max-height: 6;
 }
 
 /* Diff widget */
