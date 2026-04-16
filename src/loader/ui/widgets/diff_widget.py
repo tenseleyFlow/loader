@@ -24,4 +24,5 @@ class DiffWidget(Vertical):
                 max_chars=6_000,
             ),
             classes="diff-content",
+            markup=False,
         )

@@ -72,7 +72,7 @@ class ApprovalBar(Widget, can_focus=True):
         self.can_focus = True
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="approval-content")
+        yield Static("", id="approval-content", markup=False)
 
     def show_approval(
         self,
@@ -93,19 +93,11 @@ class ApprovalBar(Widget, can_focus=True):
         self._full_command = details
         self._preview = preview
 
-        preview = details if details else message
+        preview_text = details if details else message
         content = self.query_one("#approval-content", Static)
         if tool_name == "bash":
             header = Text("Bash", style="bold yellow")
-            command = Text(preview or "(empty command)")
-            controls = Text.assemble(
-                ("[Y]", "bold green"),
-                ("es  ",),
-                ("[n]", "bold red"),
-                ("o  ",),
-                ("[e]", "bold"),
-                ("dit",),
-            )
+            command = Text(preview_text or "(empty command)")
             content.update(
                 Group(
                     header,
@@ -116,19 +108,11 @@ class ApprovalBar(Widget, can_focus=True):
                         box=box.SQUARE,
                         expand=True,
                     ),
-                    controls,
+                    _approval_controls(),
                 )
             )
         elif self._preview:
             header = Text(f"Approve {_label_for_tool(tool_name)}", style="bold yellow")
-            controls = Text.assemble(
-                ("[Y]", "bold green"),
-                ("es  ",),
-                ("[n]", "bold red"),
-                ("o  ",),
-                ("[e]", "bold"),
-                ("dit",),
-            )
             content.update(
                 Group(
                     header,
@@ -139,15 +123,25 @@ class ApprovalBar(Widget, can_focus=True):
                         max_lines=20,
                         max_chars=2_500,
                     ),
-                    controls,
+                    _approval_controls(),
                 )
             )
         else:
-            if len(preview) > 70:
-                preview = preview[:67] + "..."
+            if len(preview_text) > 400:
+                preview_text = preview_text[:397] + "..."
+            header = Text(f"Approve {_label_for_tool(tool_name)}", style="bold yellow")
             content.update(
-                f"[bold $warning]\\[{tool_name}][/] {preview}  "
-                f"[bold green]\\[Y][/]es  [bold red]\\[n][/]o  [bold]\\[e][/]dit"
+                Group(
+                    header,
+                    Panel(
+                        Text(preview_text or "(no details)"),
+                        title="Details",
+                        border_style="yellow",
+                        box=box.SQUARE,
+                        expand=True,
+                    ),
+                    _approval_controls(),
+                )
             )
 
         # Show the bar
@@ -225,3 +219,14 @@ def _label_for_tool(tool_name: str) -> str:
         "patch": "Patch",
         "bash": "Bash",
     }.get(tool_name, tool_name)
+
+
+def _approval_controls() -> Text:
+    return Text.assemble(
+        ("[Y]", "bold green"),
+        ("es  ",),
+        ("[n]", "bold red"),
+        ("o  ",),
+        ("[e]", "bold"),
+        ("dit",),
+    )

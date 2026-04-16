@@ -330,8 +330,8 @@ def _iter_rendered_patch_lines(
         old_line = hunk.old_start
         new_line = hunk.new_start
         for raw_line in hunk.lines:
-            prefix = raw_line[:1]
-            content = raw_line[1:] if raw_line else ""
+            prefix = raw_line[:1] if raw_line[:1] in {" ", "+", "-"} else ""
+            content = raw_line[1:] if prefix else raw_line
             display = Text()
             old_label = "    "
             new_label = "    "
@@ -353,10 +353,12 @@ def _iter_rendered_patch_lines(
             elif prefix == "-":
                 display.append("- ", style="red")
                 display.append(content, style="red")
+            elif prefix == " ":
+                display.append("  ", style="dim")
+                display.append(content, style="dim")
             else:
-                marker = "  " if prefix == " " else f"{prefix} "
-                display.append(marker, style="dim")
-                display.append(content, style="dim" if prefix == " " else "")
+                display.append("  ", style="dim")
+                display.append(content)
             display.append("\n")
             rendered.append(display)
     return rendered

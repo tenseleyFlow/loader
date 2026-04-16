@@ -12,7 +12,12 @@ from textual.widgets import Static
 import loader.cli.main as cli_main_module
 from loader.runtime.events import AgentEvent
 from loader.tools import BashTool
-from loader.ui.adapter import EventAdapter, ToolCallCompleted, ToolCallStarted
+from loader.ui.adapter import (
+    EventAdapter,
+    ResponseComplete,
+    ToolCallCompleted,
+    ToolCallStarted,
+)
 from loader.ui.app import LoaderApp
 from loader.ui.widgets import ApprovalBar, DiffWidget
 from loader.ui.widgets.tool_widget import ToolCallWidget
@@ -58,6 +63,50 @@ def _patch_tool_args() -> dict[str, object]:
                 "new_start": 18,
                 "old_lines": 2,
                 "old_start": 18,
+            }
+        ],
+    }
+
+
+def _raw_patch_tool_args() -> dict[str, object]:
+    return {
+        "file_path": "animals/index.html",
+        "hunks": [
+            {
+                "old_start": 53,
+                "old_lines": 1,
+                "new_start": 53,
+                "new_lines": 5,
+                "lines": [
+                    "</body>",
+                    "</html>",
+                    "",
+                    "<!-- New animal entries -->",
+                    '<div class="animal-card">',
+                    '<h2><a href="wolf.html">Wolf</a></h2>',
+                    (
+                        "<p>Wolves are wild canines that live in packs and are known "
+                        "for their intelligence and social behavior.</p>"
+                    ),
+                    "</div>",
+                    "",
+                    '<div class="animal-card">',
+                    '<h2><a href="bear.html">Bear</a></h2>',
+                    (
+                        "<p>Bears are large mammals that are found in various parts "
+                        "of the world, known for their strength and omnivorous diet.</p>"
+                    ),
+                    "</div>",
+                    "",
+                    '<div class="animal-card">',
+                    '<h2><a href="penguin.html">Penguin</a></h2>',
+                    (
+                        "<p>Penguins are flightless birds that live in the Southern "
+                        "Hemisphere, known for their distinctive waddle and swimming "
+                        "abilities.</p>"
+                    ),
+                    "</div>",
+                ],
             }
         ],
     }
@@ -294,6 +343,32 @@ async def test_approval_bar_renders_file_mutation_preview() -> None:
 
 
 @pytest.mark.asyncio
+async def test_approval_bar_fallback_handles_raw_patch_details() -> None:
+    app = _ApprovalHost()
+    raw_details = (
+        "patch(file_path=\"animals/index.html\", hunks="
+        f"{_raw_patch_tool_args()['hunks']})"
+    )
+
+    async with app.run_test() as pilot:
+        bar = app.query_one(ApprovalBar)
+        bar.show_approval(
+            "patch",
+            "Patch file: animals/index.html",
+            raw_details,
+            preview=None,
+        )
+        await pilot.pause()
+
+        content = bar.query_one("#approval-content", Static)
+        rendered = _render_text(content.content, width=120)
+
+        assert "Approve Patch" in rendered
+        assert "Details" in rendered
+        assert "wolf.html" in rendered
+
+
+@pytest.mark.asyncio
 async def test_loader_app_replaces_patch_tool_widget_with_diff_widget() -> None:
     tool_args = _patch_tool_args()
     preview = build_file_mutation_preview_dict("patch", tool_args=tool_args)
@@ -330,6 +405,32 @@ async def test_loader_app_replaces_patch_tool_widget_with_diff_widget() -> None:
 
         assert len(list(app.query(DiffWidget))) == 1
         assert len(list(app.query(ToolCallWidget))) == 0
+
+
+@pytest.mark.asyncio
+async def test_loader_app_mounts_raw_patch_preview_without_markup_crash() -> None:
+    app = LoaderApp(shell_owner=_FakeShellOwner())
+
+    async with app.run_test() as pilot:
+        app.post_message(
+            ToolCallStarted(
+                tool_name="patch",
+                tool_args=_raw_patch_tool_args(),
+                tool_call_id="patch-call-raw",
+                phase="assistant",
+            )
+        )
+        await pilot.pause()
+
+        widget = next(iter(app.query(ToolCallWidget)))
+        summary = widget.query_one("#tool-summary", Static)
+        rendered = _render_text(summary.content, width=120)
+
+        assert "Preview" in rendered
+        assert "<h2><a href=\"wolf.html\">Wolf</a></h2>" in rendered
+        assert "wolf.html" in rendered
+        assert "penguin.html" in rendered
+        assert "< /body>" not in rendered
 
 
 @pytest.mark.asyncio
@@ -373,6 +474,28 @@ async def test_loader_app_matches_repeated_tool_results_by_tool_call_id() -> Non
         assert second.state == "success"
         assert "/tmp/cats.html" in first._header_renderable().plain
         assert "/tmp/penguins.html" in second._header_renderable().plain
+
+
+@pytest.mark.asyncio
+async def test_loader_app_renders_plain_response_without_markup_parsing() -> None:
+    app = LoaderApp(shell_owner=_FakeShellOwner())
+
+    async with app.run_test() as pilot:
+        app.post_message(
+            ResponseComplete(
+                content=(
+                    "patch(file_path=\"animals/index.html\", hunks="
+                    f"{_raw_patch_tool_args()['hunks']})"
+                )
+            )
+        )
+        await pilot.pause()
+
+        message_area = app.query_one("#message-area")
+        last_widget = list(message_area.children)[-1]
+        rendered = _render_text(last_widget.render(), width=120)
+        assert "patch(file_path=" in rendered
+        assert "hunks=" in rendered
 
 
 def test_cli_parse_local_bash_commands_supports_slash_aliases() -> None:

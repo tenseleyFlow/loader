@@ -157,10 +157,16 @@ class LoaderApp(App):
             "[dim]Commands: /help, /model, /jobs, /wait, /kill, /clear, /exit[/dim]"
         )
 
-    def _add_message(self, content: str, classes: str = "") -> None:
+    def _add_message(
+        self,
+        content: str,
+        classes: str = "",
+        *,
+        markup: bool = True,
+    ) -> None:
         """Add a message to the message area."""
         msg_area = self.query_one("#message-area", ScrollableContainer)
-        widget = Static(content, classes=classes)
+        widget = Static(content, classes=classes, markup=markup)
         msg_area.mount(widget)
         msg_area.scroll_end(animate=False)
 
@@ -868,7 +874,7 @@ class LoaderApp(App):
         # If no content was streamed but we have a response, display it
         # This handles cases like empty LLM responses with fallback messages
         if not self._streamed_content and message.content.strip():
-            self._add_message(message.content)
+            self._add_message(message.content, markup=False)
 
     def on_definition_of_done_updated(self, message: DefinitionOfDoneUpdated) -> None:
         """Handle definition-of-done status changes."""

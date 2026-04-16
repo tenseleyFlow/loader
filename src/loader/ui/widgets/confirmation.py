@@ -1,5 +1,6 @@
 """Confirmation modal for destructive tool operations."""
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -80,14 +81,16 @@ class ConfirmationModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(id="confirmation-dialog"):
             yield Static(
-                f"[bold yellow]⚠ Confirm {self.tool_name}[/bold yellow]",
+                Text(f"⚠ Confirm {self.tool_name}", style="bold yellow"),
                 id="confirmation-title",
+                markup=False,
             )
-            yield Static(self.message, id="confirmation-message")
+            yield Static(Text(self.message), id="confirmation-message", markup=False)
             if self.details:
                 yield Static(
-                    f"[dim]{self.details}[/dim]",
+                    Text(self.details, style="dim"),
                     id="confirmation-details",
+                    markup=False,
                 )
             with Horizontal(id="confirmation-buttons"):
                 yield Button("Yes (y)", id="btn-yes", variant="success")

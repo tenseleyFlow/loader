@@ -64,8 +64,14 @@ class ToolCallWidget(Vertical):
             self._header_renderable(),
             id="tool-header",
             classes="tool-header",
+            markup=False,
         )
-        yield Static(self._build_initial_summary(), id="tool-summary", classes="tool-summary")
+        yield Static(
+            self._build_initial_summary(),
+            id="tool-summary",
+            classes="tool-summary",
+            markup=False,
+        )
 
     def _format_args(self) -> str:
         """Format tool arguments for display."""
