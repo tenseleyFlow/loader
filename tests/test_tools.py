@@ -152,6 +152,24 @@ class TestGlobTool:
         assert not result.is_error
         assert "No files matching" in result.output
 
+    @pytest.mark.asyncio
+    async def test_glob_expands_home_prefixed_pattern(self, tool, monkeypatch, temp_dir):
+        home_dir = temp_dir / "fake-home"
+        animals_dir = home_dir / "Loader" / "animals"
+        animals_dir.mkdir(parents=True)
+        (animals_dir / "penguins.html").write_text("<h1>Penguins</h1>\n")
+        (animals_dir / "wolves.html").write_text("<h1>Wolves</h1>\n")
+
+        monkeypatch.setenv("HOME", str(home_dir))
+
+        result = await tool.execute(pattern="~/Loader/animals/*.html")
+
+        assert not result.is_error
+        assert "penguins.html" in result.output
+        assert "wolves.html" in result.output
+        assert result.metadata["base_path"] == str(animals_dir.resolve())
+        assert result.metadata["effective_pattern"] == "*.html"
+
 
 class TestBashTool:
     """Tests for BashTool."""

@@ -16,6 +16,49 @@ from .fs_safety import (
     resolve_workspace_path,
 )
 
+_GLOB_MAGIC_CHARS = "*?["
+
+
+def _has_glob_magic(segment: str) -> bool:
+    """Return whether one path segment contains glob syntax."""
+
+    return any(char in segment for char in _GLOB_MAGIC_CHARS)
+
+
+def _resolve_glob_base_and_pattern(
+    pattern: str,
+    path: str,
+) -> tuple[Path, str]:
+    """Resolve glob inputs, including `~`/absolute patterns outside the cwd."""
+
+    expanded_pattern = Path(pattern).expanduser()
+    pattern_is_explicit_path = pattern.startswith("~") or expanded_pattern.is_absolute()
+
+    if not pattern_is_explicit_path:
+        base_path = resolve_workspace_path(path, workspace_root=None)
+        return base_path, pattern
+
+    base_parts: list[str] = []
+    pattern_parts: list[str] = []
+    saw_glob = False
+    for part in expanded_pattern.parts:
+        if saw_glob or _has_glob_magic(part):
+            saw_glob = True
+            pattern_parts.append(part)
+        else:
+            base_parts.append(part)
+
+    if not pattern_parts:
+        if expanded_pattern.name:
+            pattern_parts = [expanded_pattern.name]
+            base_parts = list(expanded_pattern.parent.parts)
+        else:
+            pattern_parts = ["*"]
+
+    raw_base = str(Path(*base_parts)) if base_parts else expanded_pattern.anchor or "."
+    base_path = resolve_workspace_path(raw_base, workspace_root=None)
+    return base_path, "/".join(pattern_parts)
+
 
 class ReadTool(Tool):
     """Read file contents."""
@@ -544,7 +587,11 @@ class GlobTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Find files matching a glob pattern (e.g., '**/*.py', 'src/*.ts')."
+        return (
+            "Find files matching a glob pattern (e.g., '**/*.py', 'src/*.ts'). "
+            "For external directories, prefer path='~/Loader/animals' with "
+            "pattern='*.html'; absolute or '~'-prefixed patterns are also accepted."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -572,20 +619,18 @@ class GlobTool(Tool):
     ) -> ToolResult:
         try:
             # Glob is read-only — don't enforce workspace boundary
-            base_path = resolve_workspace_path(
-                path,
-                workspace_root=None,
-            )
+            base_path, effective_pattern = _resolve_glob_base_and_pattern(pattern, path)
         except FileNotFoundError:
             return ToolResult(f"Directory not found: {path}", is_error=True)
         except Exception as exc:
             return ToolResult(f"Error resolving directory: {exc}", is_error=True)
 
         if not base_path.exists():
-            return ToolResult(f"Directory not found: {path}", is_error=True)
+            missing_target = path if path != "." else str(base_path)
+            return ToolResult(f"Directory not found: {missing_target}", is_error=True)
 
         try:
-            matches = list(base_path.glob(pattern))
+            matches = list(base_path.glob(effective_pattern))
             # Sort by modification time (newest first)
             matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
@@ -606,6 +651,8 @@ class GlobTool(Tool):
                 output,
                 metadata={
                     "base_path": str(base_path),
+                    "effective_pattern": effective_pattern,
+                    "requested_pattern": pattern,
                     "num_files": len(matches),
                     "truncated": truncated if "truncated" in locals() else False,
                 },

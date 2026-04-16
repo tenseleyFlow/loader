@@ -119,6 +119,10 @@ MODE_GUIDANCE = {
 - For servers, watchers, preview commands, or anything else that keeps running,
   call `bash` with `background=true`, then inspect it with `bash_wait` or
   `bash_jobs` instead of blocking the turn in the foreground
+- If the task names an external directory like `~/Loader/...`, keep operating on
+  that exact path instead of falling back to the repo cwd; file tools accept
+  absolute and `~` paths, and `glob` works best with `path="~/Loader/..."`
+  plus a relative `pattern` like `*.html`
 - Concise reporting is fine, and numbered lists are allowed when they
   communicate plan or evidence clearly
 """,
