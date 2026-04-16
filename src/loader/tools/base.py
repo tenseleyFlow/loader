@@ -192,7 +192,7 @@ def create_default_registry(
         ProjectMemoryWriteTool,
     )
     from .search_tools import GrepTool
-    from .shell_tools import BashTool
+    from .shell_tools import BashJobManager, BashJobsTool, BashKillTool, BashTool, BashWaitTool
     from .workflow_tools import AskUserQuestionTool, TodoWriteTool
 
     registry = ToolRegistry(workspace_root=workspace_root)
@@ -201,7 +201,11 @@ def create_default_registry(
     registry.register(EditTool())
     registry.register(PatchTool())
     registry.register(GlobTool())
-    registry.register(BashTool())
+    bash_manager = BashJobManager()
+    registry.register(BashTool(manager=bash_manager))
+    registry.register(BashJobsTool(bash_manager))
+    registry.register(BashWaitTool(bash_manager))
+    registry.register(BashKillTool(bash_manager))
     registry.register(GrepTool())
     registry.register(GitTool())
     registry.register(TodoWriteTool())

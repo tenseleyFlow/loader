@@ -1,5 +1,7 @@
 """Tests for tool implementations."""
 
+import asyncio
+
 import pytest
 
 from loader.tools import (
@@ -175,6 +177,48 @@ class TestBashTool:
         result = await tool.execute(command="exit 1")
         assert result.is_error
         assert "Exit code 1" in result.output
+
+    @pytest.mark.asyncio
+    async def test_bash_background_launch_and_wait(self, tool):
+        launch = await tool.execute(
+            command='python -c "import time; print(\'ready\'); time.sleep(0.1)"',
+            background=True,
+        )
+
+        assert not launch.is_error
+        job_id = launch.metadata["job_id"]
+        assert job_id.startswith("bash-")
+
+        await asyncio.sleep(0.05)
+        wait_result = await tool.manager.wait_for_job(job_id)
+
+        assert not wait_result.is_error
+        assert "ready" in wait_result.output
+        assert wait_result.metadata["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_bash_background_job_can_be_killed(self, tool):
+        launch = await tool.execute(
+            command='python -c "import time; print(\'server\'); time.sleep(30)"',
+            background=True,
+        )
+        job_id = launch.metadata["job_id"]
+
+        kill_result = await tool.manager.kill_job(job_id)
+
+        assert not kill_result.is_error
+        assert f"bash job {job_id}" in kill_result.output
+        assert kill_result.metadata["status"] == "killed"
+        assert kill_result.metadata["interrupted"] is False
+        assert kill_result.metadata["killed"] is True
+
+    @pytest.mark.asyncio
+    async def test_bash_rejects_long_running_foreground_command(self, tool):
+        result = await tool.execute(command="python -m http.server 8000")
+
+        assert result.is_error
+        assert "background=true" in result.output
+        assert result.metadata["suggest_background"] is True
 
     def test_is_destructive(self, tool):
         assert tool.is_destructive

@@ -4,7 +4,7 @@ from .base import ConfirmationRequired, Tool, ToolRegistry
 from .file_tools import EditTool, GlobTool, PatchTool, ReadTool, WriteTool
 from .git_tools import GitTool
 from .search_tools import GrepTool
-from .shell_tools import BashTool
+from .shell_tools import BashJobsTool, BashKillTool, BashTool, BashWaitTool
 
 __all__ = [
     "Tool",
@@ -17,5 +17,8 @@ __all__ = [
     "GlobTool",
     "GitTool",
     "BashTool",
+    "BashJobsTool",
+    "BashWaitTool",
+    "BashKillTool",
     "GrepTool",
 ]
