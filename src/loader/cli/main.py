@@ -503,10 +503,33 @@ def _format_tool_args(args: dict | None) -> str:
         return ""
     parts = []
     for k, v in args.items():
-        if isinstance(v, str) and len(v) > 30:
-            v = v[:27] + "..."
-        parts.append(f"{k}={v!r}")
+        parts.append(f"{k}={_format_tool_arg_value(k, v)}")
     return ", ".join(parts)
+
+
+def _format_tool_arg_value(key: str, value: Any) -> str:
+    """Format one tool argument value as plain text safe for Rich Text rendering."""
+    if isinstance(value, str):
+        limit = 200 if key in ("file_path", "path") else (80 if key == "content" else 40)
+        if len(value) > limit:
+            value = value[: limit - 3] + "..."
+        return json.dumps(value)
+
+    if key == "hunks" and isinstance(value, list):
+        return f"{len(value)} hunk" if len(value) == 1 else f"{len(value)} hunks"
+    if key == "todos" and isinstance(value, list):
+        return f"{len(value)} todo" if len(value) == 1 else f"{len(value)} todos"
+    if isinstance(value, list):
+        return f"{len(value)} item" if len(value) == 1 else f"{len(value)} items"
+    if isinstance(value, dict):
+        keys = ", ".join(sorted(value.keys())[:4])
+        suffix = "" if len(value) <= 4 else ", ..."
+        return f"{{{keys}{suffix}}}"
+
+    rendered = repr(value)
+    if len(rendered) > 80:
+        rendered = rendered[:77] + "..."
+    return rendered
 
 
 _SPECIAL_TOOL_LABELS = {
@@ -594,7 +617,7 @@ def _render_bash_result(
 
     border_style = "red" if is_error else ("magenta" if phase == "verification" else "green")
     return Panel(
-        body or "(no output)",
+        Text(body or "(no output)"),
         title=f"[bold {border_style}]{title}[/bold {border_style}]",
         border_style=border_style,
         box=box.SQUARE,
@@ -608,7 +631,12 @@ def _print_tool_call(tool_name: str, tool_args: dict | None, phase: str | None =
         return
 
     args_str = _format_tool_args(tool_args)
-    console.print(f"[cyan]> {_tool_label(tool_name, phase)}[/cyan]({args_str})")
+    text = Text()
+    text.append("> ", style="cyan")
+    text.append(_tool_label(tool_name, phase), style="bold cyan")
+    if args_str:
+        text.append(f"({args_str})")
+    console.print(text)
 
 
 def _print_tool_result(
@@ -632,10 +660,14 @@ def _print_tool_result(
         return
 
     preview, truncated = _truncate_tool_text(content, line_limit=preview_lines)
+    renderable = Text(preview or "(no output)")
     if truncated:
-        preview += "\n[dim]... truncated for display; full result preserved in session[/dim]"
+        renderable.append(
+            "\n... truncated for display; full result preserved in session",
+            style="dim",
+        )
     border_style = "red" if is_error else ("magenta" if phase == "verification" else "dim")
-    console.print(Panel(preview or "(no output)", border_style=border_style))
+    console.print(Panel(renderable, border_style=border_style))
 
 
 def _parse_local_bash_command(user_input: str) -> tuple[str, dict[str, object]] | None:

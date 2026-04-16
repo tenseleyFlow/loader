@@ -59,7 +59,7 @@ def test_tool_call_widget_renders_full_bash_command_in_box() -> None:
     command = "python -m http.server 8000 --directory /tmp/preview-pages"
     widget = ToolCallWidget("bash", {"command": command})
 
-    header = widget._header_markup()
+    header = widget._header_renderable().plain
     rendered = _render_text(widget._build_initial_summary(), width=120)
 
     assert "Bash" in header
@@ -80,6 +80,63 @@ def test_cli_print_tool_call_renders_bash_panel_without_truncating(monkeypatch: 
     assert "Command" in rendered
     assert command in rendered
     assert "command=" not in rendered
+
+
+def test_tool_call_widget_summarizes_patch_hunks_safely() -> None:
+    widget = ToolCallWidget(
+        "patch",
+        {
+            "file_path": "~/Loader/animals/index.html",
+            "hunks": [
+                {
+                    "lines": [
+                        '            <a href="cat.html">Learn about Cats</a>',
+                        '            <a href="dog.html">Learn about Dogs</a>',
+                    ],
+                    "new_lines": 2,
+                    "new_start": 18,
+                    "old_lines": 2,
+                    "old_start": 18,
+                }
+            ],
+        },
+    )
+
+    header = widget._header_renderable().plain
+
+    assert "patch" in header
+    assert 'file_path="~/Loader/animals/index.html"' in header
+    assert "hunks=1 hunk" in header
+    assert "<a href=" not in header
+
+
+def test_cli_print_tool_call_summarizes_patch_hunks_safely(monkeypatch: pytest.MonkeyPatch) -> None:
+    console = Console(record=True, width=120)
+    monkeypatch.setattr(cli_main_module, "console", console)
+
+    cli_main_module._print_tool_call(
+        "patch",
+        {
+            "file_path": "~/Loader/animals/index.html",
+            "hunks": [
+                {
+                    "lines": [
+                        '            <a href="cat.html">Learn about Cats</a>',
+                        '            <a href="dog.html">Learn about Dogs</a>',
+                    ],
+                    "new_lines": 2,
+                    "new_start": 18,
+                    "old_lines": 2,
+                    "old_start": 18,
+                }
+            ],
+        },
+    )
+
+    rendered = console.export_text(styles=False)
+    assert 'file_path="~/Loader/animals/index.html"' in rendered
+    assert "hunks=1 hunk" in rendered
+    assert "<a href=" not in rendered
 
 
 def test_cli_parse_local_bash_commands_supports_slash_aliases() -> None:

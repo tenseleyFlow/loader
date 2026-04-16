@@ -1,10 +1,10 @@
 """Tool call widget with bash-specific rich rendering."""
 
+import json
 from typing import Any
 
 from rich import box
 from rich.console import Group
-from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 from textual.app import ComposeResult
@@ -30,13 +30,6 @@ class ToolCallWidget(Vertical):
         "bash_kill": "Bash Kill",
     }
 
-    TOOL_BULLETS = {
-        "pending": "[yellow]○[/yellow]",
-        "running": "[yellow]◐[/yellow]",
-        "success": "[green]●[/green]",
-        "error": "[red]●[/red]",
-    }
-
     state: reactive[str] = reactive("pending")
 
     def __init__(
@@ -56,7 +49,7 @@ class ToolCallWidget(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(
-            self._header_markup(),
+            self._header_renderable(),
             id="tool-header",
             classes="tool-header",
         )
@@ -70,14 +63,32 @@ class ToolCallWidget(Vertical):
             return ""
         parts = []
         for k, v in self.tool_args.items():
-            if isinstance(v, str):
-                limit = 200 if k in ("file_path", "path") else (80 if k == "content" else 40)
-                if len(v) > limit:
-                    v = v[: limit - 3] + "..."
-                parts.append(f'{k}="[dim]{escape(v)}[/dim]"')
-            else:
-                parts.append(f"{k}={escape(repr(v))}")
+            parts.append(f"{k}={self._format_arg_value(k, v)}")
         return ", ".join(parts)
+
+    def _format_arg_value(self, key: str, value: Any) -> str:
+        """Format one argument value as plain text safe for header rendering."""
+        if isinstance(value, str):
+            limit = 200 if key in ("file_path", "path") else (80 if key == "content" else 40)
+            if len(value) > limit:
+                value = value[: limit - 3] + "..."
+            return json.dumps(value)
+
+        if key == "hunks" and isinstance(value, list):
+            return f"{len(value)} hunk" if len(value) == 1 else f"{len(value)} hunks"
+        if key == "todos" and isinstance(value, list):
+            return f"{len(value)} todo" if len(value) == 1 else f"{len(value)} todos"
+        if isinstance(value, list):
+            return f"{len(value)} item" if len(value) == 1 else f"{len(value)} items"
+        if isinstance(value, dict):
+            keys = ", ".join(sorted(value.keys())[:4])
+            suffix = "" if len(value) <= 4 else ", ..."
+            return f"{{{keys}{suffix}}}"
+
+        rendered = repr(value)
+        if len(rendered) > 80:
+            rendered = rendered[:77] + "..."
+        return rendered
 
     def _display_name(self) -> str:
         base = self.TOOL_LABELS.get(self.tool_name, self.tool_name)
@@ -88,13 +99,30 @@ class ToolCallWidget(Vertical):
     def _is_bash_command_tool(self) -> bool:
         return self.tool_name == "bash"
 
-    def _header_markup(self) -> str:
+    def _header_renderable(self) -> Text:
         args_str = self._format_args()
-        bullet = self.TOOL_BULLETS.get(self.state, self.TOOL_BULLETS["pending"])
-        color = "red" if self._is_error else "cyan"
         label = self._display_name()
-        suffix = f"({args_str})" if args_str else ""
-        return f"{bullet} [bold {color}]{label}[/bold {color}]{suffix}"
+        bullet_symbol = {
+            "pending": "○",
+            "running": "◐",
+            "success": "●",
+            "error": "●",
+        }.get(self.state, "○")
+        bullet_style = {
+            "pending": "yellow",
+            "running": "yellow",
+            "success": "green",
+            "error": "red",
+        }.get(self.state, "yellow")
+        label_style = "bold red" if self._is_error else "bold cyan"
+
+        text = Text()
+        text.append(bullet_symbol, style=bullet_style)
+        text.append(" ")
+        text.append(label, style=label_style)
+        if args_str:
+            text.append(f"({args_str})")
+        return text
 
     def _build_initial_summary(self):
         if self._is_bash_command_tool():
@@ -270,7 +298,7 @@ class ToolCallWidget(Vertical):
 
     def _update_header(self) -> None:
         """Update the header with current state."""
-        self.query_one("#tool-header", Static).update(self._header_markup())
+        self.query_one("#tool-header", Static).update(self._header_renderable())
 
     def watch_state(self, state: str) -> None:
         """React to state changes."""
