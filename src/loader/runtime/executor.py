@@ -11,14 +11,15 @@ from ..llm.base import Message, ToolCall
 from ..tools.base import ConfirmationRequired, ToolRegistry
 from ..tools.base import ToolResult as RegistryToolResult
 from ..tools.workflow_tools import UserQuestionHandler
+from ..utils.file_mutations import build_file_mutation_preview_dict
 from .hooks import HookContext, HookDecision, HookManager
 from .parsing import format_tool_result
 from .permissions import PermissionDecision, PermissionMode, PermissionPolicy
 from .recovery import ErrorCategory, categorize_error
 from .tracing import RuntimeTracer
 
-BrowserConfirmation = Callable[[str, str, str], Awaitable[bool]] | None
-ConfirmationEmitter = Callable[[str, str, str], Awaitable[None]] | None
+BrowserConfirmation = Callable[[str, str, str, dict[str, Any] | None], Awaitable[bool]] | None
+ConfirmationEmitter = Callable[[str, str, str, dict[str, Any] | None], Awaitable[None]] | None
 
 
 class ToolExecutionState(StrEnum):
@@ -381,17 +382,23 @@ class ToolExecutor:
                 tool_name=confirmation.tool_name,
                 tool_call_id=tool_call.id,
             )
+            preview = confirmation.preview or build_file_mutation_preview_dict(
+                tool_call.name,
+                tool_args=tool_call.arguments,
+            )
             if emit_confirmation:
                 await emit_confirmation(
                     confirmation.tool_name,
                     confirmation.message,
                     confirmation.details,
+                    preview,
                 )
             if on_confirmation:
                 confirmed = await on_confirmation(
                     confirmation.tool_name,
                     confirmation.message,
                     confirmation.details,
+                    preview,
                 )
             else:
                 confirmed = True
@@ -431,10 +438,14 @@ class ToolExecutor:
 
         message = reason or f"Approve {tool_call.name}"
         details = self._format_permission_details(tool_call, reason)
+        preview = build_file_mutation_preview_dict(
+            tool_call.name,
+            tool_args=tool_call.arguments,
+        )
         if emit_confirmation:
-            await emit_confirmation(tool_call.name, message, details)
+            await emit_confirmation(tool_call.name, message, details, preview)
         if on_confirmation:
-            return await on_confirmation(tool_call.name, message, details)
+            return await on_confirmation(tool_call.name, message, details, preview)
         return False
 
     @staticmethod

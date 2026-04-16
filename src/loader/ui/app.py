@@ -16,6 +16,7 @@ from textual.worker import Worker, get_current_worker
 from ..runtime.events import AgentEvent
 from ..runtime.runtime_api import RuntimeShellOwner
 from ..tools.shell_tools import BashTool
+from ..utils.file_mutations import build_file_mutation_preview_dict
 from .adapter import (
     ArtifactCreated,
     ClearStream,
@@ -327,6 +328,11 @@ class LoaderApp(App):
                 is_error=result.is_error,
                 phase="local",
                 metadata=result.metadata,
+                mutation_preview=build_file_mutation_preview_dict(
+                    tool_name,
+                    tool_args=tool_args,
+                    metadata=result.metadata,
+                ),
             )
         )
 
@@ -465,6 +471,7 @@ class LoaderApp(App):
         tool_name: str,
         message: str,
         details: str,
+        preview: dict | None = None,
     ) -> bool:
         """Show approval bar and wait for user response."""
 
@@ -478,7 +485,12 @@ class LoaderApp(App):
 
         def show_bar():
             try:
-                approval_bar.show_approval(tool_name, message, details)
+                approval_bar.show_approval(
+                    tool_name,
+                    message,
+                    details,
+                    preview=preview,
+                )
                 with open("/tmp/loader_debug.log", "a") as f:
                     f.write("[approval] Bar shown, waiting for user input\n")
             except Exception as e:
@@ -622,11 +634,16 @@ class LoaderApp(App):
                 # Yield control to let UI update
                 await asyncio.sleep(0)
 
-        async def on_confirmation(tool_name: str, message: str, details: str) -> bool:
+        async def on_confirmation(
+            tool_name: str,
+            message: str,
+            details: str,
+            preview: dict | None,
+        ) -> bool:
             """Handle confirmation requests from the runtime owner."""
             if worker.is_cancelled:
                 return False
-            return await self._request_confirmation(tool_name, message, details)
+            return await self._request_confirmation(tool_name, message, details, preview)
 
         async def on_user_question(
             question: str,
@@ -763,6 +780,7 @@ class LoaderApp(App):
                 f.write(
                     "on_tool_call_completed: "
                     f"tool={message.tool_name}, "
+                    f"preview={bool(message.mutation_preview)}, "
                     f"new_string={bool(message.new_string)}, "
                     f"old_string={bool(message.old_string)}, "
                     f"file_path={message.file_path}\n"
@@ -788,35 +806,12 @@ class LoaderApp(App):
                     # No name match — fall back to FIFO
                     tool_widget = self._tool_widget_queue.pop(0)
 
-        # Check if this is an edit tool with diff info
-        # Note: old_string can be empty string (inserting), so check `is not None`
-        if message.tool_name == "edit" and message.new_string and message.old_string is not None and not message.is_error:
-            # Replace tool widget with diff widget
-            self._debug_log(
-                "  -> showing EDIT diff widget "
-                f"(old={len(message.old_string)} chars, "
-                f"new={len(message.new_string)} chars)"
-            )
+        if message.mutation_preview and not message.is_error:
+            self._debug_log("  -> showing file mutation diff widget")
             if tool_widget:
                 tool_widget.remove()
 
-            diff_widget = DiffWidget(
-                file_path=message.file_path or "",
-                old_string=message.old_string,
-                new_string=message.new_string,
-            )
-            msg_area.mount(diff_widget)
-        # Check if this is a write tool - show as diff (new file), but only on success
-        elif message.tool_name == "write" and message.new_string and not message.is_error:
-            self._debug_log(f"  -> showing WRITE diff widget ({len(message.new_string)} chars)")
-            if tool_widget:
-                tool_widget.remove()
-
-            diff_widget = DiffWidget(
-                file_path=message.file_path or "",
-                old_string="",  # Empty = new file
-                new_string=message.new_string,
-            )
+            diff_widget = DiffWidget(preview=message.mutation_preview)
             msg_area.mount(diff_widget)
         elif tool_widget:
             # Update existing tool widget with result

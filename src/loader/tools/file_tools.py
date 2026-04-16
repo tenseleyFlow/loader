@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime.permissions import PermissionMode
+from ..utils.file_mutations import build_file_mutation_preview_dict
 from .base import ConfirmationRequired, Tool, ToolResult
 from .fs_safety import (
     StructuredPatchHunk,
@@ -169,6 +170,7 @@ class WriteTool(Tool):
             tool_name=self.name,
             message=f"Write to file: {file_path}",
             details=f"{len(content)} bytes",
+            preview=build_file_mutation_preview_dict(self.name, tool_args=kwargs),
         )
 
     async def execute(
@@ -197,6 +199,10 @@ class WriteTool(Tool):
                     tool_name=self.name,
                     message=f"Write outside workspace: {file_path}",
                     details=f"Target is outside the workspace root ({self.workspace_root})",
+                    preview=build_file_mutation_preview_dict(
+                        self.name,
+                        tool_args={"file_path": file_path, "content": content},
+                    ),
                 )
         except Exception as exc:
             return ToolResult(f"Error writing file: {exc}", is_error=True)
@@ -290,6 +296,7 @@ class EditTool(Tool):
             tool_name=self.name,
             message=f"Edit file: {file_path}",
             details="replace text",
+            preview=build_file_mutation_preview_dict(self.name, tool_args=kwargs),
         )
 
     async def execute(
@@ -319,6 +326,14 @@ class EditTool(Tool):
                     tool_name=self.name,
                     message=f"Edit outside workspace: {file_path}",
                     details=f"Target is outside the workspace root ({self.workspace_root})",
+                    preview=build_file_mutation_preview_dict(
+                        self.name,
+                        tool_args={
+                            "file_path": file_path,
+                            "old_string": old_string,
+                            "new_string": new_string,
+                        },
+                    ),
                 )
         except Exception as exc:
             return ToolResult(f"Error resolving file path: {exc}", is_error=True)
@@ -441,6 +456,7 @@ class PatchTool(Tool):
             tool_name=self.name,
             message=f"Patch file: {file_path}",
             details="apply structured patch hunks",
+            preview=build_file_mutation_preview_dict(self.name, tool_args=kwargs),
         )
 
     async def execute(
@@ -476,6 +492,10 @@ class PatchTool(Tool):
                     tool_name=self.name,
                     message=f"Patch outside workspace: {file_path}",
                     details=f"Target is outside the workspace root ({self.workspace_root})",
+                    preview=build_file_mutation_preview_dict(
+                        self.name,
+                        tool_args={"file_path": file_path, "hunks": hunks},
+                    ),
                 )
 
         except Exception as exc:

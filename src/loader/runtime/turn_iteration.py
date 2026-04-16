@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from ..llm.base import Message, Role
 from .assistant_turns import AssistantTurnRequester
@@ -26,7 +27,9 @@ from .rollback import RollbackPlan
 from .workflow_policy import WorkflowTimelineEntryKind
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
-ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
+ConfirmationHandler = (
+    Callable[[str, str, str, dict[str, Any] | None], Awaitable[bool]] | None
+)
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 
 

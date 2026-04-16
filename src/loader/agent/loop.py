@@ -13,6 +13,7 @@ The long-term shell boundary is now intentional:
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ..context.project import ProjectContext, detect_project
 from ..llm.base import LLMBackend, Message
@@ -224,7 +225,10 @@ class Agent:
         self,
         user_message: str,
         on_event: Callable[[AgentEvent], None] | Callable[[AgentEvent], Awaitable[None]] | None = None,
-        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        on_confirmation: Callable[
+            [str, str, str, dict[str, Any] | None],
+            Awaitable[bool],
+        ] | None = None,
         on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
         use_plan: bool | None = None,
     ) -> str:
@@ -233,7 +237,8 @@ class Agent:
         Args:
             user_message: The user's input
             on_event: Optional callback for streaming events (sync or async)
-            on_confirmation: Optional callback for tool confirmation. Takes (tool_name, message, details) and returns True to confirm.
+            on_confirmation: Optional callback for tool confirmation. Takes
+                (tool_name, message, details, preview) and returns True to confirm.
             on_user_question: Optional callback for AskUserQuestion. Takes (question, options) and returns the answer.
             use_plan: Force planning on/off. None = auto-detect.
 

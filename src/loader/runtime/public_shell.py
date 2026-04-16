@@ -506,7 +506,10 @@ async def run_runtime_shell(
     on_event: Callable[[AgentEvent], None]
     | Callable[[AgentEvent], Awaitable[None]]
     | None = None,
-    on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+    on_confirmation: Callable[
+        [str, str, str, dict[str, Any] | None],
+        Awaitable[bool],
+    ] | None = None,
     on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
     use_plan: bool | None = None,
 ) -> str:

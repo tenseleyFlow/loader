@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Literal, Protocol
+from typing import Any
 
 from ..context.project import ProjectContext
 from ..tools.base import ToolRegistry
@@ -47,7 +48,10 @@ class RuntimeShellOwner(Protocol):
             | Callable[[AgentEvent], Awaitable[None]]
             | None
         ) = None,
-        on_confirmation: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        on_confirmation: Callable[
+            [str, str, str, dict[str, Any] | None],
+            Awaitable[bool],
+        ] | None = None,
         on_user_question: Callable[[str, list[str] | None], Awaitable[str]] | None = None,
         use_plan: bool | None = None,
     ) -> str:

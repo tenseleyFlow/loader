@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from .context import RuntimeContext
 from .dod import DefinitionOfDone
@@ -15,7 +16,9 @@ from .turn_iteration import TurnIterationAction, TurnIterationController
 from .turn_preamble import TurnPreludeController
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
-ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
+ConfirmationHandler = (
+    Callable[[str, str, str, dict[str, Any] | None], Awaitable[bool]] | None
+)
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 
 

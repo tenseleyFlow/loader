@@ -11,10 +11,17 @@ from ..runtime.permissions import PermissionMode
 class ConfirmationRequired(Exception):
     """Raised when a tool requires user confirmation before execution."""
 
-    def __init__(self, tool_name: str, message: str, details: str = ""):
+    def __init__(
+        self,
+        tool_name: str,
+        message: str,
+        details: str = "",
+        preview: dict[str, Any] | None = None,
+    ):
         self.tool_name = tool_name
         self.message = message
         self.details = details
+        self.preview = preview
         super().__init__(message)
 
 

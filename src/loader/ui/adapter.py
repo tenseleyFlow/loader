@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from textual.message import Message
 
 from ..runtime.events import AgentEvent
+from ..utils.file_mutations import build_file_mutation_preview_dict
 
 if TYPE_CHECKING:
     from ..runtime.reasoning_types import (
@@ -58,6 +59,7 @@ class ToolCallCompleted(Message):
     old_string: str | None = None
     new_string: str | None = None
     file_path: str | None = None
+    mutation_preview: dict[str, Any] | None = None
 
 
 @dataclass
@@ -103,6 +105,7 @@ class ConfirmationRequired(Message):
     tool_name: str
     confirm_message: str
     details: str = ""
+    preview: dict[str, Any] | None = None
 
 
 @dataclass
@@ -342,6 +345,11 @@ class EventAdapter:
                 old_string = None
                 new_string = None
                 file_path = None
+                mutation_preview = build_file_mutation_preview_dict(
+                    tool_name,
+                    tool_args=tool_args,
+                    metadata=event.tool_metadata,
+                )
 
                 if tool_name == "edit":
                     if tool_args:
@@ -397,6 +405,7 @@ class EventAdapter:
                         old_string=old_string,
                         new_string=new_string,
                         file_path=file_path,
+                        mutation_preview=mutation_preview,
                     )
                 )
 
@@ -437,6 +446,7 @@ class EventAdapter:
                         tool_name=event.tool_name or "",
                         confirm_message=event.confirm_message or "",
                         details=event.confirm_details or "",
+                        preview=event.confirm_preview,
                     )
                 )
 

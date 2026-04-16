@@ -48,6 +48,11 @@ from ..runtime.workflow_timeline_read_model import (
     summarize_observed_verification,
     workflow_entry_evidence_rollup,
 )
+from ..utils.file_mutations import (
+    build_file_mutation_preview,
+    is_file_mutation_tool,
+    render_file_mutation_preview,
+)
 from .options import inject_resume_target
 from .rendering import (
     format_dod_status,
@@ -533,6 +538,9 @@ def _format_tool_arg_value(key: str, value: Any) -> str:
 
 
 _SPECIAL_TOOL_LABELS = {
+    "write": "Write",
+    "edit": "Edit",
+    "patch": "Patch",
     "bash": "Bash",
     "bash_jobs": "Bash Jobs",
     "bash_wait": "Bash Wait",
@@ -625,10 +633,59 @@ def _render_bash_result(
     )
 
 
+def _render_file_mutation_call(
+    tool_name: str,
+    tool_args: dict | None,
+    *,
+    phase: str | None = None,
+):
+    preview = build_file_mutation_preview(tool_name, tool_args=tool_args)
+    if preview is None:
+        return None
+    border_style = "magenta" if phase == "verification" else "cyan"
+    return Group(
+        Text(_tool_label(tool_name, phase), style=f"bold {border_style}"),
+        render_file_mutation_preview(
+            preview,
+            border_style=border_style,
+            title="Preview",
+            max_lines=40,
+            max_chars=6_000,
+        ),
+    )
+
+
+def _render_file_mutation_result(
+    tool_name: str,
+    *,
+    metadata: dict[str, Any] | None,
+    phase: str | None = None,
+):
+    preview = build_file_mutation_preview(tool_name, metadata=metadata)
+    if preview is None:
+        return None
+    border_style = "magenta" if phase == "verification" else "green"
+    return Group(
+        Text(_tool_label(tool_name, phase), style=f"bold {border_style}"),
+        render_file_mutation_preview(
+            preview,
+            border_style=border_style,
+            title="Diff",
+            max_lines=60,
+            max_chars=6_000,
+        ),
+    )
+
+
 def _print_tool_call(tool_name: str, tool_args: dict | None, phase: str | None = None) -> None:
     if tool_name == "bash":
         console.print(_render_bash_call(tool_args, phase=phase))
         return
+    if is_file_mutation_tool(tool_name):
+        renderable = _render_file_mutation_call(tool_name, tool_args, phase=phase)
+        if renderable is not None:
+            console.print(renderable)
+            return
 
     args_str = _format_tool_args(tool_args)
     text = Text()
@@ -658,6 +715,15 @@ def _print_tool_result(
             )
         )
         return
+    if not is_error and is_file_mutation_tool(tool_name):
+        renderable = _render_file_mutation_result(
+            tool_name,
+            metadata=metadata,
+            phase=phase,
+        )
+        if renderable is not None:
+            console.print(renderable)
+            return
 
     preview, truncated = _truncate_tool_text(content, line_limit=preview_lines)
     renderable = Text(preview or "(no output)")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .artifact_invalidation import ArtifactInvalidationAssessor
 from .assistant_turns import AssistantTurnRequester
@@ -39,7 +40,9 @@ from .workflow_recovery import WorkflowRecoveryController
 from .workflow_state import WorkflowStateController
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
-ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
+ConfirmationHandler = (
+    Callable[[str, str, str, dict[str, Any] | None], Awaitable[bool]] | None
+)
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 
 
@@ -203,13 +206,19 @@ class ConversationRuntime:
 
     @staticmethod
     def _emit_confirmation(emit: EventSink):
-        async def _emit(tool_name: str, message: str, details: str) -> None:
+        async def _emit(
+            tool_name: str,
+            message: str,
+            details: str,
+            preview: dict[str, Any] | None,
+        ) -> None:
             await emit(
                 AgentEvent(
                     type="confirmation",
                     tool_name=tool_name,
                     confirm_message=message,
                     confirm_details=details,
+                    confirm_preview=preview,
                 )
             )
 

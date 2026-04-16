@@ -8,9 +8,16 @@ from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.css.query import NoMatches
 from textual.containers import Vertical
 from textual.reactive import reactive
 from textual.widgets import Static
+
+from ...utils.file_mutations import (
+    build_file_mutation_preview,
+    is_file_mutation_tool,
+    render_file_mutation_preview,
+)
 
 # Display truncation limits
 TOOL_RESULT_MAX_LINES = 60
@@ -24,6 +31,9 @@ class ToolCallWidget(Vertical):
     """Widget for tool calls with inline content display."""
 
     TOOL_LABELS = {
+        "write": "Write",
+        "edit": "Edit",
+        "patch": "Patch",
         "bash": "Bash",
         "bash_jobs": "Bash Jobs",
         "bash_wait": "Bash Wait",
@@ -58,6 +68,11 @@ class ToolCallWidget(Vertical):
     def _format_args(self) -> str:
         """Format tool arguments for display."""
         if self._is_bash_command_tool():
+            return ""
+        if self._is_file_mutation_tool():
+            file_path = self.tool_args.get("file_path") or self.tool_args.get("path")
+            if file_path:
+                return f"file_path={self._format_arg_value('file_path', file_path)}"
             return ""
         if not self.tool_args:
             return ""
@@ -99,6 +114,9 @@ class ToolCallWidget(Vertical):
     def _is_bash_command_tool(self) -> bool:
         return self.tool_name == "bash"
 
+    def _is_file_mutation_tool(self) -> bool:
+        return is_file_mutation_tool(self.tool_name)
+
     def _header_renderable(self) -> Text:
         args_str = self._format_args()
         label = self._display_name()
@@ -128,25 +146,23 @@ class ToolCallWidget(Vertical):
         if self._is_bash_command_tool():
             return Group(self._render_bash_command_panel())
 
-        # For write/edit tools, show content as pre-approval preview
-        initial_summary = Text()
-        if self.tool_name in ("write", "edit", "patch"):
-            content = self.tool_args.get("content", "")
-            file_path = self.tool_args.get("file_path", "")
-            if content and file_path:
-                initial_summary.append(f"  ► {file_path}\n", style="bold")
-                lines = content.splitlines()
-                show = min(len(lines), WRITE_PREVIEW_MAX_LINES)
-                for i, line in enumerate(lines[:show]):
-                    initial_summary.append(f"  {i + 1:>4} ", style="dim")
-                    initial_summary.append(f"{line}\n")
-                if len(lines) > show:
-                    initial_summary.append(
-                        f"  … {len(lines) - show} more lines "
-                        f"({_TRUNCATION_NOTICE})\n",
-                        style="dim",
-                    )
-        return initial_summary
+        if self._is_file_mutation_tool():
+            preview = build_file_mutation_preview(
+                self.tool_name,
+                tool_args=self.tool_args,
+            )
+            if preview is not None:
+                return render_file_mutation_preview(
+                    preview,
+                    border_style=(
+                        "magenta" if self.phase == "verification" else "cyan"
+                    ),
+                    title="Preview",
+                    max_lines=WRITE_PREVIEW_MAX_LINES,
+                    max_chars=6_000,
+                )
+
+        return Text()
 
     def _render_bash_command_panel(self) -> Panel:
         command = str(self.tool_args.get("command", "")).strip() or "(empty command)"
@@ -264,7 +280,7 @@ class ToolCallWidget(Vertical):
         self._update_header()
 
         if self._is_bash_command_tool():
-            self.query_one("#tool-summary", Static).update(self._build_bash_result(result))
+            self._update_summary(self._build_bash_result(result))
             return
 
         summary = Text()
@@ -294,11 +310,21 @@ class ToolCallWidget(Vertical):
                     style="dim",
                 )
 
-        self.query_one("#tool-summary", Static).update(summary)
+        self._update_summary(summary)
 
     def _update_header(self) -> None:
         """Update the header with current state."""
-        self.query_one("#tool-header", Static).update(self._header_renderable())
+        try:
+            self.query_one("#tool-header", Static).update(self._header_renderable())
+        except NoMatches:
+            self.call_after_refresh(self._update_header)
+
+    def _update_summary(self, renderable) -> None:
+        """Update the summary body once child widgets are mounted."""
+        try:
+            self.query_one("#tool-summary", Static).update(renderable)
+        except NoMatches:
+            self.call_after_refresh(lambda: self._update_summary(renderable))
 
     def watch_state(self, state: str) -> None:
         """React to state changes."""

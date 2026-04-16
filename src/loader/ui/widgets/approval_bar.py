@@ -10,6 +10,8 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
 
+from ...utils.file_mutations import render_file_mutation_preview
+
 
 class ApprovalBar(Widget, can_focus=True):
     """Inline approval bar that appears above the input when confirmation is needed.
@@ -29,7 +31,7 @@ class ApprovalBar(Widget, can_focus=True):
     DEFAULT_CSS = """
     ApprovalBar {
         height: auto;
-        max-height: 12;
+        max-height: 20;
         display: none;
         padding: 0 1;
         background: $warning 15%;
@@ -65,13 +67,21 @@ class ApprovalBar(Widget, can_focus=True):
         self._tool_name: str = ""
         self._command_preview: str = ""
         self._full_command: str = ""
+        self._preview: dict | None = None
         # Make this widget focusable from the start
         self.can_focus = True
 
     def compose(self) -> ComposeResult:
         yield Static("", id="approval-content")
 
-    def show_approval(self, tool_name: str, message: str, details: str = "") -> None:
+    def show_approval(
+        self,
+        tool_name: str,
+        message: str,
+        details: str = "",
+        *,
+        preview: dict | None = None,
+    ) -> None:
         """Show the approval bar with a pending action.
 
         Args:
@@ -81,6 +91,7 @@ class ApprovalBar(Widget, can_focus=True):
         """
         self._tool_name = tool_name
         self._full_command = details
+        self._preview = preview
 
         preview = details if details else message
         content = self.query_one("#approval-content", Static)
@@ -104,6 +115,29 @@ class ApprovalBar(Widget, can_focus=True):
                         border_style="yellow",
                         box=box.SQUARE,
                         expand=True,
+                    ),
+                    controls,
+                )
+            )
+        elif self._preview:
+            header = Text(f"Approve {_label_for_tool(tool_name)}", style="bold yellow")
+            controls = Text.assemble(
+                ("[Y]", "bold green"),
+                ("es  ",),
+                ("[n]", "bold red"),
+                ("o  ",),
+                ("[e]", "bold"),
+                ("dit",),
+            )
+            content.update(
+                Group(
+                    header,
+                    render_file_mutation_preview(
+                        self._preview,
+                        border_style="yellow",
+                        title="Preview",
+                        max_lines=20,
+                        max_chars=2_500,
                     ),
                     controls,
                 )
@@ -151,6 +185,7 @@ class ApprovalBar(Widget, can_focus=True):
         self._tool_name = ""
         self._command_preview = ""
         self._full_command = ""
+        self._preview = None
 
     def action_approve(self) -> None:
         """Handle 'y' key - approve the action."""
@@ -181,3 +216,12 @@ class ApprovalBar(Widget, can_focus=True):
             pass
         self.post_message(self.EditRequested(self._full_command))
         self.hide_approval()
+
+
+def _label_for_tool(tool_name: str) -> str:
+    return {
+        "write": "Write",
+        "edit": "Edit",
+        "patch": "Patch",
+        "bash": "Bash",
+    }.get(tool_name, tool_name)

@@ -36,6 +36,7 @@ class AgentEvent:
     is_stream_end: bool = False
     confirm_message: str | None = None
     confirm_details: str | None = None
+    confirm_preview: dict[str, Any] | None = None
     is_error: bool = False
     dod_status: str | None = None
     todo_items: list[dict[str, str]] | None = None

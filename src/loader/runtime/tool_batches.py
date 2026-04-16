@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..llm.base import ToolCall
 from .context import RuntimeContext
@@ -32,7 +33,9 @@ from .verification_observations import (
 from .workflow import sync_todos_to_definition_of_done
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
-ConfirmationHandler = Callable[[str, str, str], Awaitable[bool]] | None
+ConfirmationHandler = (
+    Callable[[str, str, str, dict[str, Any] | None], Awaitable[bool]] | None
+)
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 
 _VERIFY_ITEM = "Collect verification evidence"
