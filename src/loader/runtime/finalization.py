@@ -425,6 +425,11 @@ class TurnFinalizer:
                     type="tool_result",
                     content=outcome.event_content,
                     tool_name=verification_call.name,
+                    tool_metadata=(
+                        outcome.registry_result.metadata
+                        if outcome.registry_result is not None
+                        else None
+                    ),
                     is_error=outcome.is_error,
                     phase="verification",
                 )

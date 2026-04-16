@@ -1,6 +1,7 @@
 """Event adapter bridging Agent events to Textual messages."""
 
 from dataclasses import dataclass
+from typing import Any
 from typing import TYPE_CHECKING
 
 from textual.message import Message
@@ -52,6 +53,7 @@ class ToolCallCompleted(Message):
     content: str
     is_error: bool = False
     phase: str | None = None
+    metadata: dict[str, Any] | None = None
     # For edit tool diffs
     old_string: str | None = None
     new_string: str | None = None
@@ -391,6 +393,7 @@ class EventAdapter:
                         content=event.content,
                         is_error=event.is_error,
                         phase=event.phase,
+                        metadata=event.tool_metadata,
                         old_string=old_string,
                         new_string=new_string,
                         file_path=file_path,
@@ -399,7 +402,12 @@ class EventAdapter:
 
                 # Update the todo list widget when TodoWrite succeeds
                 if tool_name == "TodoWrite" and not event.is_error:
-                    new_todos = self._extract_todos(event.content, tool_args)
+                    metadata_todos = (event.tool_metadata or {}).get("new_todos", [])
+                    new_todos = (
+                        metadata_todos
+                        if isinstance(metadata_todos, list) and metadata_todos
+                        else self._extract_todos(event.content, tool_args)
+                    )
                     if new_todos:
                         self.app.post_message(TodoListUpdated(todos=new_todos))
 

@@ -153,6 +153,7 @@ def tool_outcome(
     tool_call: ToolCall,
     output: str,
     is_error: bool,
+    metadata: dict[str, object] | None = None,
 ) -> ToolExecutionOutcome:
     return ToolExecutionOutcome(
         tool_call=tool_call,
@@ -166,7 +167,11 @@ def tool_outcome(
         event_content=output,
         is_error=is_error,
         result_output=output,
-        registry_result=RegistryToolResult(output=output, is_error=is_error),
+        registry_result=RegistryToolResult(
+            output=output,
+            is_error=is_error,
+            metadata=metadata or {},
+        ),
     )
 
 
@@ -274,6 +279,66 @@ async def test_tool_batch_runner_tracks_recovery_with_legacy_context(temp_dir: P
     assert summary.tool_result_messages
     assert context.session.messages[-1] == summary.tool_result_messages[-1]
     assert any(event.type == "recovery" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_emits_tool_metadata(temp_dir: Path) -> None:
+    async def assess_confidence(tool_name: str, tool_args: dict, context: str) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="bash-1",
+        name="bash",
+        arguments={"command": "python -m http.server 8000", "background": True},
+    )
+    metadata = {
+        "job_id": "bash-1",
+        "status": "running",
+        "background": True,
+    }
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Started bash job bash-1",
+                is_error=False,
+                metadata=metadata,
+            )
+        ]
+    )
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=emit,
+        summary=TurnSummary(final_response=""),
+        dod=create_definition_of_done("Launch a preview server"),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    tool_result = next(event for event in events if event.type == "tool_result")
+    assert tool_result.tool_metadata == metadata
 
 
 @pytest.mark.asyncio

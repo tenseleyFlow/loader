@@ -29,6 +29,7 @@ class AgentEvent:
     content: str = ""
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
+    tool_metadata: dict[str, Any] | None = None
     phase: str | None = None
     step_info: str | None = None
     recovery_attempt: int | None = None

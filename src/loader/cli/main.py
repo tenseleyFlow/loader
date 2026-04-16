@@ -4,13 +4,16 @@ import asyncio
 import json
 import re
 import sys
+from typing import Any
 
 import click
-from rich.console import Console
+from rich import box
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+from rich.text import Text
 
 from ..runtime.inspection import (
     CheckStatus,
@@ -469,7 +472,10 @@ async def _main(
             "[bold blue]Loader[/bold blue]\n" + " | ".join(status_parts),
             border_style="blue",
         ))
-        console.print("[dim]Type 'exit' to quit, 'clear' to reset conversation[/dim]\n")
+        console.print(
+            "[dim]Type 'exit' to quit, 'clear' to reset conversation, "
+            "'jobs' to inspect bash jobs[/dim]\n"
+        )
         await run_interactive(shell_owner, skip_confirmation=yes)
     else:
         # Launch TUI
@@ -501,6 +507,212 @@ def _format_tool_args(args: dict | None) -> str:
             v = v[:27] + "..."
         parts.append(f"{k}={v!r}")
     return ", ".join(parts)
+
+
+_SPECIAL_TOOL_LABELS = {
+    "bash": "Bash",
+    "bash_jobs": "Bash Jobs",
+    "bash_wait": "Bash Wait",
+    "bash_kill": "Bash Kill",
+}
+
+
+def _tool_label(tool_name: str, phase: str | None = None) -> str:
+    label = _SPECIAL_TOOL_LABELS.get(tool_name, tool_name)
+    if phase == "verification":
+        return f"Verify {label}"
+    return label
+
+
+def _truncate_tool_text(
+    text: str,
+    *,
+    line_limit: int,
+    char_limit: int = 6_000,
+) -> tuple[str, bool]:
+    lines = text.splitlines()
+    if len(lines) <= line_limit and len(text) <= char_limit:
+        return text, False
+
+    preview = "\n".join(lines[:line_limit])
+    if len(preview) > char_limit:
+        preview = preview[:char_limit]
+    return preview, True
+
+
+def _render_bash_call(tool_args: dict | None, *, phase: str | None = None):
+    command = str((tool_args or {}).get("command", "")).strip() or "(empty command)"
+    title = _tool_label("bash", phase)
+    border_style = "magenta" if phase == "verification" else "cyan"
+    return Group(
+        Text(title, style=f"bold {border_style}"),
+        Panel(
+            Text(command),
+            title="Command",
+            border_style=border_style,
+            box=box.SQUARE,
+            expand=True,
+        ),
+    )
+
+
+def _render_bash_result(
+    content: str,
+    *,
+    metadata: dict[str, Any] | None,
+    is_error: bool,
+    phase: str | None = None,
+) -> Panel:
+    metadata = metadata or {}
+    title = _tool_label("bash", phase)
+    lines = []
+    status_value = str(metadata.get("status", "failed" if is_error else "completed"))
+    lines.append(f"Status: {status_value.replace('_', ' ')}")
+    if metadata.get("job_id"):
+        lines.append(f"Job: {metadata['job_id']}")
+    if metadata.get("pid"):
+        lines.append(f"PID: {metadata['pid']}")
+    if metadata.get("exit_code") is not None:
+        lines.append(f"Exit: {metadata['exit_code']}")
+    if metadata.get("background") is not None:
+        lines.append(
+            f"Mode: {'background' if metadata.get('background') else 'foreground'}"
+        )
+
+    stdout_text = str(metadata.get("stdout", "") or "")
+    stderr_text = str(metadata.get("stderr", "") or "")
+    show_summary_note = (
+        (not stdout_text and not stderr_text and bool(content.strip()))
+        or status_value not in {"completed", "running"}
+    )
+    body = "\n".join(lines)
+    if show_summary_note and content.strip():
+        preview, truncated = _truncate_tool_text(content, line_limit=20)
+        body = f"{body}\n\n{preview}" if body else preview
+        if truncated:
+            body += "\n… truncated for display; full result preserved in session"
+
+    border_style = "red" if is_error else ("magenta" if phase == "verification" else "green")
+    return Panel(
+        body or "(no output)",
+        title=f"[bold {border_style}]{title}[/bold {border_style}]",
+        border_style=border_style,
+        box=box.SQUARE,
+        expand=True,
+    )
+
+
+def _print_tool_call(tool_name: str, tool_args: dict | None, phase: str | None = None) -> None:
+    if tool_name == "bash":
+        console.print(_render_bash_call(tool_args, phase=phase))
+        return
+
+    args_str = _format_tool_args(tool_args)
+    console.print(f"[cyan]> {_tool_label(tool_name, phase)}[/cyan]({args_str})")
+
+
+def _print_tool_result(
+    tool_name: str,
+    content: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+    is_error: bool = False,
+    phase: str | None = None,
+    preview_lines: int = 10,
+) -> None:
+    if tool_name == "bash":
+        console.print(
+            _render_bash_result(
+                content,
+                metadata=metadata,
+                is_error=is_error,
+                phase=phase,
+            )
+        )
+        return
+
+    preview, truncated = _truncate_tool_text(content, line_limit=preview_lines)
+    if truncated:
+        preview += "\n[dim]... truncated for display; full result preserved in session[/dim]"
+    border_style = "red" if is_error else ("magenta" if phase == "verification" else "dim")
+    console.print(Panel(preview or "(no output)", border_style=border_style))
+
+
+def _parse_local_bash_command(user_input: str) -> tuple[str, dict[str, object]] | None:
+    parts = user_input.strip().split()
+    if not parts:
+        return None
+
+    command = parts[0].lstrip("/").lower()
+    if command == "jobs":
+        if len(parts) > 2:
+            raise ValueError("Usage: jobs [limit]")
+        tool_args: dict[str, object] = {}
+        if len(parts) == 2:
+            tool_args["limit"] = max(1, int(parts[1]))
+        return "bash_jobs", tool_args
+
+    if command == "wait":
+        if len(parts) not in {2, 3}:
+            raise ValueError("Usage: wait <job-id> [timeout-seconds]")
+        tool_args = {"job_id": parts[1]}
+        if len(parts) == 3:
+            tool_args["timeout"] = float(parts[2])
+        return "bash_wait", tool_args
+
+    if command == "kill":
+        if len(parts) not in {2, 3}:
+            raise ValueError("Usage: kill <job-id> [force-after-ms]")
+        tool_args = {"job_id": parts[1]}
+        if len(parts) == 3:
+            tool_args["force_after_ms"] = int(parts[2])
+        return "bash_kill", tool_args
+
+    return None
+
+
+async def _run_local_bash_command(
+    shell_owner: RuntimeShellOwner,
+    tool_name: str,
+    tool_args: dict[str, object],
+) -> None:
+    _print_tool_call(tool_name, tool_args, phase="local")
+    result = await shell_owner.registry.execute(tool_name, **tool_args)
+    _print_tool_result(
+        tool_name,
+        result.output,
+        metadata=result.metadata,
+        is_error=result.is_error,
+        phase="local",
+        preview_lines=8,
+    )
+
+
+def _get_bash_tool(shell_owner: RuntimeShellOwner):
+    from ..tools.shell_tools import BashTool
+
+    tool = shell_owner.registry.get("bash")
+    return tool if isinstance(tool, BashTool) else None
+
+
+async def _interrupt_active_foreground_bash(shell_owner: RuntimeShellOwner) -> bool:
+    bash_tool = _get_bash_tool(shell_owner)
+    if bash_tool is None:
+        return False
+
+    result = await bash_tool.manager.interrupt_active_foreground()
+    if result is None:
+        return False
+
+    _print_tool_result(
+        "bash",
+        result.output,
+        metadata=result.metadata,
+        is_error=result.is_error,
+        phase="local",
+        preview_lines=8,
+    )
+    return True
 
 
 async def run_once(
@@ -552,21 +764,20 @@ async def run_once(
                 elapsed = time.time() - thinking_start
                 console.print(f" [dim]({elapsed:.1f}s)[/dim]")
                 thinking_start = None
-            args_str = _format_tool_args(event.tool_args)
-            tool_label = (
-                f"verify {event.tool_name}"
-                if event.phase == "verification"
-                else event.tool_name
+            _print_tool_call(
+                getattr(event, "tool_name", "") or "",
+                getattr(event, "tool_args", None),
+                getattr(event, "phase", None),
             )
-            console.print(f"[cyan]> {tool_label}[/cyan]({args_str})")
         elif event.type == "tool_result":
-            # Show result in a compact panel
-            lines = event.content.splitlines()
-            preview = "\n".join(lines[:10])
-            if len(lines) > 10:
-                preview += f"\n[dim]... ({len(lines) - 10} more lines)[/dim]"
-            border_style = "magenta" if event.phase == "verification" else "dim"
-            console.print(Panel(preview, border_style=border_style))
+            _print_tool_result(
+                getattr(event, "tool_name", "") or "",
+                event.content,
+                metadata=getattr(event, "tool_metadata", None),
+                is_error=getattr(event, "is_error", False),
+                phase=getattr(event, "phase", None),
+                preview_lines=10,
+            )
         elif event.type == "dod_status":
             console.print(f"[dim]{format_dod_status(event)}[/dim]")
         elif event.type == "recovery":
@@ -588,6 +799,11 @@ async def run_once(
         console.print("\n[red]Request timed out.[/red]")
         console.print("[dim]The model is taking too long. Try a smaller model or simpler prompt.[/dim]")
         return
+    except KeyboardInterrupt:
+        console.print()
+        if not await _interrupt_active_foreground_bash(shell_owner):
+            console.print("[yellow]Cancelled.[/yellow]")
+        return
     except ConfirmationRequired as e:
         console.print(f"\n[yellow]Confirmation required:[/yellow] {e.message}")
         if e.details:
@@ -595,14 +811,20 @@ async def run_once(
         if Confirm.ask("Proceed?"):
             shell_owner.registry.skip_confirmation = True
             streamed_response = False  # Reset for continuation
-            response = await shell_owner.run(
-                "Continue with the previous action.",
-                on_event=on_event,
-                on_user_question=_ask_user_question_cli,
-            )
-            if not streamed_response:
-                console.print(Markdown(clean_response(response)))
-            shell_owner.registry.skip_confirmation = skip_confirmation
+            try:
+                response = await shell_owner.run(
+                    "Continue with the previous action.",
+                    on_event=on_event,
+                    on_user_question=_ask_user_question_cli,
+                )
+                if not streamed_response:
+                    console.print(Markdown(clean_response(response)))
+            except KeyboardInterrupt:
+                console.print()
+                if not await _interrupt_active_foreground_bash(shell_owner):
+                    console.print("[yellow]Cancelled.[/yellow]")
+            finally:
+                shell_owner.registry.skip_confirmation = skip_confirmation
         else:
             console.print("[red]Aborted.[/red]")
 
@@ -622,7 +844,10 @@ async def run_interactive(
     history_file = os.path.expanduser("~/.loader_history")
     session = PromptSession(history=FileHistory(history_file))
 
-    console.print("[dim]Type 'exit' to quit, 'clear' to reset conversation[/dim]\n")
+    console.print(
+        "[dim]Type 'exit' to quit, 'clear' to reset conversation, "
+        "'jobs' to inspect bash jobs[/dim]\n"
+    )
 
     while True:
         try:
@@ -645,6 +870,18 @@ async def run_interactive(
         if user_input.lower() == "clear":
             shell_owner.clear_history()
             console.print("[dim]Conversation cleared[/dim]")
+            continue
+
+        try:
+            local_bash = _parse_local_bash_command(user_input)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]\n")
+            continue
+
+        if local_bash is not None:
+            tool_name, tool_args = local_bash
+            await _run_local_bash_command(shell_owner, tool_name, tool_args)
+            console.print()
             continue
 
         import time
@@ -699,22 +936,20 @@ async def run_interactive(
                 if streaming_started:
                     console.print()  # New line after any streamed content
                     streaming_started = False
-                args_str = _format_tool_args(event.tool_args)
-                tool_label = (
-                    f"verify {event.tool_name}"
-                    if event.phase == "verification"
-                    else event.tool_name
+                _print_tool_call(
+                    getattr(event, "tool_name", "") or "",
+                    getattr(event, "tool_args", None),
+                    getattr(event, "phase", None),
                 )
-                console.print(f"[cyan]> {tool_label}[/cyan]({args_str})")
             elif event.type == "tool_result":
-                # Show compact result
-                lines = event.content.splitlines()
-                if len(lines) <= 3:
-                    preview = event.content
-                else:
-                    preview = "\n".join(lines[:3]) + f"\n[dim]... ({len(lines) - 3} more lines)[/dim]"
-                style = "magenta" if event.phase == "verification" else "dim"
-                console.print(f"[{style}]{preview}[/{style}]")
+                _print_tool_result(
+                    getattr(event, "tool_name", "") or "",
+                    event.content,
+                    metadata=getattr(event, "tool_metadata", None),
+                    is_error=getattr(event, "is_error", False),
+                    phase=getattr(event, "phase", None),
+                    preview_lines=3,
+                )
             elif event.type == "dod_status":
                 console.print(f"\n[dim]{format_dod_status(event)}[/dim]")
             elif event.type == "recovery":
@@ -740,6 +975,12 @@ async def run_interactive(
             console.print("  • A simpler prompt")
             console.print("  • Check if Ollama is overloaded")
             continue
+        except KeyboardInterrupt:
+            console.print()
+            if not await _interrupt_active_foreground_bash(shell_owner):
+                console.print("[yellow]Cancelled.[/yellow]")
+            console.print()
+            continue
         except ConfirmationRequired as e:
             console.print(f"\n[yellow]Confirmation required:[/yellow] {e.message}")
             if e.details:
@@ -756,6 +997,11 @@ async def run_interactive(
                     console.print()
                     if not streamed_response:
                         console.print(Markdown(clean_response(response)))
+                    console.print()
+                except KeyboardInterrupt:
+                    console.print()
+                    if not await _interrupt_active_foreground_bash(shell_owner):
+                        console.print("[yellow]Cancelled.[/yellow]")
                     console.print()
                 finally:
                     shell_owner.registry.skip_confirmation = skip_confirmation
@@ -1312,14 +1558,20 @@ async def _explore_main(
 
     def on_event(event) -> None:
         if event.type == "tool_call":
-            args_str = _format_tool_args(event.tool_args)
-            console.print(f"[cyan]> {event.tool_name}[/cyan]({args_str})")
+            _print_tool_call(
+                getattr(event, "tool_name", "") or "",
+                getattr(event, "tool_args", None),
+                getattr(event, "phase", None),
+            )
         elif event.type == "tool_result":
-            lines = event.content.splitlines()
-            preview = "\n".join(lines[:8])
-            if len(lines) > 8:
-                preview += f"\n[dim]... ({len(lines) - 8} more lines)[/dim]"
-            console.print(Panel(preview, border_style="dim"))
+            _print_tool_result(
+                getattr(event, "tool_name", "") or "",
+                event.content,
+                metadata=getattr(event, "tool_metadata", None),
+                is_error=getattr(event, "is_error", False),
+                phase=getattr(event, "phase", None),
+                preview_lines=8,
+            )
 
     response = await shell_owner.run_explore(prompt, on_event=on_event, fresh=fresh)
     console.print(Markdown(clean_response(response)))

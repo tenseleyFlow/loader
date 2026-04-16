@@ -11,6 +11,9 @@ SLASH_COMMANDS = [
     "/help",
     "/model",
     "/models",
+    "/jobs",
+    "/wait",
+    "/kill",
     "/clear",
     "/exit",
 ]

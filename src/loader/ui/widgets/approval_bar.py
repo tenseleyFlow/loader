@@ -1,5 +1,9 @@
 """Approval bar widget for command confirmation (Claude Code style)."""
 
+from rich import box
+from rich.console import Group
+from rich.panel import Panel
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.message import Message
@@ -25,7 +29,7 @@ class ApprovalBar(Widget, can_focus=True):
     DEFAULT_CSS = """
     ApprovalBar {
         height: auto;
-        max-height: 4;
+        max-height: 12;
         display: none;
         padding: 0 1;
         background: $warning 15%;
@@ -79,13 +83,38 @@ class ApprovalBar(Widget, can_focus=True):
         self._full_command = details
 
         preview = details if details else message
-        if len(preview) > 70:
-            preview = preview[:67] + "..."
         content = self.query_one("#approval-content", Static)
-        content.update(
-            f"[bold $warning]\\[{tool_name}][/] {preview}  "
-            f"[bold green]\\[Y][/]es  [bold red]\\[n][/]o  [bold]\\[e][/]dit"
-        )
+        if tool_name == "bash":
+            header = Text("Bash", style="bold yellow")
+            command = Text(preview or "(empty command)")
+            controls = Text.assemble(
+                ("[Y]", "bold green"),
+                ("es  ",),
+                ("[n]", "bold red"),
+                ("o  ",),
+                ("[e]", "bold"),
+                ("dit",),
+            )
+            content.update(
+                Group(
+                    header,
+                    Panel(
+                        command,
+                        title="Command",
+                        border_style="yellow",
+                        box=box.SQUARE,
+                        expand=True,
+                    ),
+                    controls,
+                )
+            )
+        else:
+            if len(preview) > 70:
+                preview = preview[:67] + "..."
+            content.update(
+                f"[bold $warning]\\[{tool_name}][/] {preview}  "
+                f"[bold green]\\[Y][/]es  [bold red]\\[n][/]o  [bold]\\[e][/]dit"
+            )
 
         # Show the bar
         self.add_class("visible")

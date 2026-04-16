@@ -1,6 +1,11 @@
-"""Tool call widget with inline truncation (claw-code style)."""
+"""Tool call widget with bash-specific rich rendering."""
 
+from typing import Any
+
+from rich import box
+from rich.console import Group
 from rich.markup import escape
+from rich.panel import Panel
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -18,6 +23,13 @@ _TRUNCATION_NOTICE = "truncated for display; full result preserved in session"
 class ToolCallWidget(Vertical):
     """Widget for tool calls with inline content display."""
 
+    TOOL_LABELS = {
+        "bash": "Bash",
+        "bash_jobs": "Bash Jobs",
+        "bash_wait": "Bash Wait",
+        "bash_kill": "Bash Kill",
+    }
+
     TOOL_BULLETS = {
         "pending": "[yellow]○[/yellow]",
         "running": "[yellow]◐[/yellow]",
@@ -31,22 +43,62 @@ class ToolCallWidget(Vertical):
         self,
         tool_name: str,
         tool_args: dict | None = None,
+        phase: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.tool_name = tool_name
         self.tool_args = tool_args or {}
+        self.phase = phase
         self._result: str = ""
         self._is_error: bool = False
+        self._metadata: dict[str, Any] = {}
 
     def compose(self) -> ComposeResult:
-        args_str = self._format_args()
-
         yield Static(
-            f"{self.TOOL_BULLETS['pending']} [bold cyan]{self.tool_name}[/bold cyan]({args_str})",
+            self._header_markup(),
             id="tool-header",
             classes="tool-header",
         )
+        yield Static(self._build_initial_summary(), id="tool-summary", classes="tool-summary")
+
+    def _format_args(self) -> str:
+        """Format tool arguments for display."""
+        if self._is_bash_command_tool():
+            return ""
+        if not self.tool_args:
+            return ""
+        parts = []
+        for k, v in self.tool_args.items():
+            if isinstance(v, str):
+                limit = 200 if k in ("file_path", "path") else (80 if k == "content" else 40)
+                if len(v) > limit:
+                    v = v[: limit - 3] + "..."
+                parts.append(f'{k}="[dim]{escape(v)}[/dim]"')
+            else:
+                parts.append(f"{k}={escape(repr(v))}")
+        return ", ".join(parts)
+
+    def _display_name(self) -> str:
+        base = self.TOOL_LABELS.get(self.tool_name, self.tool_name)
+        if self.phase == "verification":
+            return f"Verify {base}"
+        return base
+
+    def _is_bash_command_tool(self) -> bool:
+        return self.tool_name == "bash"
+
+    def _header_markup(self) -> str:
+        args_str = self._format_args()
+        bullet = self.TOOL_BULLETS.get(self.state, self.TOOL_BULLETS["pending"])
+        color = "red" if self._is_error else "cyan"
+        label = self._display_name()
+        suffix = f"({args_str})" if args_str else ""
+        return f"{bullet} [bold {color}]{label}[/bold {color}]{suffix}"
+
+    def _build_initial_summary(self):
+        if self._is_bash_command_tool():
+            return Group(self._render_bash_command_panel())
 
         # For write/edit tools, show content as pre-approval preview
         initial_summary = Text()
@@ -66,37 +118,126 @@ class ToolCallWidget(Vertical):
                         f"({_TRUNCATION_NOTICE})\n",
                         style="dim",
                     )
-        yield Static(initial_summary, id="tool-summary", classes="tool-summary")
+        return initial_summary
 
-    def _format_args(self) -> str:
-        """Format tool arguments for display."""
-        if not self.tool_args:
-            return ""
-        parts = []
-        for k, v in self.tool_args.items():
-            if isinstance(v, str):
-                limit = 200 if k in ("file_path", "path") else (80 if k == "content" else 40)
-                if len(v) > limit:
-                    v = v[: limit - 3] + "..."
-                parts.append(f'{k}="[dim]{escape(v)}[/dim]"')
-            else:
-                parts.append(f"{k}={escape(repr(v))}")
-        return ", ".join(parts)
+    def _render_bash_command_panel(self) -> Panel:
+        command = str(self.tool_args.get("command", "")).strip() or "(empty command)"
+        return Panel(
+            Text(command),
+            title="Command",
+            border_style="cyan",
+            box=box.SQUARE,
+            expand=True,
+        )
+
+    def _truncate_result(self, result: str, *, line_limit: int) -> tuple[str, bool]:
+        lines = result.splitlines()
+        if len(lines) <= line_limit and len(result) <= TOOL_RESULT_MAX_CHARS:
+            return result, False
+
+        display = lines[:line_limit]
+        text = "\n".join(display)
+        if len(text) > TOOL_RESULT_MAX_CHARS:
+            text = text[:TOOL_RESULT_MAX_CHARS]
+        return text, True
+
+    def _build_bash_result(self, result: str):
+        metadata = self._metadata
+        renderables = [self._render_bash_command_panel()]
+        status = Text()
+        status.append(
+            "✗ Failed\n" if self._is_error else "✓ Success\n",
+            style="bold red" if self._is_error else "bold green",
+        )
+
+        detail_lines = []
+        status_value = str(metadata.get("status", "failed" if self._is_error else "completed"))
+        detail_lines.append(f"Status: {status_value.replace('_', ' ')}")
+        job_id = metadata.get("job_id")
+        if job_id:
+            detail_lines.append(f"Job: {job_id}")
+        pid = metadata.get("pid")
+        if pid:
+            detail_lines.append(f"PID: {pid}")
+        if metadata.get("exit_code") is not None:
+            detail_lines.append(f"Exit: {metadata['exit_code']}")
+        if metadata.get("background") is not None:
+            detail_lines.append(
+                f"Mode: {'background' if metadata.get('background') else 'foreground'}"
+            )
+        if detail_lines:
+            status.append("\n".join(detail_lines))
+
+        stdout_text = str(metadata.get("stdout", "") or "")
+        stderr_text = str(metadata.get("stderr", "") or "")
+        show_summary_note = (
+            (not stdout_text and not stderr_text and bool(result.strip()))
+            or status_value not in {"completed", "running"}
+        )
+        if show_summary_note and result.strip():
+            if status.plain:
+                status.append("\n\n")
+            preview, truncated = self._truncate_result(result, line_limit=24)
+            status.append(preview)
+            if truncated:
+                status.append(f"\n… {_TRUNCATION_NOTICE}", style="dim")
+
+        renderables.append(
+            Panel(
+                status,
+                title="Status",
+                border_style="red" if self._is_error else "green",
+                box=box.SQUARE,
+                expand=True,
+            )
+        )
+
+        for stream_name, stream_text, truncated in (
+            ("stdout", stdout_text, bool(metadata.get("stdout_truncated"))),
+            ("stderr", stderr_text, bool(metadata.get("stderr_truncated"))),
+        ):
+            if not stream_text:
+                continue
+            preview, preview_truncated = self._truncate_result(stream_text, line_limit=40)
+            stream_panel_text = Text(preview)
+            if truncated or preview_truncated:
+                stream_panel_text.append(f"\n… {_TRUNCATION_NOTICE}", style="dim")
+            renderables.append(
+                Panel(
+                    stream_panel_text,
+                    title=stream_name,
+                    border_style="red" if stream_name == "stderr" else "dim",
+                    box=box.SQUARE,
+                    expand=True,
+                )
+            )
+
+        return Group(*renderables)
 
     def set_running(self) -> None:
         """Mark as running."""
         self.state = "running"
         self._update_header()
 
-    def set_result(self, result: str, is_error: bool = False) -> None:
+    def set_result(
+        self,
+        result: str,
+        is_error: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Update widget with tool result using inline truncation."""
         self._result = result
         self._is_error = is_error
+        self._metadata = metadata or {}
         self.state = "error" if is_error else "success"
 
-        self.remove_class("pending", "error", "success")
+        self.remove_class("pending", "running", "error", "success")
         self.add_class(self.state)
         self._update_header()
+
+        if self._is_bash_command_tool():
+            self.query_one("#tool-summary", Static).update(self._build_bash_result(result))
+            return
 
         summary = Text()
         if is_error:
@@ -129,12 +270,7 @@ class ToolCallWidget(Vertical):
 
     def _update_header(self) -> None:
         """Update the header with current state."""
-        args_str = self._format_args()
-        bullet = self.TOOL_BULLETS.get(self.state, self.TOOL_BULLETS["pending"])
-        color = "red" if self._is_error else "cyan"
-        self.query_one("#tool-header", Static).update(
-            f"{bullet} [bold {color}]{self.tool_name}[/bold {color}]({args_str})"
-        )
+        self.query_one("#tool-header", Static).update(self._header_markup())
 
     def watch_state(self, state: str) -> None:
         """React to state changes."""

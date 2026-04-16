@@ -15,6 +15,7 @@ from textual.worker import Worker, get_current_worker
 
 from ..runtime.events import AgentEvent
 from ..runtime.runtime_api import RuntimeShellOwner
+from ..tools.shell_tools import BashTool
 from .adapter import (
     ArtifactCreated,
     ClearStream,
@@ -151,7 +152,7 @@ class LoaderApp(App):
             "Press Ctrl+C to quit, Ctrl+L to clear.[/dim]"
         )
         self._add_message(
-            "[dim]Commands: /help, /model, /clear, /exit[/dim]"
+            "[dim]Commands: /help, /model, /jobs, /wait, /kill, /clear, /exit[/dim]"
         )
 
     def _add_message(self, content: str, classes: str = "") -> None:
@@ -254,6 +255,15 @@ class LoaderApp(App):
         elif cmd == "models":
             self._handle_model_command("")  # List models
 
+        elif cmd == "jobs":
+            self._handle_jobs_command(args)
+
+        elif cmd == "wait":
+            self._handle_wait_command(args)
+
+        elif cmd == "kill":
+            self._handle_kill_command(args)
+
         else:
             self._add_message(
                 f"[red]Unknown command: /{cmd}[/red]\n"
@@ -269,11 +279,106 @@ class LoaderApp(App):
 [cyan]/clear[/cyan], [cyan]/c[/cyan]         Clear the conversation
 [cyan]/model[/cyan], [cyan]/models[/cyan]    Open model selector (fzf-style)
 [cyan]/model[/cyan] [dim]<name>[/dim]     Switch to a specific model
+[cyan]/jobs[/cyan] [dim][limit][/dim]     List active and recent bash jobs
+[cyan]/wait[/cyan] [dim]<job-id> [timeout][/dim] Wait for a bash job to finish
+[cyan]/kill[/cyan] [dim]<job-id> [ms][/dim] Stop a tracked bash job
 
 [bold]Shortcuts:[/bold]
 [dim]Ctrl+C[/dim]            Exit
-[dim]Ctrl+L[/dim]            Clear conversation"""
+[dim]Ctrl+L[/dim]            Clear conversation
+[dim]Esc[/dim]               Interrupt foreground bash or cancel the turn"""
         self._add_message(help_text)
+
+    def _get_bash_tool(self) -> BashTool | None:
+        tool = self.shell_owner.registry.get("bash")
+        return tool if isinstance(tool, BashTool) else None
+
+    def _launch_local_tool(self, tool_name: str, tool_args: dict[str, object]) -> None:
+        asyncio.create_task(self._execute_local_tool(tool_name, tool_args))
+
+    async def _execute_local_tool(
+        self,
+        tool_name: str,
+        tool_args: dict[str, object],
+    ) -> None:
+        self.post_message(
+            ToolCallStarted(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                phase="local",
+            )
+        )
+        try:
+            result = await self.shell_owner.registry.execute(tool_name, **tool_args)
+        except Exception as exc:
+            self.post_message(
+                ToolCallCompleted(
+                    tool_name=tool_name,
+                    content=f"Tool execution error: {exc}",
+                    is_error=True,
+                    phase="local",
+                )
+            )
+            return
+        self.post_message(
+            ToolCallCompleted(
+                tool_name=tool_name,
+                content=result.output,
+                is_error=result.is_error,
+                phase="local",
+                metadata=result.metadata,
+            )
+        )
+
+    def _handle_jobs_command(self, args: str) -> None:
+        limit = 20
+        if args.strip():
+            try:
+                limit = max(1, int(args.strip()))
+            except ValueError:
+                self._add_message("[red]Usage: /jobs [limit][/red]")
+                return
+        self._launch_local_tool("bash_jobs", {"limit": limit})
+
+    def _handle_wait_command(self, args: str) -> None:
+        parts = args.split()
+        if not parts:
+            self._add_message("[red]Usage: /wait <job-id> [timeout-seconds][/red]")
+            return
+        tool_args: dict[str, object] = {"job_id": parts[0]}
+        if len(parts) > 1:
+            try:
+                tool_args["timeout"] = float(parts[1])
+            except ValueError:
+                self._add_message("[red]Usage: /wait <job-id> [timeout-seconds][/red]")
+                return
+        self._launch_local_tool("bash_wait", tool_args)
+
+    def _handle_kill_command(self, args: str) -> None:
+        parts = args.split()
+        if not parts:
+            self._add_message("[red]Usage: /kill <job-id> [force-after-ms][/red]")
+            return
+        tool_args: dict[str, object] = {"job_id": parts[0]}
+        if len(parts) > 1:
+            try:
+                tool_args["force_after_ms"] = int(parts[1])
+            except ValueError:
+                self._add_message("[red]Usage: /kill <job-id> [force-after-ms][/red]")
+                return
+        self._launch_local_tool("bash_kill", tool_args)
+
+    async def _interrupt_active_bash_job(self) -> None:
+        bash_tool = self._get_bash_tool()
+        if bash_tool is None:
+            return
+        await bash_tool.manager.interrupt_active_foreground()
+
+    def _terminate_all_bash_jobs(self) -> list[str]:
+        bash_tool = self._get_bash_tool()
+        if bash_tool is None:
+            return []
+        return bash_tool.manager.terminate_all_now()
 
     def _handle_model_command(self, args: str) -> None:
         """Handle /model command - switch or show selector."""
@@ -639,12 +744,9 @@ class LoaderApp(App):
 
         # Create tool widget
         widget = ToolCallWidget(
-            tool_name=(
-                f"verify {message.tool_name}"
-                if message.phase == "verification"
-                else message.tool_name
-            ),
+            tool_name=message.tool_name,
             tool_args=message.tool_args,
+            phase=message.phase,
         )
         msg_area.mount(widget)
         widget.set_running()  # Must be after mount() so children exist
@@ -674,14 +776,17 @@ class LoaderApp(App):
         tool_widget = None
         if self._tool_widget_queue:
             for i, w in enumerate(self._tool_widget_queue):
-                # Match on tool name (strip "verify " prefix for verification phase)
-                widget_name = w.tool_name.removeprefix("verify ")
-                if widget_name == message.tool_name:
+                if w.tool_name == message.tool_name and w.phase == message.phase:
                     tool_widget = self._tool_widget_queue.pop(i)
                     break
             else:
-                # No name match — fall back to FIFO
-                tool_widget = self._tool_widget_queue.pop(0)
+                for i, w in enumerate(self._tool_widget_queue):
+                    if w.tool_name == message.tool_name:
+                        tool_widget = self._tool_widget_queue.pop(i)
+                        break
+                else:
+                    # No name match — fall back to FIFO
+                    tool_widget = self._tool_widget_queue.pop(0)
 
         # Check if this is an edit tool with diff info
         # Note: old_string can be empty string (inserting), so check `is not None`
@@ -717,7 +822,9 @@ class LoaderApp(App):
             # Update existing tool widget with result
             self._debug_log("  -> showing regular tool widget result")
             tool_widget.set_result(
-                message.content, is_error=message.is_error
+                message.content,
+                is_error=message.is_error,
+                metadata=message.metadata,
             )
 
         msg_area.scroll_end(animate=False)
@@ -924,8 +1031,16 @@ class LoaderApp(App):
     # Actions
     def action_clear_messages(self) -> None:
         """Clear all messages."""
+        killed_jobs = self._terminate_all_bash_jobs()
+        self.workers.cancel_all()
+        self.is_generating = False
+        self._stop_timer()
+        self.query_one(StatusLine).set_generating(False)
         msg_area = self.query_one("#message-area", ScrollableContainer)
         msg_area.remove_children()
+        self._current_streaming = None
+        self._streamed_content = False
+        self._tool_widget_queue.clear()
         self.shell_owner.clear_history()
         self.query_one(StatusLine).clear_definition_of_done()
         self.query_one(StatusLine).update_session_id(self.shell_owner.session.session_id)
@@ -934,14 +1049,31 @@ class LoaderApp(App):
         )
         self.query_one(StatusLine).update_workflow_mode("execute")
         self._add_message("[dim]Conversation cleared.[/dim]")
+        if killed_jobs:
+            self._add_message(
+                f"[yellow]Stopped bash jobs:[/yellow] {', '.join(killed_jobs)}"
+            )
 
     def action_cancel(self) -> None:
         """Cancel current operation."""
+        bash_tool = self._get_bash_tool()
+        if (
+            bash_tool is not None
+            and bash_tool.manager.active_foreground_job_id is not None
+        ):
+            asyncio.create_task(self._interrupt_active_bash_job())
+            return
         # Cancel any running workers
         self.workers.cancel_all()
         self.is_generating = False
         self._stop_timer()
         self.query_one(StatusLine).set_generating(False)
+
+    def on_unmount(self) -> None:
+        """Clean up any tracked bash jobs when the TUI exits."""
+        killed_jobs = self._terminate_all_bash_jobs()
+        if killed_jobs:
+            self._debug_log(f"on_unmount: stopped bash jobs {killed_jobs}")
 
 
 def _definition_of_done_verification_attempt(dod) -> str | None:
