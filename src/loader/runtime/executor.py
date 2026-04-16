@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -394,7 +395,8 @@ class ToolExecutor:
                     preview,
                 )
             if on_confirmation:
-                confirmed = await on_confirmation(
+                confirmed = await self._invoke_confirmation_handler(
+                    on_confirmation,
                     confirmation.tool_name,
                     confirmation.message,
                     confirmation.details,
@@ -445,8 +447,34 @@ class ToolExecutor:
         if emit_confirmation:
             await emit_confirmation(tool_call.name, message, details, preview)
         if on_confirmation:
-            return await on_confirmation(tool_call.name, message, details, preview)
+            return await self._invoke_confirmation_handler(
+                on_confirmation,
+                tool_call.name,
+                message,
+                details,
+                preview,
+            )
         return False
+
+    @staticmethod
+    async def _invoke_confirmation_handler(
+        handler: BrowserConfirmation,
+        tool_name: str,
+        message: str,
+        details: str,
+        preview: dict[str, Any] | None,
+    ) -> bool:
+        if handler is None:
+            return True
+
+        try:
+            parameter_count = len(inspect.signature(handler).parameters)
+        except (TypeError, ValueError):
+            parameter_count = 4
+
+        if parameter_count >= 4:
+            return await handler(tool_name, message, details, preview)
+        return await handler(tool_name, message, details)
 
     @staticmethod
     def _merge_messages(primary: str, extra_messages: list[str]) -> str:
