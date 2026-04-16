@@ -435,7 +435,7 @@ class EventAdapter:
                 self.app.post_message(ResponseComplete(content=event.content))
 
             case "todo_update":
-                if event.todo_items:
+                if event.todo_items is not None:
                     self.app.post_message(TodoListUpdated(todos=event.todo_items))
 
             case "confirmation":

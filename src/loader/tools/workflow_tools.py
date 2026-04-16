@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime.permissions import PermissionMode
+from ..utils.todos import active_todo_store_path
 from .base import Tool, ToolResult
 
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]]
@@ -144,8 +145,7 @@ class TodoWriteTool(Tool):
         )
 
     def _store_path(self) -> Path:
-        root = self.workspace_root or Path.cwd()
-        return root / ".loader" / "todos" / "active.json"
+        return active_todo_store_path(self.workspace_root or Path.cwd())
 
     def _read_existing_items(self, store_path: Path) -> list[dict[str, Any]]:
         if not store_path.exists():

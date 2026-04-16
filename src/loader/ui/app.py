@@ -1037,6 +1037,7 @@ class LoaderApp(App):
         self._streamed_content = False
         self._tool_widget_queue.clear()
         self.shell_owner.clear_history()
+        self.query_one("#todo-list", TodoListWidget).update_todos([])
         self.query_one(StatusLine).clear_definition_of_done()
         self.query_one(StatusLine).update_session_id(self.shell_owner.session.session_id)
         self.query_one(StatusLine).update_runtime_owner(

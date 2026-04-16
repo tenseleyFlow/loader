@@ -10,7 +10,9 @@ from loader.agent.loop import Agent, AgentConfig, ReasoningConfig
 from loader.llm.base import CompletionResponse, StreamChunk
 from loader.runtime.bootstrap import RuntimeBootstrapView
 from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
+from loader.runtime.public_shell import get_runtime_shell_system_message
 from loader.runtime.runtime_handle import RuntimeHandle
+from loader.utils.todos import active_todo_store_path
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -256,3 +258,56 @@ async def test_runtime_launcher_routes_user_message_through_decomposition_lane(
         }
     ]
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_launcher_resets_task_scoped_state_for_new_top_level_prompt(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend(
+        completions=[CompletionResponse(content="Penguins page shipped.")]
+    )
+    handle = RuntimeHandle(
+        backend=backend,
+        config=AgentConfig(
+            auto_context=False,
+            stream=False,
+            reasoning=ReasoningConfig(completion_check=False),
+        ),
+        project_root=temp_dir,
+    )
+    handle.current_task = "Create a collection of animal pages."
+    cached_prompt = get_runtime_shell_system_message(handle)
+    assert "Create a collection of animal pages." in cached_prompt.content
+
+    todo_store = active_todo_store_path(temp_dir)
+    todo_store.parent.mkdir(parents=True, exist_ok=True)
+    todo_store.write_text(
+        '[{"content": "Build cat page", "active_form": "Building cat page", "status": "pending"}]'
+    )
+
+    launcher = build_runtime_launcher(handle)
+    events = []
+
+    async def emit(event) -> None:
+        events.append(event)
+
+    response = await launcher.run_user_message(
+        "Generate penguins.html and penguins.css for the new page.",
+        emit,
+        use_plan=False,
+    )
+
+    assert response == "Penguins page shipped."
+    assert handle.current_task == "Generate penguins.html and penguins.css for the new page."
+    assert not todo_store.exists()
+    assert any(
+        event.type == "todo_update" and event.todo_items == []
+        for event in events
+    )
+    invocation = backend.invocations[-1]
+    assert (
+        "Current task: Generate penguins.html and penguins.css for the new page."
+        in invocation.messages[0].content
+    )
+    assert "Current task: Create a collection of animal pages." not in invocation.messages[0].content

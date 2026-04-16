@@ -177,7 +177,12 @@ class Agent:
 
     @current_task.setter
     def current_task(self, value: str | None) -> None:
+        if self._current_task == value:
+            return
         self._current_task = value
+        self._system_message = None
+        if hasattr(self, "session") and self.session is not None:
+            self.session.update_runtime_state(current_task=value)
 
     @property
     def active_permission_mode(self) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..llm.base import Message, Role
+from ..utils.todos import active_todo_store_path, clear_active_todos
 from .bootstrap import (
     RuntimeBootstrapSource,
     RuntimeBootstrapView,
@@ -12,7 +13,7 @@ from .chat_lane import ConversationalTurnRunner
 from .conversation import ConfirmationHandler, ConversationRuntime, EventSink, UserQuestionHandler
 from .decomposition_lane import DecompositionTurnRunner
 from .deliberation import should_decompose
-from .events import TurnSummary
+from .events import AgentEvent, TurnSummary
 from .explore import ExploreRuntime
 from .task_classification import is_conversational
 from .workflow import WorkflowMode
@@ -48,8 +49,7 @@ class RuntimeLauncher:
         if is_conversational(user_message):
             return await self.run_conversational(user_message, emit)
 
-        if self.source.current_task is None:
-            self.source.current_task = user_message
+        await self._begin_top_level_task(user_message, emit)
 
         requested_mode = self._requested_workflow_mode(use_plan)
 
@@ -166,6 +166,20 @@ class RuntimeLauncher:
         if self.source.config.auto_plan:
             return WorkflowMode.PLAN.value
         return None
+
+    async def _begin_top_level_task(self, user_message: str, emit: EventSink) -> None:
+        """Reset task-scoped state before a new top-level task starts."""
+
+        previous_task = self.source.current_task
+        had_active_todos = active_todo_store_path(self.source.project_root).exists()
+        self.source.current_task = user_message
+
+        if previous_task == user_message:
+            return
+
+        clear_active_todos(self.source.project_root)
+        if previous_task is not None or had_active_todos:
+            await emit(AgentEvent(type="todo_update", todo_items=[]))
 
 
 def build_runtime_launcher(source: RuntimeBootstrapSource) -> RuntimeLauncher:
