@@ -49,6 +49,36 @@ def test_unknown_models_default_to_safe_react_profile() -> None:
     assert "defaulting to safe" in resolved.notes[0].lower()
 
 
+def test_qwen25_coder_inherits_strict_verification() -> None:
+    resolved = resolve_capability_profile("qwen2.5-coder:32b")
+
+    assert resolved.supports_native_tools
+    assert resolved.preferred_tool_call_format == "native"
+    assert resolved.verification_strictness == "strict"
+
+
+def test_devstral_resolves_native_tools() -> None:
+    resolved = resolve_capability_profile("devstral:24b")
+
+    assert resolved.supports_native_tools
+    assert resolved.preferred_tool_call_format == "native"
+
+
+def test_gpt_oss_resolves_native_tools_via_registry() -> None:
+    resolved = resolve_capability_profile("gpt-oss")
+
+    assert resolved.supports_native_tools
+    assert resolved.preferred_tool_call_format == "native"
+
+
+def test_gpt_oss_custom_variant_resolves_native_via_family() -> None:
+    resolved = resolve_capability_profile("gpt-oss-custom:20b")
+
+    assert resolved.supports_native_tools
+    assert resolved.preferred_tool_call_format == "native"
+    assert "heuristic" in resolved.notes[0].lower()
+
+
 def test_backend_capability_profile_prefers_explicit_backend_surface() -> None:
     class DummyBackend:
         def supports_native_tools(self) -> bool:

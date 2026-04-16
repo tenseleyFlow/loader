@@ -80,6 +80,25 @@ KNOWN_CAPABILITY_PROFILES: dict[str, CapabilityProfile] = {
         preferred_tool_call_format="native",
         verification_strictness="strict",
     ),
+    "qwen2.5-coder": _profile(
+        "qwen2.5-coder",
+        supports_native_tools=True,
+        preferred_tool_call_format="native",
+        verification_strictness="strict",
+    ),
+    "devstral": _profile(
+        "devstral",
+        supports_native_tools=True,
+        preferred_tool_call_format="native",
+        verification_strictness="standard",
+        notes=["Agentic coding model; well-suited to loader's tool loop."],
+    ),
+    "gpt-oss": _profile(
+        "gpt-oss",
+        supports_native_tools=True,
+        preferred_tool_call_format="native",
+        verification_strictness="standard",
+    ),
     "mistral": _profile(
         "mistral",
         supports_native_tools=True,
@@ -129,7 +148,7 @@ KNOWN_CAPABILITY_PROFILES: dict[str, CapabilityProfile] = {
 
 NATIVE_TOOL_FAMILIES = {
     "llama3", "qwen2", "qwen2.5", "qwen3", "mistral", "mixtral",
-    "command-r", "granite", "devstral", "gemma4",
+    "command-r", "granite", "devstral", "gemma4", "gpt-oss",
 }
 NO_TOOL_FAMILIES = {
     "llama2",
