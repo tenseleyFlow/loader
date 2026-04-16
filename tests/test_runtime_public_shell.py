@@ -125,6 +125,7 @@ def test_build_runtime_few_shot_examples_switches_tool_format() -> None:
     native_examples = build_runtime_few_shot_examples(use_react=False)
 
     assert "<tool_call>" in react_examples[1].content
+    assert '"background": true' in react_examples[5].content
     assert native_examples == []
 
 

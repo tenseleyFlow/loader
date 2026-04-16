@@ -681,6 +681,34 @@ def build_runtime_few_shot_examples(*, use_react: bool) -> list[Message]:
             ),
             Message(role=Role.TOOL, content="Created hello.py"),
             Message(role=Role.ASSISTANT, content="Done."),
+            Message(
+                role=Role.USER,
+                content="Start a local preview server for this folder.",
+            ),
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    '<tool_call>\n'
+                    '{"name": "bash", "arguments": {"command": "python -m http.server 8000", '
+                    '"background": true}}\n'
+                    "</tool_call>"
+                ),
+            ),
+            Message(
+                role=Role.TOOL,
+                content=(
+                    'Started bash job bash-1 (pid 1234).\n'
+                    'Use bash_wait(job_id="bash-1") to wait for completion or '
+                    'bash_kill(job_id="bash-1") to stop it.'
+                ),
+            ),
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    "The preview server is running in the background. "
+                    "I can check it with bash_wait or bash_jobs without blocking the turn."
+                ),
+            ),
         ]
     # Native tool calling: no text-based few-shot examples needed.
     # The model uses the API tool-calling mechanism directly.

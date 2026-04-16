@@ -452,7 +452,7 @@ class BashTool(Tool):
         return (
             "Execute a bash command and return the output. For servers, watchers, or "
             "other long-running processes, set background=true and inspect them later "
-            "with bash_wait or bash_jobs."
+            "with bash_wait or bash_jobs, or stop them with bash_kill."
         )
 
     @property
@@ -475,7 +475,10 @@ class BashTool(Tool):
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run the command in the background and return immediately",
+                    "description": (
+                        "Run the command in the background and return immediately. "
+                        "Use this for servers, watchers, and preview processes."
+                    ),
                     "default": False,
                 },
             },

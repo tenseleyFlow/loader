@@ -116,6 +116,9 @@ MODE_GUIDANCE = {
 - Read relevant files before editing them
 - For tasks with 3+ steps, call `TodoWrite` first to outline the steps, then
   update it as each step completes. This tracks progress visibly for the user
+- For servers, watchers, preview commands, or anything else that keeps running,
+  call `bash` with `background=true`, then inspect it with `bash_wait` or
+  `bash_jobs` instead of blocking the turn in the foreground
 - Concise reporting is fine, and numbered lists are allowed when they
   communicate plan or evidence clearly
 """,
