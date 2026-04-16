@@ -377,7 +377,10 @@ def _resolve_touched_path(raw: object) -> str:
     text = str(raw).strip()
     if not text:
         return ""
-    return str(Path(text).expanduser().resolve())
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str((Path.cwd() / path).absolute())
 
 
 def _append_unique(items: list[str], value: str) -> None:

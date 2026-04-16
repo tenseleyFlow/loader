@@ -87,3 +87,19 @@ def test_verification_command_derivation_prefers_runtime_evidence(tmp_path: Path
     )
 
     assert commands == ["python hello.py"]
+
+
+def test_record_successful_tool_call_preserves_absolute_path_string(tmp_path: Path) -> None:
+    dod = create_definition_of_done("Create hello.py and verify it exists.")
+    absolute_path = tmp_path / "hello.py"
+
+    record_successful_tool_call(
+        dod,
+        ToolCall(
+            id="write-1",
+            name="write",
+            arguments={"file_path": str(absolute_path), "content": "print('hi')\n"},
+        ),
+    )
+
+    assert dod.touched_files == [str(absolute_path)]
