@@ -46,12 +46,14 @@ class ToolCallWidget(Vertical):
         self,
         tool_name: str,
         tool_args: dict | None = None,
+        tool_call_id: str | None = None,
         phase: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.tool_name = tool_name
         self.tool_args = tool_args or {}
+        self.tool_call_id = tool_call_id
         self.phase = phase
         self._result: str = ""
         self._is_error: bool = False

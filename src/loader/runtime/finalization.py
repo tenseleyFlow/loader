@@ -407,6 +407,7 @@ class TurnFinalizer:
                 AgentEvent(
                     type="tool_call",
                     tool_name=verification_call.name,
+                    tool_call_id=verification_call.id,
                     tool_args=verification_call.arguments,
                     phase="verification",
                 )
@@ -425,6 +426,7 @@ class TurnFinalizer:
                     type="tool_result",
                     content=outcome.event_content,
                     tool_name=verification_call.name,
+                    tool_call_id=outcome.tool_call.id,
                     tool_metadata=(
                         outcome.registry_result.metadata
                         if outcome.registry_result is not None

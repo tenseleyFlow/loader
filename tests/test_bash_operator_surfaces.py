@@ -78,6 +78,7 @@ def test_event_adapter_preserves_tool_metadata_on_completion() -> None:
         AgentEvent(
             type="tool_call",
             tool_name="bash",
+            tool_call_id="call-bash-3",
             tool_args={"command": "python -m http.server 8000", "background": True},
             phase="assistant",
         )
@@ -86,6 +87,7 @@ def test_event_adapter_preserves_tool_metadata_on_completion() -> None:
         AgentEvent(
             type="tool_result",
             tool_name="bash",
+            tool_call_id="call-bash-3",
             content="Started bash job bash-3",
             tool_metadata=metadata,
             phase="assistant",
@@ -93,6 +95,7 @@ def test_event_adapter_preserves_tool_metadata_on_completion() -> None:
     )
 
     completed = next(message for message in app.messages if isinstance(message, ToolCallCompleted))
+    assert completed.tool_call_id == "call-bash-3"
     assert completed.metadata == metadata
 
 
@@ -105,6 +108,7 @@ def test_event_adapter_adds_mutation_preview_for_patch_completion() -> None:
         AgentEvent(
             type="tool_call",
             tool_name="patch",
+            tool_call_id="call-patch-1",
             tool_args=tool_args,
             phase="assistant",
         )
@@ -113,6 +117,7 @@ def test_event_adapter_adds_mutation_preview_for_patch_completion() -> None:
         AgentEvent(
             type="tool_result",
             tool_name="patch",
+            tool_call_id="call-patch-1",
             content="Successfully patched ~/Loader/animals/index.html",
             tool_metadata={
                 "file_path": "~/Loader/animals/index.html",
@@ -296,7 +301,14 @@ async def test_loader_app_replaces_patch_tool_widget_with_diff_widget() -> None:
 
     app = LoaderApp(shell_owner=_FakeShellOwner())
     async with app.run_test() as pilot:
-        app.post_message(ToolCallStarted(tool_name="patch", tool_args=tool_args, phase="assistant"))
+        app.post_message(
+            ToolCallStarted(
+                tool_name="patch",
+                tool_args=tool_args,
+                tool_call_id="patch-call-1",
+                phase="assistant",
+            )
+        )
         await pilot.pause()
         assert len(list(app.query(ToolCallWidget))) == 1
 
@@ -306,6 +318,7 @@ async def test_loader_app_replaces_patch_tool_widget_with_diff_widget() -> None:
                 content="Successfully patched ~/Loader/animals/index.html",
                 is_error=False,
                 phase="assistant",
+                tool_call_id="patch-call-1",
                 metadata={
                     "file_path": "~/Loader/animals/index.html",
                     "structured_patch": tool_args["hunks"],
@@ -317,6 +330,49 @@ async def test_loader_app_replaces_patch_tool_widget_with_diff_widget() -> None:
 
         assert len(list(app.query(DiffWidget))) == 1
         assert len(list(app.query(ToolCallWidget))) == 0
+
+
+@pytest.mark.asyncio
+async def test_loader_app_matches_repeated_tool_results_by_tool_call_id() -> None:
+    app = LoaderApp(shell_owner=_FakeShellOwner())
+    async with app.run_test() as pilot:
+        app.post_message(
+            ToolCallStarted(
+                tool_name="read",
+                tool_args={"file_path": "/tmp/cats.html"},
+                tool_call_id="read-call-1",
+                phase="assistant",
+            )
+        )
+        app.post_message(
+            ToolCallStarted(
+                tool_name="read",
+                tool_args={"file_path": "/tmp/penguins.html"},
+                tool_call_id="read-call-2",
+                phase="assistant",
+            )
+        )
+        await pilot.pause()
+
+        app.post_message(
+            ToolCallCompleted(
+                tool_name="read",
+                tool_call_id="read-call-2",
+                content="<h1>Penguins</h1>",
+                is_error=False,
+                phase="assistant",
+            )
+        )
+        await pilot.pause()
+
+        widgets = list(app.query(ToolCallWidget))
+        first = next(widget for widget in widgets if widget.tool_call_id == "read-call-1")
+        second = next(widget for widget in widgets if widget.tool_call_id == "read-call-2")
+
+        assert first.state == "running"
+        assert second.state == "success"
+        assert "/tmp/cats.html" in first._header_renderable().plain
+        assert "/tmp/penguins.html" in second._header_renderable().plain
 
 
 def test_cli_parse_local_bash_commands_supports_slash_aliases() -> None:

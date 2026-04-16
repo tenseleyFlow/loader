@@ -43,6 +43,7 @@ class ToolCallStarted(Message):
 
     tool_name: str
     tool_args: dict
+    tool_call_id: str | None = None
     phase: str | None = None
 
 
@@ -54,6 +55,7 @@ class ToolCallCompleted(Message):
     content: str
     is_error: bool = False
     phase: str | None = None
+    tool_call_id: str | None = None
     metadata: dict[str, Any] | None = None
     # For edit tool diffs
     old_string: str | None = None
@@ -238,7 +240,7 @@ class EventAdapter:
 
     def __init__(self, app: "LoaderApp") -> None:  # noqa: F821
         self.app = app
-        self._tool_args_queue: list[tuple[str, dict]] = []  # Queue of (tool_name, args)
+        self._tool_args_queue: list[tuple[str | None, str, dict[str, Any]]] = []
         # Clear debug log on start
         try:
             with open(self.DEBUG_LOG_FILE, "w") as f:
@@ -299,13 +301,16 @@ class EventAdapter:
                 self.app.post_message(StepStarted(step_info=event.step_info or ""))
 
             case "tool_call":
-                # Queue args for matching with result (FIFO)
                 tool_name = event.tool_name or ""
+                tool_call_id = event.tool_call_id
                 tool_args = event.tool_args or {}
-                self._tool_args_queue.append((tool_name, tool_args))
+                self._tool_args_queue.append((tool_call_id, tool_name, tool_args))
 
                 # Debug: log tool args for edit/write (helps diagnose diff view issues)
-                self._debug_log(f"tool_call '{tool_name}': queued, keys={list(tool_args.keys())}")
+                self._debug_log(
+                    f"tool_call '{tool_name}' ({tool_call_id}): queued, "
+                    f"keys={list(tool_args.keys())}"
+                )
                 if tool_name == "write":
                     content = tool_args.get("content", "")
                     self._debug_log(f"  write content: {len(content) if content else 0} chars")
@@ -315,31 +320,48 @@ class EventAdapter:
                 self.app.post_message(
                     ToolCallStarted(
                         tool_name=tool_name,
+                        tool_call_id=tool_call_id,
                         tool_args=tool_args,
                         phase=event.phase,
                     )
                 )
 
             case "tool_result":
-                # Get matching args from queue (FIFO)
                 tool_name = event.tool_name or ""
+                tool_call_id = event.tool_call_id
                 tool_args = {}
 
-                # Find matching tool_call in queue (should be FIFO but handle mismatch)
                 if self._tool_args_queue:
-                    # Try to find matching tool by name, fallback to FIFO
-                    for i, (queued_name, queued_args) in enumerate(self._tool_args_queue):
-                        if queued_name == tool_name:
+                    for i, (queued_id, queued_name, queued_args) in enumerate(self._tool_args_queue):
+                        if tool_call_id is not None and queued_id == tool_call_id:
                             tool_args = queued_args
                             self._tool_args_queue.pop(i)
-                            self._debug_log(f"tool_result '{tool_name}': matched in queue, keys={list(tool_args.keys())}")
+                            self._debug_log(
+                                f"tool_result '{tool_name}' ({tool_call_id}): "
+                                f"matched by id, keys={list(tool_args.keys())}"
+                            )
                             break
                     else:
-                        # No match found, use FIFO
-                        popped_name, tool_args = self._tool_args_queue.pop(0)
-                        self._debug_log(f"tool_result '{tool_name}': no match, used FIFO (got '{popped_name}'), keys={list(tool_args.keys())}")
+                        for i, (_, queued_name, queued_args) in enumerate(self._tool_args_queue):
+                            if queued_name == tool_name:
+                                tool_args = queued_args
+                                self._tool_args_queue.pop(i)
+                                self._debug_log(
+                                    f"tool_result '{tool_name}' ({tool_call_id}): "
+                                    f"matched by name, keys={list(tool_args.keys())}"
+                                )
+                                break
+                        else:
+                            popped_id, popped_name, tool_args = self._tool_args_queue.pop(0)
+                            self._debug_log(
+                                f"tool_result '{tool_name}' ({tool_call_id}): no match, "
+                                f"used FIFO (got '{popped_name}' / {popped_id}), "
+                                f"keys={list(tool_args.keys())}"
+                            )
                 else:
-                    self._debug_log(f"tool_result '{tool_name}': queue was EMPTY!")
+                    self._debug_log(
+                        f"tool_result '{tool_name}' ({tool_call_id}): queue was EMPTY!"
+                    )
 
                 # Extract diff info for edit/write tools
                 old_string = None
@@ -401,6 +423,7 @@ class EventAdapter:
                         content=event.content,
                         is_error=event.is_error,
                         phase=event.phase,
+                        tool_call_id=tool_call_id,
                         metadata=event.tool_metadata,
                         old_string=old_string,
                         new_string=new_string,

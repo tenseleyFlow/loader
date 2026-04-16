@@ -169,6 +169,7 @@ class ExploreRuntime:
                         AgentEvent(
                             type="tool_call",
                             tool_name=tool_call.name,
+                            tool_call_id=tool_call.id,
                             tool_args=tool_call.arguments,
                             phase="explore",
                         )
@@ -185,6 +186,7 @@ class ExploreRuntime:
                             type="tool_result",
                             content=outcome.event_content,
                             tool_name=tool_call.name,
+                            tool_call_id=outcome.tool_call.id,
                             tool_metadata=(
                                 outcome.registry_result.metadata
                                 if outcome.registry_result is not None

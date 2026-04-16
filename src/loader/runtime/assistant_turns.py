@@ -104,6 +104,7 @@ class AssistantTurnRequester:
                         AgentEvent(
                             type="tool_call",
                             tool_name=chunk.pending_tool_call.name,
+                            tool_call_id=chunk.pending_tool_call.id,
                             tool_args=chunk.pending_tool_call.arguments,
                             phase="assistant",
                         )

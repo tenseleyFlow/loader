@@ -95,6 +95,7 @@ class LoaderApp(App):
         self._current_streaming: StreamingText | None = None
         self._streamed_content: bool = False  # Track if any content was streamed
         self._tool_widget_queue: list[ToolCallWidget] = []  # Queue of pending tool widgets
+        self._local_tool_call_counter: int = 0
         self._timer_handle = None
         # Approval bar state
         self._pending_confirmation: asyncio.Future | None = None
@@ -297,14 +298,20 @@ class LoaderApp(App):
     def _launch_local_tool(self, tool_name: str, tool_args: dict[str, object]) -> None:
         asyncio.create_task(self._execute_local_tool(tool_name, tool_args))
 
+    def _next_local_tool_call_id(self, tool_name: str) -> str:
+        self._local_tool_call_counter += 1
+        return f"local-{tool_name}-{self._local_tool_call_counter}"
+
     async def _execute_local_tool(
         self,
         tool_name: str,
         tool_args: dict[str, object],
     ) -> None:
+        tool_call_id = self._next_local_tool_call_id(tool_name)
         self.post_message(
             ToolCallStarted(
                 tool_name=tool_name,
+                tool_call_id=tool_call_id,
                 tool_args=tool_args,
                 phase="local",
             )
@@ -318,6 +325,7 @@ class LoaderApp(App):
                     content=f"Tool execution error: {exc}",
                     is_error=True,
                     phase="local",
+                    tool_call_id=tool_call_id,
                 )
             )
             return
@@ -327,6 +335,7 @@ class LoaderApp(App):
                 content=result.output,
                 is_error=result.is_error,
                 phase="local",
+                tool_call_id=tool_call_id,
                 metadata=result.metadata,
                 mutation_preview=build_file_mutation_preview_dict(
                     tool_name,
@@ -763,6 +772,7 @@ class LoaderApp(App):
         widget = ToolCallWidget(
             tool_name=message.tool_name,
             tool_args=message.tool_args,
+            tool_call_id=message.tool_call_id,
             phase=message.phase,
         )
         msg_area.mount(widget)
@@ -779,6 +789,7 @@ class LoaderApp(App):
             with open("/tmp/loader_debug.log", "a") as f:
                 f.write(
                     "on_tool_call_completed: "
+                    f"id={message.tool_call_id}, "
                     f"tool={message.tool_name}, "
                     f"preview={bool(message.mutation_preview)}, "
                     f"new_string={bool(message.new_string)}, "
@@ -788,23 +799,27 @@ class LoaderApp(App):
         except Exception:
             pass
 
-        # Get the corresponding tool widget from queue (FIFO)
-        # Match widget by tool name instead of blind FIFO to prevent
-        # result/widget mismatches when events arrive out of order
         tool_widget = None
         if self._tool_widget_queue:
             for i, w in enumerate(self._tool_widget_queue):
-                if w.tool_name == message.tool_name and w.phase == message.phase:
+                if (
+                    message.tool_call_id is not None
+                    and w.tool_call_id == message.tool_call_id
+                ):
                     tool_widget = self._tool_widget_queue.pop(i)
                     break
             else:
                 for i, w in enumerate(self._tool_widget_queue):
-                    if w.tool_name == message.tool_name:
+                    if w.tool_name == message.tool_name and w.phase == message.phase:
                         tool_widget = self._tool_widget_queue.pop(i)
                         break
                 else:
-                    # No name match — fall back to FIFO
-                    tool_widget = self._tool_widget_queue.pop(0)
+                    for i, w in enumerate(self._tool_widget_queue):
+                        if w.tool_name == message.tool_name:
+                            tool_widget = self._tool_widget_queue.pop(i)
+                            break
+                    else:
+                        tool_widget = self._tool_widget_queue.pop(0)
 
         if message.mutation_preview and not message.is_error:
             self._debug_log("  -> showing file mutation diff widget")
