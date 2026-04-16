@@ -112,6 +112,25 @@ def _raw_patch_tool_args() -> dict[str, object]:
     }
 
 
+def _replacement_block_patch_tool_args() -> dict[str, object]:
+    return {
+        "file_path": "~/Loader/animals/index.html",
+        "hunks": [
+            {
+                "old_start": 42,
+                "old_end": 56,
+                "new_lines": [
+                    '  <svg width="200" height="100" viewBox="0 0 200 100" xmlns="http://www.w3.org/2000/svg">',
+                    "    <!-- Shell -->",
+                    '    <ellipse cx="100" cy="50" rx="60" ry="30" fill="#228B22" stroke="#000" stroke-width="2"/>',
+                    "    <!-- Head -->",
+                    "  </svg>",
+                ],
+            }
+        ],
+    }
+
+
 def _render_text(renderable, *, width: int = 100) -> str:
     console = Console(record=True, width=width)
     console.print(renderable)
@@ -241,6 +260,20 @@ def test_render_file_mutation_preview_truncates_large_diff() -> None:
 
     assert "Create(generated.txt)" in rendered
     assert "truncated for display" in rendered
+
+
+def test_build_file_mutation_preview_accepts_replacement_block_hunks() -> None:
+    preview = build_file_mutation_preview(
+        "patch",
+        tool_args=_replacement_block_patch_tool_args(),
+    )
+
+    assert preview is not None
+    assert preview.file_path == "~/Loader/animals/index.html"
+    assert preview.structured_patch[0].old_start == 42
+    assert preview.structured_patch[0].old_lines == 15
+    assert preview.structured_patch[0].new_lines == 5
+    assert preview.structured_patch[0].lines[0].startswith("+  <svg")
 
 
 def test_cli_print_tool_call_renders_bash_panel_without_truncating(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -431,6 +464,30 @@ async def test_loader_app_mounts_raw_patch_preview_without_markup_crash() -> Non
         assert "wolf.html" in rendered
         assert "penguin.html" in rendered
         assert "< /body>" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_loader_app_mounts_replacement_block_patch_preview_without_crash() -> None:
+    app = LoaderApp(shell_owner=_FakeShellOwner())
+
+    async with app.run_test() as pilot:
+        app.post_message(
+            ToolCallStarted(
+                tool_name="patch",
+                tool_args=_replacement_block_patch_tool_args(),
+                tool_call_id="patch-call-replacement",
+                phase="assistant",
+            )
+        )
+        await pilot.pause()
+
+        widget = next(iter(app.query(ToolCallWidget)))
+        summary = widget.query_one("#tool-summary", Static)
+        rendered = _render_text(summary.content, width=120)
+
+        assert "Preview" in rendered
+        assert "<svg width=\"200\" height=\"100\"" in rendered
+        assert "Patch(index.html)" in rendered
 
 
 @pytest.mark.asyncio

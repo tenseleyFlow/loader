@@ -508,13 +508,6 @@ class PatchTool(Tool):
         hunks: list[dict[str, Any]],
         **kwargs: Any,
     ) -> ToolResult:
-        try:
-            parsed_hunks = [StructuredPatchHunk.from_dict(hunk) for hunk in hunks]
-            if not parsed_hunks:
-                raise ValueError("hunks must not be empty")
-        except Exception as exc:
-            return ToolResult(f"Invalid structured patch: {exc}", is_error=True)
-
         kwargs.pop("_skip_confirmation", None)
         try:
             path = resolve_workspace_path(
@@ -550,6 +543,16 @@ class PatchTool(Tool):
         try:
             ensure_safe_to_read(path)
             original_content = await asyncio.to_thread(path.read_text)
+            original_lines = original_content.splitlines()
+            parsed_hunks = [
+                StructuredPatchHunk.from_dict_with_original(
+                    hunk,
+                    original_lines=original_lines,
+                )
+                for hunk in hunks
+            ]
+            if not parsed_hunks:
+                raise ValueError("hunks must not be empty")
             updated_content = apply_structured_patch(original_content, parsed_hunks)
             ensure_safe_to_write(updated_content)
             await asyncio.to_thread(path.write_text, updated_content)

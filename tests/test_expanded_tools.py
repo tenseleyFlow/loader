@@ -62,6 +62,32 @@ async def test_patch_tool_rejects_context_mismatch(temp_dir: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_patch_tool_accepts_replacement_block_hunks(temp_dir: Path) -> None:
+    target = temp_dir / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\ndelta\n")
+    tool = PatchTool(workspace_root=temp_dir)
+
+    result = await tool.execute(
+        file_path=str(target),
+        hunks=[
+            {
+                "old_start": 2,
+                "old_end": 3,
+                "new_lines": [
+                    "beta updated",
+                    "gamma updated",
+                    "inserted line",
+                ],
+            }
+        ],
+    )
+
+    assert result.is_error is False
+    assert target.read_text() == "alpha\nbeta updated\ngamma updated\ninserted line\ndelta\n"
+    assert result.metadata["structured_patch"]
+
+
+@pytest.mark.asyncio
 async def test_git_tool_inspects_read_only_repo_state(temp_dir: Path) -> None:
     subprocess.run(["git", "init", "--quiet"], cwd=temp_dir, check=True)
     (temp_dir / "README.md").write_text("loader\n")

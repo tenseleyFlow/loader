@@ -28,12 +28,56 @@ class StructuredPatchHunk:
     def from_dict(cls, data: dict[str, object]) -> StructuredPatchHunk:
         """Deserialize one structured patch hunk."""
 
+        if isinstance(data.get("new_lines"), list):
+            old_start = int(data.get("old_start", 0))
+            old_end = int(data.get("old_end", old_start - 1))
+            replacement_lines = [str(line) for line in data.get("new_lines", [])]
+            old_line_count = max(0, old_end - old_start + 1)
+            return cls(
+                old_start=old_start,
+                old_lines=old_line_count,
+                new_start=int(data.get("new_start", old_start)),
+                new_lines=len(replacement_lines),
+                lines=[f"+{line}" for line in replacement_lines],
+            )
+
         return cls(
             old_start=int(data.get("old_start", 0)),
             old_lines=int(data.get("old_lines", 0)),
             new_start=int(data.get("new_start", 0)),
             new_lines=int(data.get("new_lines", 0)),
             lines=[str(line) for line in data.get("lines", [])],
+        )
+
+    @classmethod
+    def from_dict_with_original(
+        cls,
+        data: dict[str, object],
+        *,
+        original_lines: list[str],
+    ) -> StructuredPatchHunk:
+        """Deserialize a patch hunk, expanding replacement-block variants."""
+
+        if not isinstance(data.get("new_lines"), list):
+            return cls.from_dict(data)
+
+        old_start = int(data.get("old_start", 0))
+        old_end = int(data.get("old_end", old_start - 1))
+        old_line_count = max(0, old_end - old_start + 1)
+        replacement_lines = [str(line) for line in data.get("new_lines", [])]
+
+        start_index = max(0, old_start - 1)
+        end_index = start_index + old_line_count
+        removed_lines = [
+            f"-{line}" for line in original_lines[start_index:end_index]
+        ]
+        added_lines = [f"+{line}" for line in replacement_lines]
+        return cls(
+            old_start=old_start,
+            old_lines=old_line_count,
+            new_start=int(data.get("new_start", old_start)),
+            new_lines=len(replacement_lines),
+            lines=[*removed_lines, *added_lines],
         )
 
 

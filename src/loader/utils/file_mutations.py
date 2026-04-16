@@ -185,7 +185,10 @@ def _coerce_patch_hunks(value: Any) -> list[StructuredPatchHunk]:
         if isinstance(item, StructuredPatchHunk):
             hunks.append(item)
         elif isinstance(item, dict):
-            hunks.append(StructuredPatchHunk.from_dict(item))
+            try:
+                hunks.append(StructuredPatchHunk.from_dict(item))
+            except (TypeError, ValueError):
+                continue
     return hunks
 
 
