@@ -6,12 +6,21 @@ from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
+from textual.app import App, ComposeResult
+from textual.widgets import Static
 
 import loader.cli.main as cli_main_module
 from loader.runtime.events import AgentEvent
 from loader.tools import BashTool
-from loader.ui.adapter import EventAdapter, ToolCallCompleted
+from loader.ui.adapter import EventAdapter, ToolCallCompleted, ToolCallStarted
+from loader.ui.app import LoaderApp
+from loader.ui.widgets import ApprovalBar, DiffWidget
 from loader.ui.widgets.tool_widget import ToolCallWidget
+from loader.utils.file_mutations import (
+    build_file_mutation_preview,
+    build_file_mutation_preview_dict,
+    render_file_mutation_preview,
+)
 
 
 class _FakeApp:
@@ -20,6 +29,38 @@ class _FakeApp:
 
     def post_message(self, message: object) -> None:
         self.messages.append(message)
+
+
+class _FakeShellOwner:
+    def __init__(self) -> None:
+        self.session = SimpleNamespace(runtime_owner_path="")
+        self.last_turn_summary = None
+        self.registry = SimpleNamespace(get=lambda name: None)
+        self.safeguards = SimpleNamespace(filter_stream_chunk=lambda chunk: chunk)
+
+
+class _ApprovalHost(App[None]):
+    def compose(self) -> ComposeResult:
+        yield ApprovalBar(id="approval")
+
+
+def _patch_tool_args() -> dict[str, object]:
+    return {
+        "file_path": "~/Loader/animals/index.html",
+        "hunks": [
+            {
+                "lines": [
+                    '-            <a href="cat.html">Learn about Cats</a>',
+                    '+            <a href="cat.html">Learn about Big Cats</a>',
+                    '             <a href="dog.html">Learn about Dogs</a>',
+                ],
+                "new_lines": 2,
+                "new_start": 18,
+                "old_lines": 2,
+                "old_start": 18,
+            }
+        ],
+    }
 
 
 def _render_text(renderable, *, width: int = 100) -> str:
@@ -55,6 +96,38 @@ def test_event_adapter_preserves_tool_metadata_on_completion() -> None:
     assert completed.metadata == metadata
 
 
+def test_event_adapter_adds_mutation_preview_for_patch_completion() -> None:
+    app = _FakeApp()
+    adapter = EventAdapter(app)  # type: ignore[arg-type]
+    tool_args = _patch_tool_args()
+
+    adapter.handle_event(
+        AgentEvent(
+            type="tool_call",
+            tool_name="patch",
+            tool_args=tool_args,
+            phase="assistant",
+        )
+    )
+    adapter.handle_event(
+        AgentEvent(
+            type="tool_result",
+            tool_name="patch",
+            content="Successfully patched ~/Loader/animals/index.html",
+            tool_metadata={
+                "file_path": "~/Loader/animals/index.html",
+                "structured_patch": tool_args["hunks"],
+            },
+            phase="assistant",
+        )
+    )
+
+    completed = next(message for message in app.messages if isinstance(message, ToolCallCompleted))
+    assert completed.mutation_preview is not None
+    assert completed.mutation_preview["operation"] == "patch"
+    assert completed.mutation_preview["file_path"] == "~/Loader/animals/index.html"
+
+
 def test_tool_call_widget_renders_full_bash_command_in_box() -> None:
     command = "python -m http.server 8000 --directory /tmp/preview-pages"
     widget = ToolCallWidget("bash", {"command": command})
@@ -66,6 +139,54 @@ def test_tool_call_widget_renders_full_bash_command_in_box() -> None:
     assert "command=" not in header
     assert "Command" in rendered
     assert command in rendered
+
+
+def test_build_file_mutation_preview_uses_structured_patch_metadata() -> None:
+    preview = build_file_mutation_preview(
+        "write",
+        metadata={
+            "kind": "update",
+            "file_path": "/tmp/animals/index.html",
+            "original_file": "<h1>Animals</h1>\n",
+            "content": "<h1>Animals</h1>\n<p>Updated</p>\n",
+            "structured_patch": [
+                {
+                    "old_start": 1,
+                    "old_lines": 1,
+                    "new_start": 1,
+                    "new_lines": 2,
+                    "lines": [
+                        " <h1>Animals</h1>",
+                        "+<p>Updated</p>",
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert preview is not None
+    assert preview.operation == "update"
+    assert preview.added_lines == 1
+    assert preview.removed_lines == 0
+
+
+def test_render_file_mutation_preview_truncates_large_diff() -> None:
+    preview = build_file_mutation_preview(
+        "write",
+        tool_args={
+            "file_path": "/tmp/generated.txt",
+            "content": "\n".join(f"line {idx}" for idx in range(120)),
+        },
+    )
+    assert preview is not None
+
+    rendered = _render_text(
+        render_file_mutation_preview(preview, max_lines=6, max_chars=1_000),
+        width=120,
+    )
+
+    assert "Create(generated.txt)" in rendered
+    assert "truncated for display" in rendered
 
 
 def test_cli_print_tool_call_renders_bash_panel_without_truncating(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,61 +203,120 @@ def test_cli_print_tool_call_renders_bash_panel_without_truncating(monkeypatch: 
     assert "command=" not in rendered
 
 
-def test_tool_call_widget_summarizes_patch_hunks_safely() -> None:
-    widget = ToolCallWidget(
-        "patch",
-        {
-            "file_path": "~/Loader/animals/index.html",
-            "hunks": [
-                {
-                    "lines": [
-                        '            <a href="cat.html">Learn about Cats</a>',
-                        '            <a href="dog.html">Learn about Dogs</a>',
-                    ],
-                    "new_lines": 2,
-                    "new_start": 18,
-                    "old_lines": 2,
-                    "old_start": 18,
-                }
-            ],
-        },
-    )
+def test_tool_call_widget_renders_patch_preview_instead_of_raw_tool_call() -> None:
+    widget = ToolCallWidget("patch", _patch_tool_args())
 
     header = widget._header_renderable().plain
+    rendered = _render_text(widget._build_initial_summary(), width=120)
 
-    assert "patch" in header
+    assert "Patch" in header
     assert 'file_path="~/Loader/animals/index.html"' in header
-    assert "hunks=1 hunk" in header
-    assert "<a href=" not in header
+    assert "Preview" in rendered
+    assert "Patch(index.html)" in rendered
+    assert "<a href=\"cat.html\">Learn about Big Cats</a>" in rendered
+    assert "hunks=1 hunk" not in rendered
 
 
-def test_cli_print_tool_call_summarizes_patch_hunks_safely(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_print_tool_call_renders_patch_preview(monkeypatch: pytest.MonkeyPatch) -> None:
     console = Console(record=True, width=120)
     monkeypatch.setattr(cli_main_module, "console", console)
 
-    cli_main_module._print_tool_call(
-        "patch",
-        {
-            "file_path": "~/Loader/animals/index.html",
-            "hunks": [
+    cli_main_module._print_tool_call("patch", _patch_tool_args())
+
+    rendered = console.export_text(styles=False)
+    assert "Patch" in rendered
+    assert "Preview" in rendered
+    assert "Patch(index.html)" in rendered
+    assert "<a href=\"cat.html\">Learn about Big Cats</a>" in rendered
+    assert "hunks=1 hunk" not in rendered
+
+
+def test_cli_print_tool_result_renders_edit_diff_from_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    console = Console(record=True, width=120)
+    monkeypatch.setattr(cli_main_module, "console", console)
+
+    cli_main_module._print_tool_result(
+        "edit",
+        "Successfully edited index.html",
+        metadata={
+            "file_path": "/tmp/index.html",
+            "original_file": "<p>Old</p>\n",
+            "new_string": "<p>New</p>\n",
+            "structured_patch": [
                 {
+                    "old_start": 1,
+                    "old_lines": 1,
+                    "new_start": 1,
+                    "new_lines": 1,
                     "lines": [
-                        '            <a href="cat.html">Learn about Cats</a>',
-                        '            <a href="dog.html">Learn about Dogs</a>',
+                        "-<p>Old</p>",
+                        "+<p>New</p>",
                     ],
-                    "new_lines": 2,
-                    "new_start": 18,
-                    "old_lines": 2,
-                    "old_start": 18,
                 }
             ],
         },
     )
 
     rendered = console.export_text(styles=False)
-    assert 'file_path="~/Loader/animals/index.html"' in rendered
-    assert "hunks=1 hunk" in rendered
-    assert "<a href=" not in rendered
+    assert "Edit" in rendered
+    assert "Diff" in rendered
+    assert "+ <p>New</p>" in rendered
+    assert "- <p>Old</p>" in rendered
+
+
+@pytest.mark.asyncio
+async def test_approval_bar_renders_file_mutation_preview() -> None:
+    app = _ApprovalHost()
+    preview = build_file_mutation_preview_dict("patch", tool_args=_patch_tool_args())
+    assert preview is not None
+
+    async with app.run_test() as pilot:
+        bar = app.query_one(ApprovalBar)
+        bar.show_approval(
+            "patch",
+            "Patch file: ~/Loader/animals/index.html",
+            "apply structured patch hunks",
+            preview=preview,
+        )
+        await pilot.pause()
+
+        content = bar.query_one("#approval-content", Static)
+        rendered = _render_text(content.content, width=120)
+
+        assert "Approve Patch" in rendered
+        assert "Preview" in rendered
+        assert "Patch(index.html)" in rendered
+
+
+@pytest.mark.asyncio
+async def test_loader_app_replaces_patch_tool_widget_with_diff_widget() -> None:
+    tool_args = _patch_tool_args()
+    preview = build_file_mutation_preview_dict("patch", tool_args=tool_args)
+    assert preview is not None
+
+    app = LoaderApp(shell_owner=_FakeShellOwner())
+    async with app.run_test() as pilot:
+        app.post_message(ToolCallStarted(tool_name="patch", tool_args=tool_args, phase="assistant"))
+        await pilot.pause()
+        assert len(list(app.query(ToolCallWidget))) == 1
+
+        app.post_message(
+            ToolCallCompleted(
+                tool_name="patch",
+                content="Successfully patched ~/Loader/animals/index.html",
+                is_error=False,
+                phase="assistant",
+                metadata={
+                    "file_path": "~/Loader/animals/index.html",
+                    "structured_patch": tool_args["hunks"],
+                },
+                mutation_preview=preview,
+            )
+        )
+        await pilot.pause()
+
+        assert len(list(app.query(DiffWidget))) == 1
+        assert len(list(app.query(ToolCallWidget))) == 0
 
 
 def test_cli_parse_local_bash_commands_supports_slash_aliases() -> None:
