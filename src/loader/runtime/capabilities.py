@@ -193,6 +193,43 @@ def _any_prefix_match(tokens: set[str], family_set: set[str]) -> bool:
     return False
 
 
+def _coerce_positive_int(value: Any) -> int | None:
+    """Return one positive integer when the input looks numeric."""
+
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def _infer_context_window(model_details: dict[str, Any] | None) -> int | None:
+    """Infer one model context window from Ollama model metadata."""
+
+    if not isinstance(model_details, dict):
+        return None
+
+    candidates: list[int] = []
+
+    details = model_details.get("details")
+    if isinstance(details, dict):
+        context_length = _coerce_positive_int(details.get("context_length"))
+        if context_length is not None:
+            candidates.append(context_length)
+
+    model_info = model_details.get("model_info")
+    if isinstance(model_info, dict):
+        for key, value in model_info.items():
+            if str(key).endswith(".context_length"):
+                context_length = _coerce_positive_int(value)
+                if context_length is not None:
+                    candidates.append(context_length)
+
+    return max(candidates) if candidates else None
+
+
 def resolve_capability_profile(
     model_name: str,
     *,
@@ -207,8 +244,20 @@ def resolve_capability_profile(
     3. heuristic fallback using model details / family tokens
     """
 
+    inferred_context_window = _infer_context_window(model_details)
+
     if override is not None:
-        return override
+        if inferred_context_window is None:
+            return override
+        return CapabilityProfile(
+            model_name=override.model_name,
+            supports_native_tools=override.supports_native_tools,
+            supports_streaming=override.supports_streaming,
+            context_window=inferred_context_window,
+            preferred_tool_call_format=override.preferred_tool_call_format,
+            verification_strictness=override.verification_strictness,
+            notes=list(override.notes),
+        )
 
     normalized = model_name.lower().strip()
     # Try full name first, then without :tag (e.g. "deepseek-r1:14b" -> "deepseek-r1")
@@ -219,7 +268,7 @@ def resolve_capability_profile(
                 model_name=model_name,
                 supports_native_tools=known.supports_native_tools,
                 supports_streaming=known.supports_streaming,
-                context_window=known.context_window,
+                context_window=inferred_context_window or known.context_window,
                 preferred_tool_call_format=known.preferred_tool_call_format,
                 verification_strictness=known.verification_strictness,
                 notes=list(known.notes),
@@ -231,6 +280,7 @@ def resolve_capability_profile(
         return _profile(
             model_name,
             supports_native_tools=True,
+            context_window=inferred_context_window or 8192,
             preferred_tool_call_format="native",
             verification_strictness="standard",
             notes=["Resolved from model family heuristic."],
@@ -240,6 +290,7 @@ def resolve_capability_profile(
         return _profile(
             model_name,
             supports_native_tools=False,
+            context_window=inferred_context_window or 8192,
             preferred_tool_call_format="json_tag",
             verification_strictness="standard",
             notes=["Resolved from conservative no-native-tools heuristic."],
@@ -248,6 +299,7 @@ def resolve_capability_profile(
     return _profile(
         model_name,
         supports_native_tools=False,
+        context_window=inferred_context_window or 8192,
         preferred_tool_call_format="json_tag",
         verification_strictness="standard",
         notes=["Unknown model family; defaulting to safe ReAct-style tool use."],

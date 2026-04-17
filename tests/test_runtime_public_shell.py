@@ -9,6 +9,7 @@ import pytest
 
 from loader.agent.loop import AgentConfig
 from loader.llm.base import CompletionResponse, Message, Role, StreamChunk
+from loader.runtime.capabilities import CapabilityProfile
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.public_shell import (
@@ -364,6 +365,36 @@ def test_refresh_runtime_shell_capability_profile_updates_owner_cache_state(
     assert handle.capability_profile.supports_native_tools is False
     assert handle._system_message is None
     assert handle._use_react is None
+
+
+def test_refresh_runtime_shell_capability_profile_reclamps_session_threshold(
+    temp_dir: Path,
+) -> None:
+    class ProfiledBackend(ScriptedBackend):
+        def __init__(self) -> None:
+            super().__init__(supports_native_tools=True)
+            self.context_window = 8192
+
+        def capability_profile(self) -> CapabilityProfile:
+            return CapabilityProfile(
+                model_name="qwen3-coder:30b",
+                supports_native_tools=True,
+                supports_streaming=True,
+                context_window=self.context_window,
+                preferred_tool_call_format="native",
+                verification_strictness="standard",
+                notes=["scripted"],
+            )
+
+    backend = ProfiledBackend()
+    handle = _runtime_handle(temp_dir, backend=backend)
+
+    assert handle.session.auto_compaction_input_tokens_threshold == 12_000
+
+    backend.context_window = 131_072
+    refresh_runtime_shell_capability_profile(handle)
+
+    assert handle.session.auto_compaction_input_tokens_threshold == 98_304
 
 
 def test_create_runtime_session_install_builds_restored_shell_state(

@@ -168,9 +168,11 @@ class OllamaBackend(LLMBackend):
             response.raise_for_status()
             self._model_details_cache = response.json()
             self._model_details_loaded_for = self.model
+            self._capability_profile = None
         except Exception:
             self._model_details_cache = None
             self._model_details_loaded_for = self.model
+            self._capability_profile = None
 
         return self._model_details_cache
 

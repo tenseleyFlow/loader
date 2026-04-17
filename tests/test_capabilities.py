@@ -41,6 +41,20 @@ def test_family_heuristic_resolution_uses_model_details() -> None:
     assert "heuristic" in resolved.notes[0].lower()
 
 
+def test_model_details_context_window_overrides_registry_default() -> None:
+    resolved = resolve_capability_profile(
+        "gpt-oss:20b",
+        model_details={
+            "model_info": {
+                "gptoss.context_length": 131072,
+            }
+        },
+    )
+
+    assert resolved.context_window == 131072
+    assert resolved.supports_native_tools
+
+
 def test_unknown_models_default_to_safe_react_profile() -> None:
     resolved = resolve_capability_profile("mystery-model")
 

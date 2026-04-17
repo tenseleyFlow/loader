@@ -111,11 +111,9 @@ class ActionTracker:
             if isinstance(hunks, list) and self.would_duplicate_patch(file_path, hunks):
                 return True, f"Same patch already applied to: {file_path}"
 
-        elif tool_name == "bash":
-            command = arguments.get("command", "")
-            if self.would_duplicate_command(command):
-                return True, f"Command already executed: {command[:50]}..."
-
+        # Bash commands intentionally skip exact-command dedupe here.
+        # Re-running the same shell probe after a filesystem change is often valid,
+        # and higher-level loop detection is a safer backstop than blocking `ls`.
         return False, ""
 
     def record_tool_call(self, tool_name: str, arguments: dict) -> None:

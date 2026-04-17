@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from ..llm.base import Message, Role
 
 DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 100_000
+MIN_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 12_000
 DEFAULT_COMPACTION_KEEP_LAST_MESSAGES = 4
 DEFAULT_MAX_CHARS = 1_200
 DEFAULT_MAX_LINES = 24
@@ -61,6 +62,25 @@ def estimate_message_tokens(messages: list[Message]) -> int:
         total_chars += sum(len(str(tool_call.arguments)) for tool_call in message.tool_calls)
         total_chars += sum(len(tool_result.content) for tool_result in message.tool_results)
     return max(1, total_chars // 4)
+
+
+def resolve_auto_compaction_input_tokens_threshold(
+    configured_threshold: int,
+    *,
+    context_window: int | None = None,
+) -> int:
+    """Resolve one compaction threshold from config and model context."""
+
+    threshold = max(1, int(configured_threshold))
+    if context_window is None or context_window <= 0:
+        return threshold
+
+    context_bound = max(
+        MIN_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        int(context_window * 0.75),
+    )
+    context_bound = min(DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD, context_bound)
+    return min(threshold, context_bound)
 
 
 def compress_summary(
@@ -197,12 +217,20 @@ def build_session_summary(
     user_messages = [
         _collapse_inline_whitespace(message.content)
         for message in messages
-        if message.role == Role.USER and message.content.strip()
+        if (
+            message.role == Role.USER
+            and message.content.strip()
+            and not _is_compacted_context_message(message.content)
+        )
     ]
     assistant_messages = [
         _collapse_inline_whitespace(message.content)
         for message in messages
-        if message.role == Role.ASSISTANT and message.content.strip()
+        if (
+            message.role == Role.ASSISTANT
+            and message.content.strip()
+            and not _is_compacted_context_message(message.content)
+        )
     ]
     tool_names = [
         tool_call.name
@@ -229,8 +257,7 @@ def build_session_summary(
         f"- Recent user requests: {recent_requests}",
     ]
     if previous_summary:
-        previous_line = _collapse_inline_whitespace(previous_summary.splitlines()[0])
-        lines.append(f"- Previously compacted context: {previous_line}")
+        lines.append("- Previously compacted context retained.")
     lines.extend(
         [
             f"- Newly compacted context: {len(messages)} earlier message(s) summarized.",
@@ -247,6 +274,8 @@ def _extract_key_files(messages: list[Message]) -> list[str]:
     pattern = re.compile(r"(?:/|\.{1,2}/|[A-Za-z0-9_.-]+/)[A-Za-z0-9_./-]+\.[A-Za-z0-9]+")
     files: list[str] = []
     for message in messages:
+        if _is_compacted_context_message(message.content):
+            continue
         for match in pattern.findall(message.content):
             if match not in files:
                 files.append(match)
@@ -260,6 +289,10 @@ def _extract_key_files(messages: list[Message]) -> list[str]:
 
 def _collapse_inline_whitespace(line: str) -> str:
     return " ".join(line.split())
+
+
+def _is_compacted_context_message(content: str) -> bool:
+    return content.lstrip().startswith("[COMPACTED CONTEXT]")
 
 
 def _truncate_line(line: str, max_chars: int) -> str:

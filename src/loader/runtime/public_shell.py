@@ -15,6 +15,7 @@ from ..context.project import ProjectContext
 from ..llm.base import Message, Role
 from ..tools.base import ToolRegistry
 from .capabilities import CapabilityProfile, resolve_backend_capability_profile
+from .compaction import resolve_auto_compaction_input_tokens_threshold
 from .dod import DefinitionOfDoneStore
 from .events import AgentEvent, TurnSummary
 from .launcher import build_runtime_launcher
@@ -303,7 +304,7 @@ def build_fresh_runtime_session_install(
         runtime_owner_path=owner_metadata["owner_path"],
         rotate_after_bytes=owner.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
-            owner.config.session_auto_compaction_input_tokens_threshold
+            _resolve_owner_auto_compaction_threshold(owner)
         ),
         compaction_keep_last_messages=owner.config.session_compaction_keep_last_messages,
         system_message_factory=owner._get_system_message,
@@ -399,7 +400,7 @@ def resume_runtime_shell_session(
         session_id=session_id,
         rotate_after_bytes=owner.config.session_rotate_after_bytes,
         auto_compaction_input_tokens_threshold=(
-            owner.config.session_auto_compaction_input_tokens_threshold
+            _resolve_owner_auto_compaction_threshold(owner)
         ),
         compaction_keep_last_messages=owner.config.session_compaction_keep_last_messages,
     )
@@ -614,7 +615,20 @@ def refresh_runtime_shell_capability_profile(
     if refresh.prompt_reset_required:
         owner._system_message = None
     owner._use_react = None
+    if hasattr(owner, "session") and owner.session is not None:
+        owner.session.auto_compaction_input_tokens_threshold = (
+            _resolve_owner_auto_compaction_threshold(owner)
+        )
     return refresh
+
+
+def _resolve_owner_auto_compaction_threshold(owner: RuntimeShellOwner) -> int:
+    """Clamp one owner's compaction threshold to the active model context."""
+
+    return resolve_auto_compaction_input_tokens_threshold(
+        owner.config.session_auto_compaction_input_tokens_threshold,
+        context_window=owner.capability_profile.context_window,
+    )
 
 
 def build_runtime_system_message(

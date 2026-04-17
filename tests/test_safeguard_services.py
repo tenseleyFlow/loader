@@ -41,6 +41,15 @@ def test_action_tracker_preserves_loop_description_format() -> None:
     assert description == "Repeating pattern detected (2x): read → grep"
 
 
+def test_action_tracker_allows_repeated_bash_commands() -> None:
+    tracker = ActionTracker()
+    arguments = {"command": "ls -la ~/Loader/guides/fortran/chapters/"}
+
+    tracker.record_tool_call("bash", arguments)
+
+    assert tracker.check_tool_call("bash", arguments) == (False, "")
+
+
 def test_pre_action_validator_blocks_patch_without_hunks() -> None:
     validator = PreActionValidator()
 
