@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..llm.base import ToolCall
+from ..llm.base import Role, ToolCall
 from .context import RuntimeContext
 from .dod import (
     DefinitionOfDone,
@@ -364,6 +364,26 @@ class ToolBatchRunner:
         if not target_path.endswith("index.html"):
             return
 
+        validation = validate_html_toc(target_path)
+        if (
+            "old_string and new_string are identical" in event_content
+            and validation is not None
+            and validation.valid
+        ):
+            action_tracker = getattr(self.context.safeguards, "action_tracker", None)
+            note_validated = getattr(action_tracker, "note_validated_html_toc", None)
+            if callable(note_validated):
+                note_validated(target_path)
+            self.context.queue_steering_message(
+                "The current `index.html` already matches the validated replacement block. "
+                f"Semantic verification preview: validated {validation.link_count} toc links in "
+                f"`{Path(target_path).name}`. "
+                "Do not call `edit`, `patch`, or reread the same TOC again. Briefly state "
+                "that the table of contents is already updated so Loader can continue the "
+                "verification gate or finish the task."
+            )
+            return
+
         current_task = getattr(self.context.session, "current_task", None)
         confirmed_facts = summarize_confirmed_facts(
             self.context.session.messages,
@@ -442,11 +462,7 @@ class ToolBatchRunner:
         if index_path in self._inventory_hint_targets:
             return
 
-        current_task = str(getattr(self.context.session, "current_task", "") or "").lower()
-        if not any(
-            hint in current_task
-            for hint in ("href", "link", "links", "table of contents", "chapter", "index.html")
-        ):
+        if not self._targets_html_toc_task():
             return
 
         verified_inventory = summarize_html_inventory(index_path, limit=12)
@@ -471,11 +487,7 @@ class ToolBatchRunner:
         if not chapters_path.endswith("chapters"):
             return
 
-        current_task = str(getattr(self.context.session, "current_task", "") or "").lower()
-        if not any(
-            hint in current_task
-            for hint in ("href", "link", "links", "table of contents", "chapter", "index.html")
-        ):
+        if not self._targets_html_toc_task():
             return
 
         index_path = str(Path(chapters_path).expanduser().parent / "index.html")
@@ -507,6 +519,8 @@ class ToolBatchRunner:
         target_path = self._validated_html_toc_target(tool_call)
         if target_path is None:
             return
+        if tool_call.name == "read" and not self._targets_html_toc_task():
+            return
 
         validation = validate_html_toc(target_path)
         if validation is None or not validation.valid:
@@ -536,9 +550,22 @@ class ToolBatchRunner:
         target_path = self._validated_html_toc_target(tool_call)
         if target_path is None:
             return
+        if tool_call.name == "read" and not self._targets_html_toc_task():
+            return
 
         validation = validate_html_toc(target_path)
         if validation is None or not validation.valid:
+            return
+
+        if tool_call.name == "read":
+            self.context.queue_steering_message(
+                "The current `index.html` already satisfies the verified chapter-link constraints. "
+                f"Semantic verification preview: validated {validation.link_count} toc links in "
+                f"`{Path(target_path).name}`. "
+                "No TOC edit is required unless you can point to one specific incorrect href or "
+                "title. Do not reread `index.html` or files in `chapters/` again. Briefly state "
+                "that the table of contents is already correct so Loader can finish the task."
+            )
             return
 
         self.context.queue_steering_message(
@@ -552,10 +579,10 @@ class ToolBatchRunner:
 
     @staticmethod
     def _validated_html_toc_target(tool_call: ToolCall) -> str | None:
-        """Return the index target for a successful HTML TOC mutation."""
+        """Return the index target for a validated HTML TOC action."""
 
         target_path = ""
-        if tool_call.name in {"write", "edit", "patch"}:
+        if tool_call.name in {"write", "edit", "patch", "read"}:
             target_path = str(tool_call.arguments.get("file_path", "")).strip()
         elif tool_call.name == "bash":
             target_path = (
@@ -570,6 +597,21 @@ class ToolBatchRunner:
         if not target_path.endswith("index.html"):
             return None
         return str(Path(target_path).expanduser())
+
+    def _targets_html_toc_task(self) -> bool:
+        current_task = str(getattr(self.context.session, "current_task", "") or "").lower()
+        if not current_task:
+            for message in reversed(getattr(self.context.session, "messages", [])):
+                if getattr(message, "role", None) != Role.USER:
+                    continue
+                content = str(getattr(message, "content", "") or "").strip().lower()
+                if content:
+                    current_task = content
+                    break
+        return any(
+            hint in current_task
+            for hint in ("href", "link", "links", "table of contents", "chapter", "index.html")
+        )
 
     async def _record_successful_execution(
         self,

@@ -2255,6 +2255,99 @@ async def test_successful_html_toc_edit_blocks_post_success_reread_and_steers_to
 
 
 @pytest.mark.asyncio
+async def test_exact_prompt_finishes_when_index_toc_is_already_correct(
+    temp_dir: Path,
+) -> None:
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    index_file = temp_dir / "index.html"
+    index_file.write_text(
+        "\n".join(
+            [
+                "<h2>Table of Contents</h2>",
+                '        <ul class="chapter-list">',
+                '            <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>',
+                '            <li><a href="chapters/02-setup.html">Chapter 2: Setting Up Your Environment</a></li>',
+                "        </ul>",
+                "",
+            ]
+        )
+    )
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"file_path": str(index_file)},
+                ),
+                content="I'll inspect index.html first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-2",
+                    name="read",
+                    arguments={"file_path": str(index_file), "offset": 1, "limit": 8},
+                ),
+                content="I'll reread just the table-of-contents lines.",
+            ),
+            final_response(
+                "The table of contents is already correct, so no edit is needed."
+            ),
+        ]
+    )
+
+    prompt = (
+        "Have a look at ~/Loader/guides/fortran/index.html, then "
+        "~/Loader/guides/fortran/chapters. The table of contents links in "
+        "index.html are inaccurate and the href’s are wrong. Let’s update the "
+        "links and their link texts to be correct."
+    )
+    run = await run_scenario(
+        prompt,
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    messages = tool_result_messages(run)
+    steering_messages = [
+        event.content
+        for event in run.events
+        if event.type == "steering" and event.content
+    ]
+
+    assert any(
+        "Semantic verification preview: validated 2 toc links in index.html"
+        in message
+        for message in messages
+    )
+    assert any(
+        "No TOC edit is required unless you can point to one specific incorrect href or title"
+        in message
+        for message in steering_messages
+    )
+    assert (
+        sum(
+            1
+            for event in run.events
+            if event.type == "tool_call"
+            and event.tool_name == "read"
+            and event.phase != "verification"
+        )
+        == 1
+    )
+    assert "no edit is needed" in run.response.lower()
+
+
+@pytest.mark.asyncio
 async def test_interleaved_reread_is_allowed_once_without_intervening_mutation(
     temp_dir: Path,
 ) -> None:

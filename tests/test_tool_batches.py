@@ -153,11 +153,12 @@ def tool_outcome(
     tool_call: ToolCall,
     output: str,
     is_error: bool,
+    state: ToolExecutionState = ToolExecutionState.EXECUTED,
     metadata: dict[str, object] | None = None,
 ) -> ToolExecutionOutcome:
     return ToolExecutionOutcome(
         tool_call=tool_call,
-        state=ToolExecutionState.EXECUTED,
+        state=state,
         message=Message.tool_result_message(
             tool_call_id=tool_call.id,
             display_content=output,
@@ -846,6 +847,104 @@ async def test_tool_batch_runner_marks_validated_html_toc_completion_after_succe
     assert len(queued_messages) == 1
     assert "already satisfies the verified chapter-link constraints" in queued_messages[0]
     assert "Do not reread `index.html` or files in `chapters/`" in queued_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_hands_off_noop_toc_edit_when_file_is_already_valid(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    prompt = (
+        "Have a look at ~/Loader/guides/fortran/index.html, then "
+        "~/Loader/guides/fortran/chapters. The table of contents links in "
+        "index.html are inaccurate and the href’s are wrong. Let’s update the "
+        "links and their link texts to be correct."
+    )
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    current_block = (
+        "<h2>Table of Contents</h2>\n"
+        '        <ul class="chapter-list">\n'
+        '            <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>\n'
+        '            <li><a href="chapters/02-setup.html">Chapter 2: Setting Up Your Environment</a></li>\n'
+        "        </ul>\n"
+    )
+    index_path = temp_dir / "index.html"
+    index_path.write_text(current_block)
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.session.current_task = prompt  # type: ignore[attr-defined]
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="edit-1",
+        name="edit",
+        arguments={
+            "file_path": str(index_path),
+            "old_string": current_block,
+            "new_string": current_block,
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output=(
+                    "[Blocked - old_string and new_string are identical - no change "
+                    "would occur] Suggestion: Provide different old and new strings"
+                ),
+                is_error=True,
+                state=ToolExecutionState.BLOCKED,
+            )
+        ]
+    )
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=TurnSummary(final_response=""),
+        dod=create_definition_of_done(prompt),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(queued_messages) == 1
+    assert "already matches the validated replacement block" in queued_messages[0]
+    assert "validated 2 toc links in `index.html`" in queued_messages[0]
+    assert "Do not call `edit`, `patch`, or reread the same TOC again" in queued_messages[0]
 
 
 async def _noop_emit(event: AgentEvent) -> None:

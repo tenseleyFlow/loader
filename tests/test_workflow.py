@@ -223,6 +223,24 @@ def test_extract_verification_commands_from_markdown_ignores_prose_only_bullets(
     ]
 
 
+def test_extract_verification_commands_from_markdown_trims_inline_command_explanations() -> None:
+    markdown = "\n".join(
+        [
+            "# Verification Plan",
+            "",
+            "## Verification Commands",
+            (
+                '- `grep -n "href" ~/Loader/guides/fortran/index.html` '
+                "- to identify all href attributes"
+            ),
+        ]
+    )
+
+    assert extract_verification_commands_from_markdown(markdown) == [
+        'grep -n "href" ~/Loader/guides/fortran/index.html',
+    ]
+
+
 def test_extract_verification_commands_keeps_shell_pipelines_intact() -> None:
     markdown = "\n".join(
         [

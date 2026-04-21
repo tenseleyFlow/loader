@@ -873,9 +873,13 @@ def _extract_commands(items: list[str]) -> list[str]:
             if not candidate or candidate.startswith("```"):
                 continue
             candidate = re.sub(r"^-\s+", "", candidate)
-            match = re.match(r"^`(.+)`$", candidate)
-            candidate = (match.group(1) if match else candidate).strip()
-            candidate = _extract_shell_command_from_text(candidate)
+            inline_candidate = _extract_inline_shell_command(candidate)
+            if inline_candidate:
+                candidate = inline_candidate
+            else:
+                match = re.match(r"^`(.+)`$", candidate)
+                candidate = (match.group(1) if match else candidate).strip()
+                candidate = _extract_shell_command_from_text(candidate)
             candidate = candidate.strip().strip("`")
             if candidate:
                 commands.append(candidate)
@@ -900,6 +904,14 @@ def _extract_collapsed_shell_commands(text: str) -> list[str]:
         if candidate:
             commands.append(candidate)
     return commands
+
+
+def _extract_inline_shell_command(text: str) -> str:
+    for match in re.finditer(r"`([^`\n]+)`", text):
+        candidate = _extract_shell_command_from_text(match.group(1).strip())
+        if candidate:
+            return candidate.strip().strip("`")
+    return ""
 
 
 def _extract_shell_command_from_text(text: str) -> str:
