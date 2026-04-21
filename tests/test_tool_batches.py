@@ -1041,6 +1041,10 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
         in message
         for message in queued_messages
     )
+    assert any(
+        "stop gathering more reference material and perform the change now" in message
+        for message in queued_messages
+    )
 
 
 @pytest.mark.asyncio
@@ -1159,6 +1163,97 @@ async def test_tool_batch_runner_duplicate_reference_read_prefers_next_pending_t
     assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
     assert "Continue with the next pending item: `Create the nginx directory structure`" in queued_messages[0]
     assert "Update `" not in queued_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    reference = temp_dir / "fortran" / "index.html"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("<h1>Fortran Beginner's Guide</h1>\n")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Examine the existing Fortran guide structure to understand the cadence and format",
+                "active_form": "Working on: Examine the existing Fortran guide structure to understand the cadence and format",
+                "status": "pending",
+            },
+            {
+                "content": "Create the nginx index.html file",
+                "active_form": "Working on: Create the nginx index.html file",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="read-reference",
+        name="read",
+        arguments={"file_path": str(reference)},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="<h1>Fortran Beginner's Guide</h1>\n",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert any(
+        "Continue with the next pending item: `Create the nginx index.html file`"
+        in message
+        for message in queued_messages
+    )
+    assert any(
+        "stop gathering more reference material and perform the change now" in message
+        for message in queued_messages
+    )
 
 
 @pytest.mark.asyncio

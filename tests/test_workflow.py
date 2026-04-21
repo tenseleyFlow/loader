@@ -345,6 +345,47 @@ def test_planning_artifacts_with_acceptance_criteria_rewrites_verification_markd
     )
 
 
+def test_planning_artifacts_with_progress_context_records_touched_and_completed_work() -> None:
+    artifacts = PlanningArtifacts.from_model_output(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## Execution Order",
+                "1. Create the guide files.",
+                "",
+                "<<<VERIFICATION>>>",
+                "",
+                "# Verification Plan",
+                "",
+                "## Acceptance Criteria",
+                "- At least one chapter file exists.",
+                "",
+                "## Verification Commands",
+                "- `find chapters -name \"*.html\" | wc -l`",
+            ]
+        ),
+        task_statement="Create a thorough nginx guide.",
+    )
+
+    updated = artifacts.with_progress_context(
+        touched_files=["/tmp/nginx/index.html"],
+        completed_items=[
+            "Create the guide scaffold",
+            "Collect verification evidence",
+        ],
+    )
+
+    assert "## Confirmed Progress" in updated.implementation_markdown
+    assert "Already touched during execution: `/tmp/nginx/index.html`." in (
+        updated.implementation_markdown
+    )
+    assert "Already completed during execution: Create the guide scaffold." in (
+        updated.implementation_markdown
+    )
+    assert "Collect verification evidence" not in updated.implementation_markdown
+
+
 def test_merge_refreshed_todos_with_existing_scope_keeps_grounded_progress() -> None:
     task = (
         "Create an equally thorough nginx guide with index.html plus chapter files "
@@ -369,6 +410,48 @@ def test_merge_refreshed_todos_with_existing_scope_keeps_grounded_progress() -> 
         and item["status"] == "pending"
         for item in todos
     )
+
+
+def test_merge_refreshed_todos_with_existing_scope_filters_retro_refresh_noise() -> None:
+    task = (
+        "Create an equally thorough nginx guide with index.html plus chapter files "
+        "covering getting started, installation, first website setup, configs, and "
+        "advanced topics."
+    )
+
+    todos = merge_refreshed_todos_with_existing_scope(
+        task,
+        existing_pending_items=[
+            "Create each chapter file in sequence, following the same structure as the Fortran guide",
+            "Ensure all files are properly linked and formatted consistently",
+        ],
+        existing_completed_items=[
+            "First, examine the existing Fortran guide structure to understand the format and cadence",
+            "Create the directory structure for the new nginx guide",
+            "Create the main index.html file",
+        ],
+        refreshed_steps=[
+            "First examined the existing Fortran guide structure to understand format and cadence",
+            "Created the main index.html file with navigation",
+            "Created chapter files in sequence:",
+            "01-getting-started.html",
+            "02-installation.html",
+            "03-first-website.html",
+            "04-configuring.html",
+            "All files properly linked with navigation between chapters",
+            "Verify the final navigation links across the guide",
+        ],
+    )
+
+    labels = {item["content"]: item["status"] for item in todos}
+    assert (
+        labels["Create each chapter file in sequence, following the same structure as the Fortran guide"]
+        == "pending"
+    )
+    assert labels["Ensure all files are properly linked and formatted consistently"] == "pending"
+    assert labels["Verify the final navigation links across the guide"] == "pending"
+    assert "Created chapter files in sequence:" not in labels
+    assert "04-configuring.html" not in labels
 
 
 def test_workflow_artifact_store_and_bridge_round_trip(tmp_path: Path) -> None:
@@ -528,3 +611,71 @@ def test_advance_todos_from_tool_call_tracks_plan_progress() -> None:
         ),
     )
     assert "Verify the updated index.html file is properly formatted" in dod.completed_items
+
+
+def test_advance_todos_from_tool_call_keeps_aggregate_mutation_steps_pending() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create each chapter file in sequence, following the same structure as the Fortran guide",
+                "active_form": "Working on: Create each chapter file in sequence, following the same structure as the Fortran guide",
+                "status": "pending",
+            },
+            {
+                "content": "Ensure all files are properly linked and formatted consistently",
+                "active_form": "Working on: Ensure all files are properly linked and formatted consistently",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert (
+        advance_todos_from_tool_call(
+            dod,
+            ToolCall(
+                id="write-one-chapter",
+                name="write",
+                arguments={
+                    "file_path": "/tmp/nginx/chapters/01-getting-started.html",
+                    "content": "<html></html>",
+                },
+            ),
+        )
+        is False
+    )
+    assert (
+        "Create each chapter file in sequence, following the same structure as the Fortran guide"
+        in dod.pending_items
+    )
+
+
+def test_advance_todos_from_tool_call_tracks_bash_directory_creation_progress() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create the nginx directory structure",
+                "active_form": "Working on: Create the nginx directory structure",
+                "status": "pending",
+            },
+            {
+                "content": "Create index.html for nginx guide",
+                "active_form": "Working on: Create index.html for nginx guide",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="mkdir-nginx",
+            name="bash",
+            arguments={"command": "mkdir -p ~/Loader/guides/nginx/chapters"},
+        ),
+    )
+    assert "Create the nginx directory structure" in dod.completed_items
+    assert "Create index.html for nginx guide" in dod.pending_items

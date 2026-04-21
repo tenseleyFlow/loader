@@ -208,6 +208,7 @@ def derive_verification_commands(
     *,
     project_root: Path,
     task_statement: str,
+    supplement_existing: bool = False,
 ) -> list[str]:
     """Generate verification commands from execution history and project shape."""
 
@@ -234,6 +235,8 @@ def derive_verification_commands(
 
     if commands:
         return commands
+    if supplement_existing:
+        return commands
 
     if dod.task_size == "small":
         for path_str in dod.touched_files[:3]:
@@ -245,6 +248,11 @@ def derive_verification_commands(
                     commands,
                     f"python -m py_compile {shlex.quote(str(effective_path))}",
                 )
+    elif _uses_external_artifacts_only(dod, project_root=project_root):
+        for path_str in dod.touched_files[:3]:
+            path = Path(path_str)
+            effective_path = path if path.is_absolute() else (project_root / path)
+            _append_unique(commands, f"test -f {shlex.quote(str(effective_path))}")
     else:
         if (project_root / "pyproject.toml").exists():
             _append_unique(commands, "uv run pytest -q")
@@ -405,6 +413,26 @@ def _resolve_touched_path(raw: object) -> str:
 def _append_unique(items: list[str], value: str) -> None:
     if value not in items:
         items.append(value)
+
+
+def _uses_external_artifacts_only(dod: DefinitionOfDone, *, project_root: Path) -> bool:
+    touched = [Path(path) for path in dod.touched_files if str(path).strip()]
+    if not touched:
+        return False
+    try:
+        root = project_root.resolve()
+    except FileNotFoundError:
+        root = project_root
+    external = [path for path in touched if not _path_is_within_root(path, root)]
+    return bool(external) and len(external) == len(touched)
+
+
+def _path_is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def synthesize_todo_items(dod: DefinitionOfDone) -> list[dict[str, str]]:

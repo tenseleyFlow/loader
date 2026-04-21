@@ -67,3 +67,28 @@ def test_artifact_invalidation_can_force_full_replan_when_brief_and_plan_drift()
         for item in freshness.evidence
     )
     assert freshness.evidence_summary
+
+
+def test_artifact_invalidation_treats_path_separator_variants_as_same_touchpoint() -> None:
+    assessor = ArtifactInvalidationAssessor()
+
+    freshness = assessor.assess(
+        task_statement="Build a multi-file nginx guide.",
+        clarify_text=None,
+        implementation_text=(
+            "# Implementation Plan\n"
+            "- Create 01-getting-started.html in the chapters directory.\n"
+        ),
+        verification_text=(
+            "# Verification Plan\n"
+            "## Acceptance Criteria\n"
+            "- 01-getting-started.html exists.\n"
+        ),
+        acceptance_criteria=["01-getting-started.html exists."],
+        touched_files=["/tmp/chapters/01_getting_started.html"],
+        last_verification_result=None,
+    )
+
+    assert freshness.stale_plan is False
+    assert freshness.stale_brief is False
+    assert "touched_files_outside_plan" not in freshness.reason_codes

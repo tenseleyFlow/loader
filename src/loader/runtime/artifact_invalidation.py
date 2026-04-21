@@ -49,13 +49,18 @@ class ArtifactInvalidationAssessor:
         unexpected_paths = [
             name
             for path in touched_files
-            if (name := _path_name(path)) and name.lower() not in plan_text
+            if (name := _path_name(path)) and not _text_covers_path_reference(plan_text, path)
         ]
         confirmed_touchpoints = [
             name
             for path in touched_files
             if (name := _path_name(path))
         ]
+        confirmed_touchpoint_keys = {
+            _path_reference_identity(path)
+            for path in touched_files
+            if _path_reference_identity(path)
+        }
         inferred_touchpoints = [
             item
             for item in _extract_path_mentions(
@@ -63,7 +68,7 @@ class ArtifactInvalidationAssessor:
                 implementation_text,
                 verification_text,
             )
-            if _path_name(item) not in confirmed_touchpoints
+            if _path_reference_identity(item) not in confirmed_touchpoint_keys
         ]
         stale_plan = False
         stale_brief = False
@@ -147,7 +152,11 @@ class ArtifactInvalidationAssessor:
                     )
 
             out_of_brief_paths = [
-                name for name in unexpected_paths if name.lower() not in brief_text
+                name
+                for path in touched_files
+                if (name := _path_name(path))
+                and name in unexpected_paths
+                and not _text_covers_path_reference(brief_text, path)
             ]
             if out_of_brief_paths:
                 stale_brief = True
@@ -198,6 +207,34 @@ def _path_name(path: str) -> str:
     if not normalized:
         return ""
     return normalized.rsplit("/", maxsplit=1)[-1].strip()
+
+
+def _path_reference_identity(path: str) -> str:
+    normalized = _path_name(path)
+    if not normalized:
+        return ""
+    return _canonical_path_reference(normalized)
+
+
+def _text_covers_path_reference(text: str, path: str) -> bool:
+    normalized_text = text.lower()
+    candidates = [candidate for candidate in (str(path).strip(), _path_name(path)) if candidate]
+
+    for candidate in candidates:
+        if candidate.lower() in normalized_text:
+            return True
+
+    canonical_text = _canonical_path_reference(text)
+    return any(
+        canonical_candidate and canonical_candidate in canonical_text
+        for canonical_candidate in (_canonical_path_reference(candidate) for candidate in candidates)
+    )
+
+
+def _canonical_path_reference(value: str) -> str:
+    normalized = value.lower().strip()
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return " ".join(normalized.split())
 
 
 def _text_covers_requirement(text: str, requirement: str) -> bool:

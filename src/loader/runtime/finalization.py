@@ -294,6 +294,7 @@ class TurnFinalizer:
                 dod,
                 project_root=self.context.project_root,
                 task_statement=dod.task_statement,
+                supplement_existing=True,
             ):
                 if command not in dod.verification_commands:
                     dod.verification_commands.append(command)

@@ -1438,6 +1438,21 @@ async def test_stale_plan_artifacts_trigger_targeted_plan_refresh(
         entry.reason_code == "plan_refresh_completed"
         for entry in run.agent.last_turn_summary.workflow_timeline
     )
+    refresh_prompt = next(
+        invocation.messages[-1].content
+        for invocation in backend.invocations
+        if "Refresh the existing planning artifacts instead of creating a fresh plan from scratch."
+        in invocation.messages[-1].content
+    )
+    assert "Current execution progress:" in refresh_prompt
+    assert "Already touched during execution:" in refresh_prompt
+    assert f"- {target}" in refresh_prompt
+    assert any(
+        "Plan refresh preserved the progress already made." in message.content
+        and "Do not restart from initial discovery" in message.content
+        for invocation in backend.invocations
+        for message in invocation.messages
+    )
 
 
 @pytest.mark.asyncio

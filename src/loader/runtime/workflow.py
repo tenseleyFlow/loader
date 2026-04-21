@@ -125,6 +125,75 @@ _VERIFY_STEP_HINTS = (
     "confirm",
     "check",
 )
+_AGGREGATE_TODO_HINTS = (
+    "each ",
+    "all ",
+    "every ",
+    "sequence",
+    "multiple ",
+    "across ",
+    "consistently",
+    "properly linked",
+    "directory structure",
+)
+_ACTIONABLE_STEP_VERBS = {
+    "add",
+    "apply",
+    "build",
+    "check",
+    "confirm",
+    "create",
+    "document",
+    "edit",
+    "ensure",
+    "fix",
+    "implement",
+    "inspect",
+    "list",
+    "move",
+    "parse",
+    "patch",
+    "read",
+    "refactor",
+    "remove",
+    "rename",
+    "reorder",
+    "rerun",
+    "re-run",
+    "review",
+    "run",
+    "search",
+    "test",
+    "update",
+    "validate",
+    "verify",
+    "write",
+}
+_RETROSPECTIVE_STEP_VERBS = {
+    "added",
+    "applied",
+    "built",
+    "checked",
+    "completed",
+    "confirmed",
+    "created",
+    "edited",
+    "ensured",
+    "examined",
+    "generated",
+    "implemented",
+    "inspected",
+    "listed",
+    "looked",
+    "parsed",
+    "patched",
+    "read",
+    "reviewed",
+    "updated",
+    "validated",
+    "verified",
+    "wrote",
+}
 _TASK_COVERAGE_STOP_WORDS = {
     "the",
     "and",
@@ -491,6 +560,41 @@ class PlanningArtifacts:
             implementation_steps=list(self.implementation_steps),
         )
 
+    def with_progress_context(
+        self,
+        *,
+        touched_files: list[str],
+        completed_items: list[str],
+    ) -> PlanningArtifacts:
+        """Return one copy that preserves already-confirmed execution progress."""
+
+        progress_items: list[str] = []
+        for raw_path in touched_files:
+            path_text = str(raw_path).strip()
+            if not path_text:
+                continue
+            progress_items.append(f"Already touched during execution: `{path_text}`.")
+        for raw_item in completed_items:
+            item = str(raw_item).strip()
+            if not item or item in _SPECIAL_TODO_ITEMS:
+                continue
+            progress_items.append(f"Already completed during execution: {item}.")
+
+        if not progress_items:
+            return self
+
+        return PlanningArtifacts(
+            implementation_markdown=_replace_markdown_section_items(
+                self.implementation_markdown,
+                "Confirmed Progress",
+                list(dict.fromkeys(progress_items)),
+            ),
+            verification_markdown=self.verification_markdown,
+            verification_commands=list(self.verification_commands),
+            acceptance_criteria=list(self.acceptance_criteria),
+            implementation_steps=list(self.implementation_steps),
+        )
+
 
 class WorkflowArtifactStore:
     """Persist briefs and plans under `.loader/`."""
@@ -627,6 +731,15 @@ def merge_refreshed_todos_with_existing_scope(
         and item not in _SPECIAL_TODO_ITEMS
         and _task_text_covers_requirement(task_statement, item)
     ]
+    refreshed_candidates = [
+        item.strip()
+        for item in refreshed_steps
+        if item.strip()
+        and (
+            not (grounded_completed or grounded_pending)
+            or _looks_actionable_refresh_step(item)
+        )
+    ]
 
     todos: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -641,7 +754,7 @@ def merge_refreshed_todos_with_existing_scope(
                 "status": "completed",
             }
         )
-    for item in [*grounded_pending, *refreshed_steps]:
+    for item in [*grounded_pending, *refreshed_candidates]:
         label = item.strip()
         if not label or label in seen:
             continue
@@ -740,7 +853,14 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
         elif _looks_like_read_command(command):
             if _contains_any(text, _READ_STEP_HINTS):
                 score += 2
+        elif _looks_like_fs_mutation_command(command):
+            if _contains_any(text, _MUTATION_STEP_HINTS):
+                score += 3
+            if "directory" in text and "mkdir" in command:
+                score += 2
     elif name in {"write", "edit", "patch"}:
+        if _todo_describes_aggregate_mutation(text) and basename and basename not in text:
+            return 0
         if _contains_any(text, _MUTATION_STEP_HINTS):
             score += 3
 
@@ -751,6 +871,13 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
 
 def _contains_any(text: str, candidates: tuple[str, ...]) -> bool:
     return any(candidate in text for candidate in candidates)
+
+
+def _todo_describes_aggregate_mutation(text: str) -> bool:
+    return _contains_any(text, _AGGREGATE_TODO_HINTS) and _contains_any(
+        text,
+        _MUTATION_STEP_HINTS,
+    )
 
 
 def _looks_like_search_command(command: str) -> bool:
@@ -777,6 +904,27 @@ def _looks_like_verification_command(command: str) -> bool:
             "grep ",
             "diff ",
             "cmp ",
+        )
+    )
+
+
+def _looks_like_fs_mutation_command(command: str) -> bool:
+    stripped = command.strip()
+    return any(
+        stripped.startswith(prefix)
+        for prefix in (
+            "mkdir ",
+            "mkdir\t",
+            "touch ",
+            "touch\t",
+            "cp ",
+            "cp\t",
+            "mv ",
+            "mv\t",
+            "ln ",
+            "ln\t",
+            "install ",
+            "install\t",
         )
     )
 
@@ -1055,6 +1203,27 @@ def _requirement_describes_output_scope(requirement: str) -> bool:
             "consistent in style",
         )
     )
+
+
+def _looks_actionable_refresh_step(step: str) -> bool:
+    normalized = step.strip()
+    if not normalized:
+        return False
+    if re.fullmatch(r"(?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9]+", normalized):
+        return False
+
+    lowered = normalized.lower()
+    lowered = re.sub(r"^(?:first|next|then|finally|afterward|afterwards)\b[,:]?\s*", "", lowered)
+    first_word_match = re.match(r"^[a-z-]+", lowered)
+    if first_word_match is None:
+        return False
+
+    first_word = first_word_match.group(0)
+    if first_word in _RETROSPECTIVE_STEP_VERBS:
+        return False
+    if first_word in _ACTIONABLE_STEP_VERBS:
+        return True
+    return False
 
 
 def _mark_explicit_section(brief: ClarifyBrief, section: str) -> None:

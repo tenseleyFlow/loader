@@ -435,6 +435,53 @@ async def test_turn_finalizer_appends_runtime_semantic_verifier_to_planned_comma
 
 
 @pytest.mark.asyncio
+async def test_turn_finalizer_does_not_append_repo_defaults_to_external_verification_plan(
+    temp_dir: Path,
+) -> None:
+    (temp_dir / "pyproject.toml").write_text("[project]\nname='loader'\n")
+    (temp_dir / "package.json").write_text("{}\n")
+    external_root = temp_dir.parent / "external-nginx-guide"
+    external_root.mkdir(exist_ok=True)
+    external_index = external_root / "index.html"
+    external_index.write_text("<html></html>\n")
+
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    dod = create_definition_of_done("Create an external nginx guide.")
+    dod.mutating_actions.append("write")
+    dod.touched_files.append(str(external_index))
+    dod.verification_commands = [
+        f"ls -la {external_root}",
+        f"grep -n \"html\" {external_index}",
+    ]
+    summary = TurnSummary(final_response="")
+    executor = RecordingExecutor()
+
+    async def capture(event) -> None:
+        return None
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="Created the external nginx guide.",
+        emit=capture,
+        summary=summary,
+        executor=executor,  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is False
+    assert executor.commands == [
+        f"ls -la {external_root}",
+        f'grep -n "html" {external_index}',
+    ]
+
+
+@pytest.mark.asyncio
 async def test_turn_finalizer_records_missing_verification_observation(
     temp_dir: Path,
 ) -> None:

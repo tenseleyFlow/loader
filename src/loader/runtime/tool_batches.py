@@ -46,6 +46,19 @@ _TODO_NUDGE_EXCLUDED_ITEMS = {
     "Complete the requested work",
     _VERIFY_ITEM,
 }
+_MUTATION_TODO_HINTS = (
+    "create",
+    "update",
+    "edit",
+    "write",
+    "fix",
+    "modify",
+    "change",
+    "patch",
+    "replace",
+    "correct",
+    "rewrite",
+)
 
 
 @dataclass
@@ -290,18 +303,26 @@ class ToolBatchRunner:
             max_items=2,
         )
         if next_pending and not html_toc_rule.task_targets_html_toc(current_task):
+            mutation_suffix = ""
+            if _todo_is_mutation_step(next_pending):
+                mutation_suffix = (
+                    " You already have enough evidence for that step, so stop gathering "
+                    "more reference material and perform the change now."
+                )
             if confirmed_facts:
                 self.context.queue_steering_message(
                     "Reuse the earlier observation instead of repeating it. "
                     f"Confirmed facts: {confirmed_facts}. "
                     f"Continue with the next pending item: `{next_pending}`. "
                     "Only gather more evidence if a specific fact required for that step is still unknown."
+                    + mutation_suffix
                 )
             else:
                 self.context.queue_steering_message(
                     "Reuse the earlier observation instead of repeating it. "
                     f"Continue with the next pending item: `{next_pending}`. "
                     "Only gather more evidence if a specific fact required for that step is still unknown."
+                    + mutation_suffix
                 )
             return
 
@@ -752,10 +773,17 @@ class ToolBatchRunner:
         if not completed_label or not next_pending or next_pending == completed_label:
             return
 
+        mutation_suffix = ""
+        if _todo_is_mutation_step(next_pending):
+            mutation_suffix = (
+                " You already have enough evidence for that step, so stop gathering "
+                "more reference material and perform the change now."
+            )
+
         self.context.queue_steering_message(
             f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
             f"`{tool_call.name}` result. Continue with the next pending item: "
-            f"`{next_pending}` instead of rereading the same evidence."
+            f"`{next_pending}` instead of rereading the same evidence.{mutation_suffix}"
         )
 
 
@@ -793,6 +821,11 @@ def _mark_verification_stale(
         dod.completed_items.remove(_VERIFY_ITEM)
     if _VERIFY_ITEM not in dod.pending_items:
         dod.pending_items.append(_VERIFY_ITEM)
+
+
+def _todo_is_mutation_step(label: str) -> bool:
+    lowered = label.lower()
+    return any(token in lowered for token in _MUTATION_TODO_HINTS)
 
 
 def _mark_verification_planned(

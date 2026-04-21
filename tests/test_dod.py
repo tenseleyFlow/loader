@@ -143,6 +143,29 @@ def test_derive_verification_commands_adds_semantic_html_toc_check(tmp_path: Pat
     assert not any(command == f"test -f {index}" for command in commands)
 
 
+def test_derive_verification_commands_avoids_repo_defaults_for_external_artifacts(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='loader'\n")
+    (tmp_path / "package.json").write_text("{}\n")
+    external_root = tmp_path.parent / "external-guide"
+    external_root.mkdir(exist_ok=True)
+    external_index = external_root / "index.html"
+    external_index.write_text("<html></html>\n")
+
+    dod = create_definition_of_done("Create an external nginx guide.")
+    dod.task_size = "standard"
+    dod.touched_files = [str(external_index)]
+
+    commands = derive_verification_commands(
+        dod,
+        project_root=tmp_path,
+        task_statement=dod.task_statement,
+    )
+
+    assert commands == [f"test -f {external_index}"]
+
+
 def test_build_verification_summary_keeps_concrete_missing_link_details() -> None:
     summary = build_verification_summary(
         [

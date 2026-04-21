@@ -29,6 +29,10 @@ UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 WorkflowModeSetter = Callable[..., Awaitable[None]]
 TimelineAppender = Callable[..., None]
 BridgeAppender = Callable[[DefinitionOfDone], None]
+_RECOVERY_TODO_EXCLUDED_ITEMS = {
+    "Complete the requested work",
+    "Collect verification evidence",
+}
 
 
 class WorkflowRecoveryController:
@@ -186,6 +190,21 @@ class WorkflowRecoveryController:
             summary=summary,
         )
         self.append_execute_bridge(dod)
+        next_pending = next(
+            (
+                item
+                for item in dod.pending_items
+                if item not in _RECOVERY_TODO_EXCLUDED_ITEMS
+            ),
+            None,
+        )
+        if next_pending:
+            self.context.queue_steering_message(
+                "Plan refresh preserved the progress already made. "
+                f"Reuse the existing files and confirmed facts, then continue with the next "
+                f"pending item: `{next_pending}`. "
+                "Do not restart from initial discovery unless a specific missing fact blocks that step."
+            )
         return True
 
     async def _run_clarify_reentry_for_drift(

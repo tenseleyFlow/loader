@@ -208,6 +208,10 @@ class WorkflowLaneRunner:
                 refreshed_acceptance_criteria=list(artifacts.acceptance_criteria),
             )
             artifacts = artifacts.with_acceptance_criteria(preserved_acceptance)
+            artifacts = artifacts.with_progress_context(
+                touched_files=list(dod.touched_files),
+                completed_items=list(dod.completed_items),
+            )
         implementation_path, verification_path = self.artifact_store.write_plan(
             task,
             artifacts,
@@ -610,6 +614,41 @@ class WorkflowLaneRunner:
 
         refresh_block = ""
         if refresh_reasons:
+            progress_lines: list[str] = []
+            touched = [str(path).strip() for path in dod.touched_files if str(path).strip()]
+            completed = [
+                item.strip()
+                for item in dod.completed_items
+                if item.strip()
+                and item not in {"Complete the requested work", "Collect verification evidence"}
+            ]
+            pending = [
+                item.strip()
+                for item in dod.pending_items
+                if item.strip()
+                and item not in {"Complete the requested work", "Collect verification evidence"}
+            ]
+            if touched:
+                progress_lines.extend(
+                    [
+                        "Already touched during execution:",
+                        *[f"- {item}" for item in touched[:12]],
+                    ]
+                )
+            if completed:
+                progress_lines.extend(
+                    [
+                        "Already completed work:",
+                        *[f"- {item}" for item in completed[:12]],
+                    ]
+                )
+            if pending:
+                progress_lines.extend(
+                    [
+                        "Still pending:",
+                        *[f"- {item}" for item in pending[:12]],
+                    ]
+                )
             refresh_block = (
                 "Refresh the existing planning artifacts instead of creating a fresh plan "
                 "from scratch.\n"
@@ -619,6 +658,11 @@ class WorkflowLaneRunner:
                 "artifact.\n"
                 "Use the current task state and these recovery reasons:\n"
                 + "\n".join(f"- {item}" for item in refresh_reasons)
+                + (
+                    ("\n\nCurrent execution progress:\n" + "\n".join(progress_lines))
+                    if progress_lines
+                    else ""
+                )
                 + "\n\n"
             )
 
