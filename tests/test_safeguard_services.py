@@ -41,13 +41,67 @@ def test_action_tracker_preserves_loop_description_format() -> None:
     assert description == "Repeating pattern detected (2x): read → grep"
 
 
-def test_action_tracker_allows_repeated_bash_commands() -> None:
+def test_action_tracker_blocks_repeated_bash_observation_without_changes() -> None:
     tracker = ActionTracker()
     arguments = {"command": "ls -la ~/Loader/guides/fortran/chapters/"}
 
     tracker.record_tool_call("bash", arguments)
 
-    assert tracker.check_tool_call("bash", arguments) == (False, "")
+    is_duplicate, reason = tracker.check_tool_call("bash", arguments)
+
+    assert is_duplicate is True
+    assert "read-only shell probe" in reason
+
+
+def test_action_tracker_allows_repeated_bash_observation_after_mutation() -> None:
+    tracker = ActionTracker()
+    bash_args = {"command": "ls -la ~/Loader/guides/fortran/chapters/"}
+    patch_args = {
+        "file_path": "index.html",
+        "hunks": [
+            {
+                "old_start": 1,
+                "old_lines": 1,
+                "new_start": 1,
+                "new_lines": 1,
+                "lines": ["-old", "+new"],
+            }
+        ],
+    }
+
+    tracker.record_tool_call("bash", bash_args)
+    tracker.record_tool_call("patch", patch_args)
+
+    assert tracker.check_tool_call("bash", bash_args) == (False, "")
+
+
+def test_action_tracker_blocks_repeated_read_without_changes(tmp_path) -> None:
+    tracker = ActionTracker()
+    file_path = tmp_path / "index.html"
+    arguments = {"file_path": str(file_path)}
+
+    tracker.record_tool_call("read", arguments)
+
+    is_duplicate, reason = tracker.check_tool_call("read", arguments)
+
+    assert is_duplicate is True
+    assert str(file_path) in reason
+
+
+def test_action_tracker_allows_repeated_read_after_mutation(tmp_path) -> None:
+    tracker = ActionTracker()
+    file_path = tmp_path / "index.html"
+    read_args = {"file_path": str(file_path)}
+    edit_args = {
+        "file_path": str(file_path),
+        "old_string": "old",
+        "new_string": "new",
+    }
+
+    tracker.record_tool_call("read", read_args)
+    tracker.record_tool_call("edit", edit_args)
+
+    assert tracker.check_tool_call("read", read_args) == (False, "")
 
 
 def test_pre_action_validator_blocks_patch_without_hunks() -> None:

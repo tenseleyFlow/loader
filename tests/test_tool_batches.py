@@ -397,10 +397,151 @@ async def test_tool_batch_runner_verifies_with_context_services(temp_dir: Path) 
     )
 
     assert verification_calls == ["file contents"]
-    assert context.recovery_context is None
+    assert context.recovery_context is existing_recovery
+    assert existing_recovery.successful_steps == [
+        ("read", {"file_path": "README.md"})
+    ]
     assert context.session.messages[-1].role == Role.TOOL
     assert context.session.messages[-1].content == "file contents"
     assert any(event.type == "verification" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_preserves_recovery_context_across_diagnostic_success(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    existing_recovery = RecoveryContext(
+        original_tool="read",
+        original_args={"file_path": "chapters/04-data-types.html"},
+    )
+    existing_recovery.add_attempt(
+        "read",
+        {"file_path": "chapters/04-data-types.html"},
+        "File not found",
+    )
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        recovery_context=existing_recovery,
+        auto_recover=False,
+    )
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="bash-1",
+        name="bash",
+        arguments={"command": "ls chapters"},
+    )
+    executor = FakeExecutor(
+        [tool_outcome(tool_call=tool_call, output="01-introduction.html", is_error=False)]
+    )
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=TurnSummary(final_response=""),
+        dod=create_definition_of_done("Fix the chapter links"),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert context.recovery_context is existing_recovery
+    assert existing_recovery.successful_steps == [
+        ("bash", {"command": "ls chapters"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_clears_recovery_context_after_successful_mutation(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    existing_recovery = RecoveryContext(
+        original_tool="read",
+        original_args={"file_path": "chapters/04-data-types.html"},
+    )
+    existing_recovery.add_attempt(
+        "read",
+        {"file_path": "chapters/04-data-types.html"},
+        "File not found",
+    )
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        recovery_context=existing_recovery,
+        auto_recover=False,
+    )
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="patch-1",
+        name="patch",
+        arguments={
+            "file_path": "index.html",
+            "hunks": [{"old_start": 1, "old_lines": 1, "new_start": 1, "new_lines": 1, "lines": ["-a", "+b"]}],
+        },
+    )
+    executor = FakeExecutor(
+        [tool_outcome(tool_call=tool_call, output="Patched index.html", is_error=False)]
+    )
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=TurnSummary(final_response=""),
+        dod=create_definition_of_done("Fix the chapter links"),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert context.recovery_context is None
+
+
+async def _noop_emit(event: AgentEvent) -> None:
+    return None
 
 
 @pytest.mark.asyncio

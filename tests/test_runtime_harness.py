@@ -215,6 +215,34 @@ async def test_read_file_roundtrip(temp_dir: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("alias_key", ["file", "filepath"])
+async def test_read_file_alias_roundtrip(temp_dir: Path, alias_key: str) -> None:
+    fixture = temp_dir / "fixture.txt"
+    fixture.write_text("alpha parity line\nbeta line\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(id="read-1", name="read", arguments={alias_key: str(fixture)}),
+                content="I'll inspect that file.",
+            ),
+            final_response("The file contains alpha parity line."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Read the fixture file and summarize it.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert "alpha parity line" in run.response
+    assert tool_event_names(run) == ["read"]
+    assert any("alpha parity line" in message for message in tool_result_messages(run))
+
+
+@pytest.mark.asyncio
 async def test_multi_tool_turn_roundtrip(temp_dir: Path) -> None:
     fixture = temp_dir / "fixture.txt"
     fixture.write_text("alpha parity line\nbeta line\ngamma parity line\n")
@@ -1698,3 +1726,89 @@ async def test_tool_result_contract_regression() -> None:
         errors.append(f"validation branch raised {exc}")
 
     assert not errors, "\n".join(errors)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_read_is_skipped_without_intervening_mutation(
+    temp_dir: Path,
+) -> None:
+    fixture = temp_dir / "index.html"
+    fixture.write_text("alpha parity line\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(id="read-1", name="read", arguments={"file_path": str(fixture)}),
+                content="I'll inspect the file.",
+            ),
+            native_tool_response(
+                ToolCall(id="read-2", name="read", arguments={"file_path": str(fixture)}),
+                content="I'll reread the same file.",
+            ),
+            final_response("I'll use the existing file contents instead of rereading."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Inspect index.html and keep moving.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read", "read"]
+    messages = tool_result_messages(run)
+    assert any("alpha parity line" in message for message in messages)
+    assert any(
+        "Skipped - duplicate action" in message and "Already read" in message
+        for message in messages
+    )
+    assert "existing file contents" in run.response
+
+
+@pytest.mark.asyncio
+async def test_repeated_bash_probe_is_allowed_after_mutation(
+    temp_dir: Path,
+) -> None:
+    target = temp_dir / "notes.txt"
+    target.write_text("old value\n")
+    list_command = f"ls -1 {temp_dir}"
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(id="bash-1", name="bash", arguments={"command": list_command}),
+                content="I'll inspect the directory first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="edit-1",
+                    name="edit",
+                    arguments={
+                        "file_path": str(target),
+                        "old_string": "old value",
+                        "new_string": "new value",
+                    },
+                ),
+                content="I'll update the file.",
+            ),
+            native_tool_response(
+                ToolCall(id="bash-2", name="bash", arguments={"command": list_command}),
+                content="I'll list the directory again after the edit.",
+            ),
+            final_response("I re-ran ls after the edit without hitting duplicate rejection."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Inspect the directory, edit the file, then inspect again.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["bash", "edit", "bash"]
+    messages = tool_result_messages(run)
+    assert not any("Skipped - duplicate action" in message for message in messages)
+    assert sum("notes.txt" in message for message in messages) >= 2
+    assert target.read_text() == "new value\n"

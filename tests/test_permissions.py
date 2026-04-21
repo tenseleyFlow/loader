@@ -10,7 +10,9 @@ from loader.llm.base import ToolCall
 from loader.runtime.executor import ToolExecutionState, ToolExecutor
 from loader.runtime.hooks import (
     BaseToolHook,
+    FilePathAliasHook,
     HookDecision,
+    HookContext,
     HookManager,
     HookResult,
 )
@@ -296,3 +298,47 @@ async def test_pre_hook_deny_still_runs_failure_hook_once(temp_dir: Path) -> Non
     assert not target.exists()
     assert len(outcome.message.tool_results) == 1
     assert "denied by test hook" in outcome.event_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected_path"),
+    [
+        ("read", {"file": "notes.txt"}, "notes.txt"),
+        ("write", {"filepath": "notes.txt", "content": "hello\n"}, "notes.txt"),
+        (
+            "edit",
+            {"filePath": "notes.txt", "old_string": "before", "new_string": "after"},
+            "notes.txt",
+        ),
+        ("patch", {"path": "notes.txt", "hunks": []}, "notes.txt"),
+    ],
+)
+async def test_file_path_alias_hook_canonicalizes_common_aliases(
+    temp_dir: Path,
+    tool_name: str,
+    arguments: dict[str, object],
+    expected_path: str,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    hook = FilePathAliasHook()
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(id=f"{tool_name}-1", name=tool_name, arguments=arguments),
+            tool=registry.get(tool_name),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.updated_arguments is not None
+    assert result.updated_arguments["file_path"] == expected_path
+    for alias in ("file", "filepath", "filePath", "filename", "path"):
+        assert alias not in result.updated_arguments

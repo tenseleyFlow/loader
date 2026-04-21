@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,7 @@ class ActionTracker:
     LOOP_PATTERN_MIN = 2
     LOOP_REPEAT_THRESHOLD = 2
     MAX_RESPONSE_HISTORY = 5
+    OBSERVATION_REPEAT_WINDOW = 8
 
     def __init__(self) -> None:
         self._file_writes: dict[str, list[str]] = {}
@@ -22,6 +24,11 @@ class ActionTracker:
         self._dirs_created: set[str] = set()
         self._action_sequence: list[str] = []
         self._response_history: list[str] = []
+        self._action_index = 0
+        self._mutation_epoch = 0
+        self._recent_reads: dict[str, tuple[int, int]] = {}
+        self._recent_searches: dict[str, tuple[int, int]] = {}
+        self._recent_bash_observations: dict[str, tuple[int, int]] = {}
 
     def reset(self) -> None:
         self._file_writes.clear()
@@ -30,6 +37,11 @@ class ActionTracker:
         self._dirs_created.clear()
         self._action_sequence.clear()
         self._response_history.clear()
+        self._action_index = 0
+        self._mutation_epoch = 0
+        self._recent_reads.clear()
+        self._recent_searches.clear()
+        self._recent_bash_observations.clear()
 
     def _normalize_path(self, path: str) -> str:
         expanded = Path(path).expanduser()
@@ -62,7 +74,7 @@ class ActionTracker:
         return sig in self._files_edited.get(norm_path, [])
 
     def would_duplicate_command(self, command: str) -> bool:
-        norm_cmd = " ".join(command.split())
+        norm_cmd = self._normalize_command(command)
         return norm_cmd in self._commands_run
 
     def would_duplicate_mkdir(self, dir_path: str) -> bool:
@@ -80,7 +92,7 @@ class ActionTracker:
         self._files_edited.setdefault(norm_path, []).append(sig)
 
     def record_command(self, command: str) -> None:
-        norm_cmd = " ".join(command.split())
+        norm_cmd = self._normalize_command(command)
         self._commands_run.add(norm_cmd)
 
         mkdir_match = re.match(r'mkdir\s+(-p\s+)?(.+)', norm_cmd)
@@ -111,12 +123,46 @@ class ActionTracker:
             if isinstance(hunks, list) and self.would_duplicate_patch(file_path, hunks):
                 return True, f"Same patch already applied to: {file_path}"
 
+        elif tool_name == "read":
+            file_path = str(arguments.get("file_path", "")).strip()
+            if file_path:
+                duplicate, reason = self._check_recent_observation(
+                    self._recent_reads,
+                    self._normalize_path(file_path),
+                    f"Already read {file_path} recently without any intervening changes",
+                )
+                if duplicate:
+                    return True, reason
+
+        elif tool_name in {"glob", "grep"}:
+            observation_key = self._make_search_key(tool_name, arguments)
+            if observation_key:
+                duplicate, reason = self._check_recent_observation(
+                    self._recent_searches,
+                    observation_key,
+                    "Already ran the same search recently without any intervening changes",
+                )
+                if duplicate:
+                    return True, reason
+
+        elif tool_name == "bash":
+            command = str(arguments.get("command", "")).strip()
+            if self._is_observational_bash(command):
+                duplicate, reason = self._check_recent_observation(
+                    self._recent_bash_observations,
+                    self._normalize_command(command),
+                    "Already ran the same read-only shell probe recently without any intervening changes",
+                )
+                if duplicate:
+                    return True, reason
+
         # Bash commands intentionally skip exact-command dedupe here.
         # Re-running the same shell probe after a filesystem change is often valid,
         # and higher-level loop detection is a safer backstop than blocking `ls`.
         return False, ""
 
     def record_tool_call(self, tool_name: str, arguments: dict) -> None:
+        self._action_index += 1
         self._action_sequence.append(tool_name)
         if len(self._action_sequence) > self.MAX_SEQUENCE_LENGTH:
             self._action_sequence.pop(0)
@@ -126,6 +172,7 @@ class ActionTracker:
             content = arguments.get("content", "")
             if file_path:
                 self.record_file_create(file_path, content)
+                self._note_mutation()
 
         elif tool_name == "edit":
             file_path = arguments.get("file_path", "")
@@ -133,17 +180,42 @@ class ActionTracker:
             new_string = arguments.get("new_string", "")
             if file_path:
                 self.record_edit(file_path, old_string, new_string)
+                self._note_mutation()
 
         elif tool_name == "patch":
             file_path = arguments.get("file_path", "")
             hunks = arguments.get("hunks", [])
             if file_path:
                 self.record_edit(file_path, str(hunks), "structured_patch")
+                self._note_mutation()
+
+        elif tool_name == "read":
+            file_path = str(arguments.get("file_path", "")).strip()
+            if file_path:
+                self._recent_reads[self._normalize_path(file_path)] = (
+                    self._mutation_epoch,
+                    self._action_index,
+                )
+
+        elif tool_name in {"glob", "grep"}:
+            observation_key = self._make_search_key(tool_name, arguments)
+            if observation_key:
+                self._recent_searches[observation_key] = (
+                    self._mutation_epoch,
+                    self._action_index,
+                )
 
         elif tool_name == "bash":
             command = arguments.get("command", "")
             if command:
                 self.record_command(command)
+                if self._is_mutating_bash(command):
+                    self._note_mutation()
+                elif self._is_observational_bash(command):
+                    self._recent_bash_observations[self._normalize_command(command)] = (
+                        self._mutation_epoch,
+                        self._action_index,
+                    )
 
     def detect_loop(self) -> tuple[bool, str]:
         seq = self._action_sequence
@@ -217,6 +289,81 @@ class ActionTracker:
     def reset_response_history(self) -> None:
         """Clear response history between turns to prevent cross-turn false positives."""
         self._response_history.clear()
+
+    @staticmethod
+    def _normalize_command(command: str) -> str:
+        return " ".join(command.split())
+
+    def _note_mutation(self) -> None:
+        self._mutation_epoch += 1
+
+    def _check_recent_observation(
+        self,
+        cache: dict[str, tuple[int, int]],
+        key: str,
+        reason: str,
+    ) -> tuple[bool, str]:
+        last_seen = cache.get(key)
+        if last_seen is None:
+            return False, ""
+
+        last_epoch, last_index = last_seen
+        if last_epoch != self._mutation_epoch:
+            return False, ""
+        if (self._action_index - last_index) > self.OBSERVATION_REPEAT_WINDOW:
+            return False, ""
+        return True, reason
+
+    def _make_search_key(self, tool_name: str, arguments: dict) -> str | None:
+        pattern = str(arguments.get("pattern", "")).strip()
+        if not pattern:
+            return None
+        path = str(arguments.get("path", "")).strip()
+        normalized_path = self._normalize_path(path) if path else ""
+        return f"{tool_name}:{normalized_path}:{pattern}"
+
+    def _is_observational_bash(self, command: str) -> bool:
+        norm_cmd = self._normalize_command(command)
+        if not norm_cmd:
+            return False
+        if any(token in norm_cmd for token in ("&&", "||", ";", ">", ">>", "|", "<", "$(", "`")):
+            return False
+        try:
+            argv = shlex.split(norm_cmd)
+        except ValueError:
+            return False
+        if not argv:
+            return False
+        return argv[0] in {"ls", "pwd", "find", "stat", "cat", "head", "tail", "rg"}
+
+    def _is_mutating_bash(self, command: str) -> bool:
+        norm_cmd = self._normalize_command(command)
+        if not norm_cmd:
+            return False
+        mutating_fragments = (
+            " >",
+            ">>",
+            "| tee",
+            "touch ",
+            "mkdir ",
+            "rm ",
+            "mv ",
+            "cp ",
+            "sed -i",
+            "perl -pi",
+            "git add",
+            "git commit",
+            "git apply",
+        )
+        if any(fragment in norm_cmd for fragment in mutating_fragments):
+            return True
+        try:
+            argv = shlex.split(norm_cmd)
+        except ValueError:
+            return False
+        if not argv:
+            return False
+        return argv[0] in {"touch", "mkdir", "rm", "mv", "cp", "chmod", "chown"}
 
 
 @dataclass

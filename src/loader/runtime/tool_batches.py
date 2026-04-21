@@ -280,7 +280,14 @@ class ToolBatchRunner:
             if isinstance(new_todos, list):
                 sync_todos_to_definition_of_done(dod, new_todos)
         self.dod_store.save(dod)
-        self.context.recovery_context = None
+        recovery_context = self.context.recovery_context
+        if recovery_context is not None:
+            recovery_context.note_success(tool_call.name, tool_call.arguments)
+            if recovery_context.should_clear_after_success(
+                tool_call.name,
+                tool_call.arguments,
+            ):
+                self.context.recovery_context = None
         return None
 
 

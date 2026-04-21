@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from loader.llm.base import Message, Role
+from loader.llm.base import Message, Role, ToolCall
 from loader.runtime.compaction import (
     SummaryCompressionBudget,
     build_session_summary,
@@ -77,6 +77,72 @@ def test_build_session_summary_skips_nested_compacted_context_content() -> None:
     assert "Recent user requests: [COMPACTED CONTEXT]" not in summary
     assert "Pending work: [COMPACTED CONTEXT]" not in summary
     assert "- Previously compacted context retained." in summary
+
+
+def test_build_session_summary_preserves_confirmed_facts_and_next_step() -> None:
+    messages = [
+        Message(
+            role=Role.TOOL,
+            content=(
+                "Observation [notepad_write_working]: Result: "
+                "02-basic-syntax.html -> 02-setup.html\n"
+                "03-variables-data-types.html -> 03-basics.html"
+            ),
+        ),
+        Message(
+            role=Role.ASSISTANT,
+            content="Checking the index before editing it.",
+            tool_calls=[
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"file_path": "~/Loader/guides/fortran/index.html"},
+                )
+            ],
+        ),
+        Message(
+            role=Role.TOOL,
+            content=(
+                "Observation [glob]: Result: "
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/01-introduction.html\n"
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/02-setup.html\n"
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/03-basics.html\n"
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/04-variables.html"
+            ),
+        ),
+    ]
+
+    summary = build_session_summary(
+        messages,
+        current_task=(
+            "Update ~/Loader/guides/fortran/index.html with the correct chapter links."
+        ),
+    )
+
+    assert "Confirmed facts:" in summary
+    assert "02-basic-syntax.html -> 02-setup.html" in summary
+    assert "Existing files include 01-introduction.html" in summary
+    assert "Preferred next step:" in summary
+    assert "`~/Loader/guides/fortran/index.html`" in summary
+
+
+def test_compact_session_messages_uses_single_continuation_instruction_block() -> None:
+    messages = [
+        Message(role=Role.USER, content="Task framing"),
+        Message(role=Role.ASSISTANT, content="Initial plan"),
+        Message(role=Role.USER, content="Keep going"),
+        Message(role=Role.ASSISTANT, content="Still working"),
+        Message(role=Role.USER, content="Use the known mapping"),
+    ]
+
+    result = compact_session_messages(
+        messages,
+        keep_last_messages=2,
+        current_task="Repair the table of contents links",
+    )
+
+    assert result is not None
+    assert result.messages[0].content.count("Continuation instructions:") == 1
 
 
 def test_resolve_auto_compaction_threshold_uses_context_window_as_upper_bound() -> None:

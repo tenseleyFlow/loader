@@ -269,3 +269,213 @@ async def test_tool_batch_recovery_controller_returns_follow_up(
     assert context.recovery_context is not None
     assert "Previous attempts:" in follow_up.content
     assert any(event.type == "recovery" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_includes_known_state_for_missing_file(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(tool_name: str, tool_args: dict, context: str) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    messages = [
+        Message(
+            role=Role.TOOL,
+            content=(
+                "Observation [glob]: Result: "
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/01-introduction.html\n"
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/02-setup.html\n"
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/03-basics.html\n"
+                "/Users/mfwolffe/Loader/guides/fortran/chapters/04-variables.html"
+            ),
+            tool_results=[],
+        ),
+        Message(
+            role=Role.TOOL,
+            content=(
+                "Observation [notepad_write_working]: Result: "
+                "- 02-basic-syntax.html -> 02-setup.html\n"
+                "- 03-variables-data-types.html -> 03-basics.html\n"
+                "- 04-operators-expressions.html -> 04-variables.html"
+            ),
+            tool_results=[],
+        ),
+        Message(
+            role=Role.ASSISTANT,
+            content="I should update the index now.",
+            tool_calls=[
+                ToolCall(
+                    id="read-index",
+                    name="read",
+                    arguments={"file_path": "~/Loader/guides/fortran/index.html"},
+                )
+            ],
+        ),
+    ]
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=messages,
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    context.session.current_task = (
+        "Update ~/Loader/guides/fortran/index.html with the right chapter links."
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="read-missing",
+        name="read",
+        arguments={"file_path": "~/Loader/guides/fortran/chapters/04-data-types.html"},
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="File not found: ~/Loader/guides/fortran/chapters/04-data-types.html",
+        is_error=True,
+    )
+
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=emit,
+    )
+
+    assert follow_up is not None
+    assert "## CONTINUE FROM KNOWN STATE" in follow_up.content
+    assert "04-variables.html" in follow_up.content
+    assert "02-basic-syntax.html -> 02-setup.html" in follow_up.content
+    assert "`~/Loader/guides/fortran/index.html`" in follow_up.content
+    assert any(event.type == "recovery" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_reuses_context_for_related_missing_files(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    existing = RecoveryContext(
+        original_tool="read",
+        original_args={"file_path": "~/Loader/guides/fortran/chapters/04-data-types.html"},
+        max_retries=3,
+    )
+    existing.add_attempt(
+        "read",
+        {"file_path": "~/Loader/guides/fortran/chapters/04-data-types.html"},
+        "File not found: ~/Loader/guides/fortran/chapters/04-data-types.html",
+    )
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        recovery_context=existing,
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="read-missing-2",
+        name="read",
+        arguments={"file_path": "~/Loader/guides/fortran/chapters/02-basic-syntax.html"},
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="File not found: ~/Loader/guides/fortran/chapters/02-basic-syntax.html",
+        is_error=True,
+    )
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=lambda event: _noop_emit(event),
+    )
+
+    assert follow_up is not None
+    assert context.recovery_context is existing
+    assert len(existing.attempts) == 2
+    assert "## Current attempt: 2/3" in follow_up.content
+    assert "02-basic-syntax.html" in follow_up.content
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_resets_context_for_unrelated_failures(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    existing = RecoveryContext(
+        original_tool="read",
+        original_args={"file_path": "~/Loader/guides/fortran/chapters/04-data-types.html"},
+        max_retries=3,
+    )
+    existing.add_attempt(
+        "read",
+        {"file_path": "~/Loader/guides/fortran/chapters/04-data-types.html"},
+        "File not found: ~/Loader/guides/fortran/chapters/04-data-types.html",
+    )
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        recovery_context=existing,
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="bash-timeout",
+        name="bash",
+        arguments={"command": "pytest"},
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="command failed",
+        is_error=True,
+    )
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=lambda event: _noop_emit(event),
+    )
+
+    assert follow_up is not None
+    assert context.recovery_context is not None
+    assert context.recovery_context is not existing
+    assert len(context.recovery_context.attempts) == 1
+    assert "## Current attempt: 1/2" in follow_up.content
+
+
+async def _noop_emit(event: AgentEvent) -> None:
+    return None

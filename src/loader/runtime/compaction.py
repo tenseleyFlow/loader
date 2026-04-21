@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..llm.base import Message, Role
 
@@ -238,7 +239,12 @@ def build_session_summary(
         for tool_call in message.tool_calls
         if tool_call.name
     ]
-    key_files = _extract_key_files(messages)
+    key_files = extract_key_files(messages)
+    confirmed_facts = summarize_confirmed_facts(messages)
+    preferred_next_step = infer_preferred_next_step(
+        messages,
+        current_task=current_task,
+    )
 
     scope = current_task or (user_messages[0] if user_messages else "Continue the current task.")
     current_work = assistant_messages[-1] if assistant_messages else (user_messages[-1] if user_messages else "Resume the latest work state.")
@@ -256,35 +262,100 @@ def build_session_summary(
         f"- Tools mentioned: {tool_summary}",
         f"- Recent user requests: {recent_requests}",
     ]
+    if confirmed_facts:
+        lines.append(f"- Confirmed facts: {confirmed_facts}")
+    if preferred_next_step:
+        lines.append(f"- Preferred next step: {preferred_next_step}")
     if previous_summary:
         lines.append("- Previously compacted context retained.")
-    lines.extend(
-        [
-            f"- Newly compacted context: {len(messages)} earlier message(s) summarized.",
-            "Continuation instructions:",
-            "- Continue from the preserved recent messages.",
-            "- Keep the active DoD, workflow mode, and permission mode aligned.",
-            "- Avoid redoing completed work unless verification fails.",
-        ]
-    )
+    lines.append(f"- Newly compacted context: {len(messages)} earlier message(s) summarized.")
     return "\n".join(lines)
 
 
-def _extract_key_files(messages: list[Message]) -> list[str]:
-    pattern = re.compile(r"(?:/|\.{1,2}/|[A-Za-z0-9_.-]+/)[A-Za-z0-9_./-]+\.[A-Za-z0-9]+")
+def extract_key_files(messages: list[Message], *, limit: int | None = 6) -> list[str]:
+    pattern = re.compile(
+        r"(?:~/(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+|"
+        r"/(?:Users|home|tmp|var|private)/(?:[A-Za-z0-9_. -]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+|"
+        r"(?:\.{1,2}/|[A-Za-z0-9_.-]+/)[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)"
+    )
     files: list[str] = []
     for message in messages:
         if _is_compacted_context_message(message.content):
             continue
         for match in pattern.findall(message.content):
-            if match not in files:
-                files.append(match)
+            normalized = _normalize_path_candidate(match)
+            if normalized and normalized not in files:
+                files.append(normalized)
         for tool_call in message.tool_calls:
             for key in ("file_path", "path", "cwd"):
                 value = tool_call.arguments.get(key)
-                if isinstance(value, str) and value and value not in files:
-                    files.append(value)
+                if not isinstance(value, str):
+                    continue
+                normalized = _normalize_path_candidate(value)
+                if normalized and normalized not in files:
+                    files.append(normalized)
+        if limit is not None and len(files) >= limit:
+            return files[:limit]
     return files
+
+
+def summarize_confirmed_facts(messages: list[Message], *, max_items: int = 2) -> str | None:
+    """Summarize recent confirmed discoveries from successful tool results."""
+
+    facts: list[str] = []
+    for message in reversed(messages):
+        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
+            continue
+        if any(result.is_error for result in message.tool_results):
+            continue
+
+        tool_name = _observed_tool_name(message.content)
+        payload = "\n".join(
+            result.content.strip()
+            for result in message.tool_results
+            if result.content.strip()
+        ) or message.content
+
+        if tool_name in {
+            "notepad_write_working",
+            "notepad_append",
+            "notepad_write_priority",
+            "notepad_write_manual",
+        }:
+            mapping_fact = _summarize_html_mappings(payload)
+            if mapping_fact and mapping_fact not in facts:
+                facts.append(mapping_fact)
+
+        if tool_name in {"glob", "bash"}:
+            file_fact = _summarize_html_file_discovery(payload)
+            if file_fact and file_fact not in facts:
+                facts.append(file_fact)
+
+        if len(facts) >= max_items:
+            break
+
+    if not facts:
+        return None
+    return " | ".join(facts[:max_items])
+
+
+def infer_preferred_next_step(
+    messages: list[Message],
+    *,
+    current_task: str | None = None,
+) -> str | None:
+    """Infer one concrete next step from the task and recent transcript."""
+
+    if summarize_confirmed_facts(messages, max_items=1) is None:
+        return None
+
+    target_path = _choose_target_path(messages, current_task=current_task)
+    if target_path:
+        return (
+            f"Update `{target_path}` using the confirmed findings instead of "
+            "restarting earlier discovery steps."
+        )
+    return "Continue from the confirmed findings instead of restarting earlier discovery."
 
 
 def _collapse_inline_whitespace(line: str) -> str:
@@ -327,7 +398,95 @@ def _is_core_detail(line: str) -> bool:
             "- Key files referenced:",
             "- Tools mentioned:",
             "- Recent user requests:",
+            "- Confirmed facts:",
+            "- Preferred next step:",
             "- Previously compacted context:",
             "- Newly compacted context:",
         )
     )
+
+
+def _normalize_path_candidate(value: str) -> str | None:
+    text = str(value).strip().rstrip(".,;:")
+    if not text:
+        return None
+    if text.startswith(("~/", "./", "../")):
+        return text
+    if text.startswith(("/Users/", "/home/", "/tmp/", "/var/", "/private/")):
+        return text
+    if "/" in text and not text.startswith("/") and "." in Path(text).name:
+        return text
+    return None
+
+
+def _observed_tool_name(content: str) -> str | None:
+    match = re.match(r"Observation \[([^\]]+)\]:", content.strip())
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _summarize_html_mappings(payload: str) -> str | None:
+    pairs = re.findall(
+        r"([A-Za-z0-9_.-]+\.html)\s*->\s*([A-Za-z0-9_.-]+\.html)",
+        payload,
+    )
+    unique_pairs: list[str] = []
+    for left, right in pairs:
+        mapping = f"{left} -> {right}"
+        if mapping not in unique_pairs:
+            unique_pairs.append(mapping)
+    if not unique_pairs:
+        return None
+    preview = ", ".join(unique_pairs[:4])
+    if len(unique_pairs) > 4:
+        preview += ", ..."
+    return f"Filename mappings confirmed: {preview}"
+
+
+def _summarize_html_file_discovery(payload: str) -> str | None:
+    filenames = re.findall(r"([A-Za-z0-9_.-]+\.html)", payload)
+    unique_names: list[str] = []
+    for name in filenames:
+        if name not in unique_names:
+            unique_names.append(name)
+    if len(unique_names) < 3:
+        return None
+    preview = ", ".join(unique_names[:6])
+    if len(unique_names) > 6:
+        preview += ", ..."
+    return f"Existing files include {preview}"
+
+
+def _choose_target_path(
+    messages: list[Message],
+    *,
+    current_task: str | None = None,
+) -> str | None:
+    candidates: Counter[str] = Counter()
+    for message in messages:
+        for tool_call in message.tool_calls:
+            if tool_call.name not in {"read", "write", "edit", "patch"}:
+                continue
+            raw_path = tool_call.arguments.get("file_path")
+            if not isinstance(raw_path, str):
+                continue
+            normalized = _normalize_path_candidate(raw_path)
+            if not normalized:
+                continue
+            path_name = Path(normalized).name
+            if path_name == "index.html":
+                candidates[normalized] += 10
+            elif path_name.endswith(".html") and "/chapters/" not in normalized:
+                candidates[normalized] += 4
+
+    if candidates:
+        return candidates.most_common(1)[0][0]
+
+    if not current_task:
+        return None
+    current_task_paths = extract_key_files([Message(role=Role.USER, content=current_task)], limit=3)
+    for path in current_task_paths:
+        if Path(path).name == "index.html":
+            return path
+    return current_task_paths[0] if current_task_paths else None

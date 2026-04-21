@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any
 
 
@@ -65,6 +66,7 @@ class RecoveryContext:
     original_tool: str
     original_args: dict[str, Any]
     attempts: list[ToolAttempt] = field(default_factory=list)
+    successful_steps: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     max_retries: int = 3
 
     def add_attempt(self, tool_name: str, args: dict[str, Any], error: str) -> None:
@@ -84,6 +86,11 @@ class RecoveryContext:
         """Check if more retries are allowed."""
 
         return len(self.attempts) < self.max_retries
+
+    def note_success(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Track successful diagnostic steps taken during recovery."""
+
+        self.successful_steps.append((tool_name, dict(args)))
 
     def attempts_summary(self) -> str:
         """Summarize what's been tried for the LLM."""
@@ -128,6 +135,76 @@ class RecoveryContext:
                 return True
 
         return False
+
+    def is_related_failure(self, tool_name: str, args: dict[str, Any], error: str) -> bool:
+        """Decide whether a new failure belongs to the current recovery episode."""
+
+        if not self.attempts:
+            return tool_name == self.original_tool
+
+        new_category = categorize_error(error)
+        root_category = self.attempts[0].category
+        if new_category != root_category:
+            return False
+
+        current_path = self._extract_primary_path(args)
+        original_path = self._extract_primary_path(self.original_args)
+        if current_path and original_path:
+            if self._same_parent_directory(current_path, original_path):
+                return True
+            if current_path == original_path:
+                return True
+            return False
+
+        if tool_name == "bash" and self.original_tool == "bash":
+            return any(
+                attempt.tool_name == "bash"
+                and self._normalize_command(attempt.arguments.get("command", ""))
+                == self._normalize_command(args.get("command", ""))
+                for attempt in self.attempts
+            )
+
+        return tool_name == self.original_tool
+
+    def should_clear_after_success(self, tool_name: str, args: dict[str, Any]) -> bool:
+        """Decide when a successful tool execution resolves the recovery episode."""
+
+        if tool_name in {"write", "edit", "patch"}:
+            return True
+
+        if tool_name == "bash":
+            command = str(args.get("command", ""))
+            mutating_tokens = (
+                "git commit",
+                "git add",
+                "mv ",
+                "cp ",
+                "rm ",
+                "mkdir ",
+                "touch ",
+                "sed -i",
+                "perl -pi",
+                "python -c",
+                "python3 -c",
+            )
+            return any(token in command for token in mutating_tokens)
+
+        return False
+
+    @staticmethod
+    def _extract_primary_path(args: dict[str, Any]) -> str | None:
+        for key in ("file_path", "path", "filepath", "file", "filename", "directory"):
+            value = args.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _same_parent_directory(left: str, right: str) -> bool:
+        try:
+            return Path(left).parent == Path(right).parent
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def _normalize_command(cmd: str) -> str:
