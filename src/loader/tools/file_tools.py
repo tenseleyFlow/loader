@@ -13,6 +13,7 @@ from .fs_safety import (
     ensure_safe_to_read,
     ensure_safe_to_write,
     make_structured_patch,
+    parse_unified_diff_patch,
     resolve_workspace_path,
 )
 
@@ -447,7 +448,8 @@ class PatchTool(Tool):
     def description(self) -> str:
         return (
             "Apply structured patch hunks to a file. Prefer this for larger "
-            "or multi-line edits where exact old/new string replacement is brittle."
+            "or multi-line edits where exact old/new string replacement is brittle. "
+            "A raw unified diff string is also accepted via `patch`."
         )
 
     @property
@@ -483,8 +485,15 @@ class PatchTool(Tool):
                         ],
                     },
                 },
+                "patch": {
+                    "type": "string",
+                    "description": (
+                        "Optional unified diff patch string. Loader will parse this "
+                        "into structured hunks when possible."
+                    ),
+                },
             },
-            "required": ["file_path", "hunks"],
+            "required": ["file_path"],
         }
 
     @property
@@ -505,7 +514,8 @@ class PatchTool(Tool):
     async def execute(
         self,
         file_path: str,
-        hunks: list[dict[str, Any]],
+        hunks: list[dict[str, Any]] | None = None,
+        patch: str | None = None,
         **kwargs: Any,
     ) -> ToolResult:
         kwargs.pop("_skip_confirmation", None)
@@ -544,13 +554,20 @@ class PatchTool(Tool):
             ensure_safe_to_read(path)
             original_content = await asyncio.to_thread(path.read_text)
             original_lines = original_content.splitlines()
-            parsed_hunks = [
-                StructuredPatchHunk.from_dict_with_original(
-                    hunk,
-                    original_lines=original_lines,
-                )
-                for hunk in hunks
-            ]
+            raw_patch = patch or kwargs.get("diff") or kwargs.get("patch_text")
+            parsed_hunks: list[StructuredPatchHunk]
+            if hunks:
+                parsed_hunks = [
+                    StructuredPatchHunk.from_dict_with_original(
+                        hunk,
+                        original_lines=original_lines,
+                    )
+                    for hunk in hunks
+                ]
+            elif isinstance(raw_patch, str) and raw_patch.strip():
+                parsed_hunks = parse_unified_diff_patch(raw_patch)
+            else:
+                parsed_hunks = []
             if not parsed_hunks:
                 raise ValueError("hunks must not be empty")
             updated_content = apply_structured_patch(original_content, parsed_hunks)

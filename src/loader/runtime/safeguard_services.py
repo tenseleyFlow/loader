@@ -76,6 +76,11 @@ class ActionTracker:
         sig = str(hash(str(hunks)))
         return sig in self._files_edited.get(norm_path, [])
 
+    def would_duplicate_raw_patch(self, file_path: str, patch_text: str) -> bool:
+        norm_path = self._normalize_path(file_path)
+        sig = str(hash(patch_text))
+        return sig in self._files_edited.get(norm_path, [])
+
     def would_duplicate_command(self, command: str) -> bool:
         norm_cmd = self._normalize_command(command)
         return norm_cmd in self._commands_run
@@ -123,8 +128,12 @@ class ActionTracker:
         elif tool_name == "patch":
             file_path = arguments.get("file_path", "")
             hunks = arguments.get("hunks", [])
-            if isinstance(hunks, list) and self.would_duplicate_patch(file_path, hunks):
+            raw_patch = arguments.get("patch") or arguments.get("diff") or arguments.get("patch_text")
+            if isinstance(hunks, list) and hunks and self.would_duplicate_patch(file_path, hunks):
                 return True, f"Same patch already applied to: {file_path}"
+            if isinstance(raw_patch, str) and raw_patch.strip():
+                if self.would_duplicate_raw_patch(file_path, raw_patch):
+                    return True, f"Same patch already applied to: {file_path}"
 
         elif tool_name == "read":
             read_key = self._make_read_key(arguments)
@@ -135,7 +144,8 @@ class ActionTracker:
                     (
                         "Already read "
                         f"{str(arguments.get('file_path', '')).strip()} "
-                        "recently without any intervening changes"
+                        "recently without any intervening changes; "
+                        "reuse the earlier read result instead of rereading"
                     ),
                     repeat_threshold=self.READ_REPEAT_THRESHOLD,
                 )
@@ -148,7 +158,10 @@ class ActionTracker:
                 duplicate, reason = self._check_recent_observation(
                     self._recent_searches,
                     observation_key,
-                    "Already ran the same search recently without any intervening changes",
+                    (
+                        "Already ran the same search recently without any intervening "
+                        "changes; reuse the earlier search result instead of rerunning it"
+                    ),
                     repeat_threshold=self.SEARCH_REPEAT_THRESHOLD,
                 )
                 if duplicate:
@@ -160,7 +173,10 @@ class ActionTracker:
                 duplicate, reason = self._check_recent_observation(
                     self._recent_bash_observations,
                     self._normalize_command(command),
-                    "Already ran the same read-only shell probe recently without any intervening changes",
+                    (
+                        "Already ran the same read-only shell probe recently without any "
+                        "intervening changes; reuse the earlier shell output instead of rerunning it"
+                    ),
                     repeat_threshold=self.BASH_OBSERVATION_REPEAT_THRESHOLD,
                 )
                 if duplicate:
@@ -196,7 +212,11 @@ class ActionTracker:
             file_path = arguments.get("file_path", "")
             hunks = arguments.get("hunks", [])
             if file_path:
-                self.record_edit(file_path, str(hunks), "structured_patch")
+                raw_patch = arguments.get("patch") or arguments.get("diff") or arguments.get("patch_text")
+                if isinstance(hunks, list) and hunks:
+                    self.record_edit(file_path, str(hunks), "structured_patch")
+                elif isinstance(raw_patch, str) and raw_patch.strip():
+                    self.record_edit(file_path, raw_patch, "raw_patch")
                 self._note_mutation()
 
         elif tool_name == "read":
@@ -592,6 +612,7 @@ class PreActionValidator:
     def _validate_patch(self, arguments: dict) -> ValidationResult:
         file_path = arguments.get("file_path", "")
         hunks = arguments.get("hunks", [])
+        raw_patch = arguments.get("patch") or arguments.get("diff") or arguments.get("patch_text")
 
         if not file_path or not str(file_path).strip():
             return ValidationResult(
@@ -605,11 +626,13 @@ class PreActionValidator:
         if not path_result.valid:
             return path_result
 
-        if not isinstance(hunks, list) or not hunks:
+        has_hunks = isinstance(hunks, list) and bool(hunks)
+        has_raw_patch = isinstance(raw_patch, str) and bool(raw_patch.strip())
+        if not has_hunks and not has_raw_patch:
             return ValidationResult(
                 valid=False,
                 reason="Patch hunks are missing",
-                suggestion="Provide one or more structured patch hunks",
+                suggestion="Provide structured patch hunks or a unified diff patch string",
                 severity="error",
             )
 

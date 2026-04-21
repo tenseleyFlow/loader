@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from loader.llm.base import Message, Role
+from loader.llm.base import Message, Role, ToolCall
 from loader.runtime.completion_policy import CompletionPolicy
 from loader.runtime.context import RuntimeContext
 from loader.runtime.dod import VerificationEvidence, create_definition_of_done
@@ -24,6 +24,7 @@ from loader.runtime.task_completion import (
     detect_premature_completion,
     get_continuation_prompt,
 )
+from loader.runtime.workflow import advance_todos_from_tool_call, sync_todos_to_definition_of_done
 from loader.runtime.verification_observations import (
     VerificationObservationStatus,
     verification_attempt_id,
@@ -336,6 +337,78 @@ def test_completion_assessment_attaches_typed_verification_provenance() -> None:
         EvidenceProvenanceStatus.CONTRADICTS.value
     ]
     assert assessment.evidence_provenance[0].summary == "verification failed for `pytest -q`"
+
+
+def test_completion_assessment_uses_advanced_todo_progress_for_next_step() -> None:
+    dod = create_definition_of_done("Fix the chapter links in index.html.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the current index.html file to understand its structure",
+                "active_form": "Working on: First, examine the current index.html file to understand its structure",
+                "status": "pending",
+            },
+            {
+                "content": "List and read all HTML files in the chapters directory to extract chapter information",
+                "active_form": "Working on: List and read all HTML files in the chapters directory to extract chapter information",
+                "status": "pending",
+            },
+            {
+                "content": "Parse chapter titles from each HTML file",
+                "active_form": "Working on: Parse chapter titles from each HTML file",
+                "status": "pending",
+            },
+            {
+                "content": "Update index.html with correct chapter links and titles",
+                "active_form": "Working on: Update index.html with correct chapter links and titles",
+                "status": "pending",
+            },
+        ],
+    )
+    advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="read-index",
+            name="read",
+            arguments={"file_path": "/tmp/fortran/index.html"},
+        ),
+    )
+    advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="glob-chapters",
+            name="glob",
+            arguments={"path": "/tmp/fortran/chapters", "pattern": "*.html"},
+        ),
+    )
+    advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="read-chapter",
+            name="read",
+            arguments={"file_path": "/tmp/fortran/chapters/01-introduction.html"},
+        ),
+    )
+
+    assessment = assess_completion_follow_through_with_provenance(
+        task="Update /tmp/fortran/index.html so every chapter link is correct.",
+        response="I'll update the index.html file with the correct chapter links and titles.",
+        actions_taken=[
+            "read: {'file_path': '/tmp/fortran/index.html'}",
+            "glob: {'path': '/tmp/fortran/chapters', 'pattern': '*.html'}",
+            "read: {'file_path': '/tmp/fortran/chapters/01-introduction.html'}",
+        ],
+        dod=dod,
+    )
+
+    assert assessment.check.missing_evidence[0] == (
+        "completion of tracked work items "
+        "(Update index.html with correct chapter links and titles)"
+    )
+    assert assessment.check.suggested_next_steps[0] == (
+        "Complete the tracked item: Update index.html with correct chapter links and titles"
+    )
 
 
 @pytest.mark.asyncio

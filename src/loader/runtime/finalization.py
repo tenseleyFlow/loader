@@ -231,6 +231,14 @@ class TurnFinalizer:
                 project_root=self.context.project_root,
                 task_statement=dod.task_statement,
             )
+        else:
+            for command in derive_verification_commands(
+                dod,
+                project_root=self.context.project_root,
+                task_statement=dod.task_statement,
+            ):
+                if command not in dod.verification_commands:
+                    dod.verification_commands.append(command)
 
         await self.set_workflow_mode(
             ModeDecision.transition(

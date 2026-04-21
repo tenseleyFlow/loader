@@ -349,10 +349,72 @@ async def test_tool_batch_recovery_controller_includes_known_state_for_missing_f
 
     assert follow_up is not None
     assert "## CONTINUE FROM KNOWN STATE" in follow_up.content
+    assert "apply the fix using confirmed findings" in follow_up.content
+    assert "## ACTION BIAS FOR THIS RECOVERY" in follow_up.content
+    assert "Prefer edit/write/patch on the target file" in follow_up.content
     assert "04-variables.html" in follow_up.content
     assert "02-basic-syntax.html -> 02-setup.html" in follow_up.content
     assert "`~/Loader/guides/fortran/index.html`" in follow_up.content
     assert any(event.type == "recovery" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_suggests_known_sibling_files(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(tool_name: str, tool_args: dict, context: str) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    messages = [
+        Message(
+            role=Role.TOOL,
+            content=(
+                "Observation [glob]: Result: "
+                "/private/tmp/fortran-qwen-recovery-check/chapters/01-introduction.html\n"
+                "/private/tmp/fortran-qwen-recovery-check/chapters/02-setup.html\n"
+                "/private/tmp/fortran-qwen-recovery-check/chapters/03-basics.html\n"
+                "/private/tmp/fortran-qwen-recovery-check/chapters/04-variables.html\n"
+                "/private/tmp/fortran-qwen-recovery-check/chapters/05-input-output.html"
+            ),
+            tool_results=[],
+        ),
+    ]
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=messages,
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="read-missing",
+        name="read",
+        arguments={"file_path": "/tmp/fortran-qwen-recovery-check/chapters/04-data-types.html"},
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="File not found: /tmp/fortran-qwen-recovery-check/chapters/04-data-types.html",
+        is_error=True,
+    )
+
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=emit,
+    )
+
+    assert follow_up is not None
+    assert "## LIKELY FILE CANDIDATES" in follow_up.content
+    assert "`04-variables.html`" in follow_up.content
+    assert "instead of retrying the missing path" in follow_up.content
 
 
 @pytest.mark.asyncio

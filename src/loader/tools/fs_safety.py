@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import re
 
 MAX_READ_SIZE = 10 * 1024 * 1024
 MAX_WRITE_SIZE = 10 * 1024 * 1024
@@ -233,3 +234,64 @@ def _expect_patch_line(
             "structured patch context mismatch: "
             f"expected {expected!r}, found {actual!r}"
         )
+
+
+_UNIFIED_DIFF_HUNK_RE = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@"
+)
+
+
+def parse_unified_diff_patch(patch_text: str) -> list[StructuredPatchHunk]:
+    """Parse a unified diff string into structured patch hunks."""
+
+    if not str(patch_text).strip():
+        raise ValueError("patch text is empty")
+
+    hunks: list[StructuredPatchHunk] = []
+    current_hunk: StructuredPatchHunk | None = None
+
+    for raw_line in str(patch_text).splitlines():
+        if raw_line.startswith(("--- ", "+++ ")):
+            continue
+        if raw_line.startswith("@@"):
+            match = _UNIFIED_DIFF_HUNK_RE.match(raw_line)
+            if match is None:
+                raise ValueError(
+                    "patch text contains an invalid unified-diff hunk header"
+                )
+            if current_hunk is not None:
+                hunks.append(current_hunk)
+            current_hunk = StructuredPatchHunk(
+                old_start=int(match.group("old_start")),
+                old_lines=int(match.group("old_lines") or 1),
+                new_start=int(match.group("new_start")),
+                new_lines=int(match.group("new_lines") or 1),
+                lines=[],
+            )
+            continue
+
+        if raw_line == r"\ No newline at end of file":
+            continue
+
+        if current_hunk is None:
+            if not raw_line.strip():
+                continue
+            raise ValueError(
+                "patch text must include at least one unified-diff hunk header"
+            )
+
+        prefix = raw_line[:1]
+        if prefix not in {" ", "+", "-"}:
+            raise ValueError(
+                "patch text contains a diff line without a valid prefix"
+            )
+        current_hunk.lines.append(raw_line)
+
+    if current_hunk is not None:
+        hunks.append(current_hunk)
+
+    if not hunks:
+        raise ValueError("patch text must include at least one unified-diff hunk")
+
+    return hunks

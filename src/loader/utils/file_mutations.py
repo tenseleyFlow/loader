@@ -11,7 +11,11 @@ from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
-from ..tools.fs_safety import StructuredPatchHunk, make_structured_patch
+from ..tools.fs_safety import (
+    StructuredPatchHunk,
+    make_structured_patch,
+    parse_unified_diff_patch,
+)
 
 FILE_MUTATION_TOOLS = {"write", "edit", "patch"}
 DIFF_TRUNCATION_NOTICE = "truncated for display; full result preserved in session"
@@ -98,6 +102,8 @@ def build_file_mutation_preview(
         structured_patch = _coerce_patch_hunks(info.get("hunks")) or _coerce_patch_hunks(
             args.get("hunks")
         )
+    if not structured_patch and tool_name == "patch":
+        structured_patch = _coerce_raw_patch_hunks(info) or _coerce_raw_patch_hunks(args)
 
     old_text = _extract_old_text(tool_name, info) or _extract_old_text(tool_name, args)
     new_text = _extract_new_text(tool_name, info) or _extract_new_text(tool_name, args)
@@ -190,6 +196,18 @@ def _coerce_patch_hunks(value: Any) -> list[StructuredPatchHunk]:
             except (TypeError, ValueError):
                 continue
     return hunks
+
+
+def _coerce_raw_patch_hunks(payload: dict[str, Any]) -> list[StructuredPatchHunk]:
+    for key in ("patch", "diff", "patch_text"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            return parse_unified_diff_patch(value)
+        except ValueError:
+            continue
+    return []
 
 
 def _extract_file_path(payload: dict[str, Any]) -> str | None:

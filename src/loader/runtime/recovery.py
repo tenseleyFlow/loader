@@ -690,15 +690,17 @@ The command failed. You MUST analyze the error and take a DIFFERENT action.
 {hints}
 
 ## CRITICAL RULES:
-1. **INVESTIGATE FIRST** - Read config files, list directories, check what exists
-2. **DO NOT** just retry the same command with slight variations
-3. **DO NOT** try `npm start` then `npm run start` - these are the same thing!
-4. **READ THE ERROR** - It usually tells you exactly what's wrong
-5. If the error says "missing script: start", read package.json to see what scripts exist
+1. Start from the error and the state you already know
+2. Investigate only if a specific fact is still missing
+3. If you already have enough confirmed evidence, apply the fix instead of rereading the same files
+4. **DO NOT** just retry the same command with slight variations
+5. **DO NOT** try `npm start` then `npm run start` - these are the same thing!
+6. **READ THE ERROR** - It usually tells you exactly what's wrong
+7. If the error says "missing script: start", read package.json to see what scripts exist
 
 ## Current attempt: {attempt_count}/{max_retries}
 
-**Your next action should gather information OR try a fundamentally different approach.**
+**Your next action should either gather the missing information OR apply the fix using confirmed findings.**
 What will you do?"""
 
 

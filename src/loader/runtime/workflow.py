@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
+from ..llm.base import ToolCall
 from .clarify_grounding import ClarifyGrounding
 from .dod import slugify
 from .workflow_policy import (
@@ -43,6 +44,7 @@ __all__ = [
     "WorkflowSignalPacket",
     "WorkflowTimelineEntry",
     "WorkflowTimelineEntryKind",
+    "advance_todos_from_tool_call",
     "build_execute_bridge",
     "enrich_clarify_brief_with_grounding",
     "extract_verification_commands_from_markdown",
@@ -67,6 +69,64 @@ _GENERIC_CONSTRAINTS = {
 _GENERIC_ASSUMPTIONS = {
     "Unspecified details stay unchanged unless evidence says otherwise.",
 }
+_SPECIAL_TODO_ITEMS = {
+    "Complete the requested work",
+    "Collect verification evidence",
+}
+_READ_STEP_HINTS = (
+    "read",
+    "examine",
+    "inspect",
+    "review",
+    "check",
+    "look at",
+    "look through",
+    "open",
+    "understand",
+    "study",
+)
+_SEARCH_STEP_HINTS = (
+    "list",
+    "find",
+    "search",
+    "scan",
+    "discover",
+    "locate",
+    "enumerate",
+    "gather",
+)
+_PARSE_STEP_HINTS = (
+    "parse",
+    "extract",
+    "identify",
+    "map",
+    "determine",
+)
+_MUTATION_STEP_HINTS = (
+    "update",
+    "edit",
+    "write",
+    "fix",
+    "modify",
+    "change",
+    "patch",
+    "replace",
+    "correct",
+    "rewrite",
+)
+_VERIFY_STEP_HINTS = (
+    "verify",
+    "validation",
+    "validate",
+    "test",
+    "confirm",
+    "check",
+)
+_SHELL_COMMAND_START = re.compile(
+    r"(?<![\w/.-])("
+    r"ls|grep|pytest|uv|python3?|html5validator|cargo|npm|node|mypy|ruff|find|git|cat|sed|head|tail"
+    r")\b"
+)
 
 _SECTION_ALIASES = {
     "task statement": "task_statement",
@@ -486,6 +546,116 @@ def sync_todos_to_definition_of_done(
     dod.completed_items = list(dict.fromkeys(completed + special_completed))
 
 
+def advance_todos_from_tool_call(dod, tool_call: ToolCall) -> bool:
+    """Advance the best-matching pending todo from a successful tool call."""
+
+    best_index: int | None = None
+    best_score = 0
+
+    for index, item in enumerate(dod.pending_items):
+        label = item.strip()
+        if not label or label in _SPECIAL_TODO_ITEMS:
+            continue
+        score = _todo_progress_score(label, tool_call)
+        if score > best_score:
+            best_index = index
+            best_score = score
+
+    if best_index is None or best_score <= 0:
+        return False
+
+    completed = dod.pending_items.pop(best_index)
+    if completed not in dod.completed_items:
+        dod.completed_items.append(completed)
+    return True
+
+
+def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
+    text = item.lower()
+    name = tool_call.name
+    file_path = str(tool_call.arguments.get("file_path", "")).strip().lower()
+    path = str(tool_call.arguments.get("path", "")).strip().lower()
+    pattern = str(tool_call.arguments.get("pattern", "")).strip().lower()
+    command = str(tool_call.arguments.get("command", "")).strip().lower()
+    combined = " ".join(part for part in (file_path, path, pattern, command) if part)
+
+    path_hint = file_path or path
+    basename = Path(path_hint).name.lower() if path_hint else ""
+    parent = Path(path_hint).parent.name.lower() if path_hint else ""
+
+    score = 0
+    if basename and basename in text:
+        score += 3
+    if parent and parent not in {"", "."} and parent in text:
+        score += 2
+    if "index" in text and "index" in combined:
+        score += 2
+    if "chapter" in text and ("chapter" in basename or "chapters" in combined):
+        score += 1
+    if "html" in text and ".html" in combined:
+        score += 1
+
+    if name == "read":
+        if _contains_any(text, _READ_STEP_HINTS):
+            score += 2
+        if _contains_any(text, _PARSE_STEP_HINTS) and ".html" in combined:
+            score += 1
+    elif name in {"glob", "grep"}:
+        if _contains_any(text, _SEARCH_STEP_HINTS):
+            score += 2
+        if name == "glob" and _contains_any(text, _READ_STEP_HINTS) and ".html" in combined:
+            score += 1
+    elif name == "bash":
+        if _looks_like_verification_command(command):
+            if _contains_any(text, _VERIFY_STEP_HINTS):
+                score += 3
+        elif _looks_like_search_command(command):
+            if _contains_any(text, _SEARCH_STEP_HINTS):
+                score += 2
+        elif _looks_like_read_command(command):
+            if _contains_any(text, _READ_STEP_HINTS):
+                score += 2
+    elif name in {"write", "edit", "patch"}:
+        if _contains_any(text, _MUTATION_STEP_HINTS):
+            score += 3
+
+    if name in {"write", "edit", "patch"} and _contains_any(text, _VERIFY_STEP_HINTS):
+        return 0
+    return score
+
+
+def _contains_any(text: str, candidates: tuple[str, ...]) -> bool:
+    return any(candidate in text for candidate in candidates)
+
+
+def _looks_like_search_command(command: str) -> bool:
+    return any(token in command for token in (" ls", "ls ", "find ", "rg ", "grep ", "glob "))
+
+
+def _looks_like_read_command(command: str) -> bool:
+    return any(token in command for token in ("cat ", "sed ", "head ", "tail "))
+
+
+def _looks_like_verification_command(command: str) -> bool:
+    return any(
+        token in command
+        for token in (
+            "pytest",
+            "unittest",
+            " test",
+            " check",
+            " verify",
+            "html5validator",
+            "mypy",
+            "ruff",
+            "lint",
+            "grep ",
+            "diff ",
+            "cmp ",
+        )
+    )
+
+
 def extract_verification_commands_from_markdown(markdown: str) -> list[str]:
     """Extract verification commands from a verification-plan markdown document."""
 
@@ -686,9 +856,59 @@ def _mark_explicit_section(brief: ClarifyBrief, section: str) -> None:
 def _extract_commands(items: list[str]) -> list[str]:
     commands: list[str] = []
     for item in items:
-        match = re.match(r"^`(.+)`$", item)
-        commands.append((match.group(1) if match else item).strip())
+        text = item.strip()
+        if not text:
+            continue
+
+        # Code fences often contain shell comments plus the actual command lines.
+        if "```" in text:
+            text = text.replace("```bash", "```").replace("```sh", "```")
+            if "\n" not in text:
+                commands.extend(_extract_collapsed_shell_commands(text))
+                continue
+
+        lines = text.splitlines() if "\n" in text or "```" in text else [text]
+        for line in lines:
+            candidate = line.strip()
+            if not candidate or candidate.startswith("```"):
+                continue
+            candidate = re.sub(r"^-\s+", "", candidate)
+            match = re.match(r"^`(.+)`$", candidate)
+            candidate = (match.group(1) if match else candidate).strip()
+            if candidate.startswith("#"):
+                candidate = _extract_shell_command_from_text(candidate)
+                if not candidate:
+                    continue
+            if candidate:
+                commands.append(candidate)
     return [command for command in commands if command]
+
+
+def _extract_collapsed_shell_commands(text: str) -> list[str]:
+    stripped = re.sub(r"```(?:\w+)?", "", text).strip()
+    if not stripped:
+        return []
+
+    matches = list(_SHELL_COMMAND_START.finditer(stripped))
+    if not matches:
+        extracted = _extract_shell_command_from_text(stripped)
+        return [extracted] if extracted else []
+
+    commands: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(stripped)
+        candidate = stripped[start:end].strip()
+        if candidate:
+            commands.append(candidate)
+    return commands
+
+
+def _extract_shell_command_from_text(text: str) -> str:
+    match = _SHELL_COMMAND_START.search(text)
+    if match is None:
+        return ""
+    return text[match.start():].strip()
 
 
 def _has_concrete_anchor(task: str) -> bool:

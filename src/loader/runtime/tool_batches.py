@@ -31,6 +31,8 @@ from .verification_observations import (
     VerificationObservationStatus,
 )
 from .workflow import sync_todos_to_definition_of_done
+from .workflow import advance_todos_from_tool_call
+from .compaction import infer_preferred_next_step
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = (
@@ -215,6 +217,8 @@ class ToolBatchRunner:
             # otherwise the model operates blind and loops.
             self.context.session.append(outcome.message)
             summary.tool_result_messages.append(outcome.message)
+            if outcome.state == ToolExecutionState.DUPLICATE:
+                self._queue_duplicate_observation_nudge(tool_call)
 
             should_continue = await self.verification_gate.should_continue(
                 tool_call=tool_call,
@@ -246,6 +250,43 @@ class ToolBatchRunner:
             result.final_response = final_response
 
         return result
+
+    def _queue_duplicate_observation_nudge(self, tool_call: ToolCall) -> None:
+        """Queue a concrete next-step nudge after duplicate observational actions."""
+
+        if tool_call.name not in {"read", "glob", "grep", "bash"}:
+            return
+
+        current_task = getattr(self.context.session, "current_task", None)
+        preferred_next_step = infer_preferred_next_step(
+            self.context.session.messages,
+            current_task=current_task,
+        )
+        if preferred_next_step:
+            self.context.queue_steering_message(
+                "Reuse the earlier observation instead of repeating it. "
+                f"{preferred_next_step} "
+                "Only gather more evidence if a specific filename, href, or title is still unknown."
+            )
+            return
+
+        target_path = str(
+            tool_call.arguments.get("file_path")
+            or tool_call.arguments.get("path")
+            or ""
+        ).strip()
+        if target_path:
+            self.context.queue_steering_message(
+                "Reuse the earlier observation instead of repeating it. "
+                f"Use the current contents of `{target_path}` and take a different next step. "
+                "Only gather more evidence if a specific filename, href, or title is still unknown."
+            )
+            return
+
+        self.context.queue_steering_message(
+            "Reuse the earlier observation instead of repeating it. "
+            "Choose a different next step that makes progress."
+        )
 
     async def _record_successful_execution(
         self,
@@ -279,6 +320,8 @@ class ToolBatchRunner:
             new_todos = outcome.registry_result.metadata.get("new_todos", [])
             if isinstance(new_todos, list):
                 sync_todos_to_definition_of_done(dod, new_todos)
+        else:
+            advance_todos_from_tool_call(dod, tool_call)
         self.dod_store.save(dod)
         recovery_context = self.context.recovery_context
         if recovery_context is not None:

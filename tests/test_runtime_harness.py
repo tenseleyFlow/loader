@@ -902,6 +902,46 @@ async def test_raw_json_patch_tool_call_fallback(temp_dir: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_native_patch_tool_accepts_unified_diff_string(temp_dir: Path) -> None:
+    target = temp_dir / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="patch-1",
+                    name="patch",
+                    arguments={
+                        "file_path": str(target),
+                        "patch": (
+                            "--- a/sample.txt\n"
+                            "+++ b/sample.txt\n"
+                            "@@ -2,1 +2,1 @@\n"
+                            "-beta\n"
+                            "+beta updated\n"
+                        ),
+                    },
+                ),
+                content="I'll patch the file directly.",
+            ),
+            final_response("Patched sample.txt."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Update sample.txt.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["patch"]
+    assert target.read_text() == "alpha\nbeta updated\ngamma\n"
+    assert "Patched sample.txt." in run.response
+
+
+@pytest.mark.asyncio
 async def test_raw_json_ask_user_question_tool_call_fallback(temp_dir: Path) -> None:
     raw_json = json.dumps(
         {
@@ -1764,6 +1804,66 @@ async def test_duplicate_read_is_skipped_without_intervening_mutation(
         for message in messages
     )
     assert "existing file contents" in run.response
+
+
+@pytest.mark.asyncio
+async def test_duplicate_observation_queues_steering_to_reuse_prior_evidence(
+    temp_dir: Path,
+) -> None:
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text("<h1>Chapter 1: Introduction to Fortran</h1>\n")
+    (chapters / "02-setup.html").write_text("<h1>Chapter 2: Setting Up Fortran</h1>\n")
+    index_file = temp_dir / "index.html"
+    index_file.write_text("broken table of contents\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="glob-1",
+                    name="glob",
+                    arguments={"path": str(chapters), "pattern": "*.html"},
+                ),
+                content="I'll inspect the chapter inventory first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"file_path": str(index_file)},
+                ),
+                content="I'll inspect the index next.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-2",
+                    name="read",
+                    arguments={"file_path": str(index_file)},
+                ),
+                content="I'll reopen the index.",
+            ),
+            final_response("I'll reuse the earlier evidence and patch the index next."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Update index.html so the table of contents links are correct.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    messages = tool_result_messages(run)
+    steering_messages = [
+        event.content
+        for event in run.events
+        if event.type == "steering" and event.content
+    ]
+
+    assert any("reuse the earlier read result instead of rereading" in message for message in messages)
+    assert any("Reuse the earlier observation instead of repeating it." in message for message in steering_messages)
+    assert any("index.html" in message for message in steering_messages)
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from loader.llm.base import ToolCall
 from loader.runtime.clarify_grounding import ClarifyGrounding, ClarifyRepoFact
 from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.workflow import (
@@ -12,6 +13,7 @@ from loader.runtime.workflow import (
     PlanningArtifacts,
     WorkflowArtifactStore,
     WorkflowMode,
+    advance_todos_from_tool_call,
     build_execute_bridge,
     enrich_clarify_brief_with_grounding,
     extract_verification_commands_from_markdown,
@@ -183,6 +185,26 @@ def test_planning_artifacts_recover_embedded_verification_from_legacy_separator(
     ]
 
 
+def test_extract_verification_commands_from_markdown_splits_code_blocks() -> None:
+    markdown = "\n".join(
+        [
+            "# Verification Plan",
+            "",
+            "## Verification Commands",
+            "```bash",
+            "# Check chapter files",
+            "ls chapters",
+            "grep -n \"href=\" index.html",
+            "```",
+        ]
+    )
+
+    assert extract_verification_commands_from_markdown(markdown) == [
+        "ls chapters",
+        'grep -n "href=" index.html',
+    ]
+
+
 def test_workflow_artifact_store_and_bridge_round_trip(tmp_path: Path) -> None:
     store = WorkflowArtifactStore(tmp_path)
     brief = ClarifyBrief.fallback(
@@ -250,3 +272,93 @@ def test_sync_todos_to_definition_of_done_preserves_runtime_items() -> None:
     assert "Writing router" in dod.pending_items
     assert "Collect verification evidence" in dod.pending_items
     assert "Update tests" in dod.completed_items
+
+
+def test_advance_todos_from_tool_call_tracks_plan_progress() -> None:
+    dod = create_definition_of_done("Fix the chapter links in index.html.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the current index.html file to understand its structure",
+                "active_form": "Working on: First, examine the current index.html file to understand its structure",
+                "status": "pending",
+            },
+            {
+                "content": "List and read all HTML files in the chapters directory to extract chapter information",
+                "active_form": "Working on: List and read all HTML files in the chapters directory to extract chapter information",
+                "status": "pending",
+            },
+            {
+                "content": "Parse chapter titles from each HTML file",
+                "active_form": "Working on: Parse chapter titles from each HTML file",
+                "status": "pending",
+            },
+            {
+                "content": "Update index.html with correct chapter links and titles",
+                "active_form": "Working on: Update index.html with correct chapter links and titles",
+                "status": "pending",
+            },
+            {
+                "content": "Verify the updated index.html file is properly formatted",
+                "active_form": "Working on: Verify the updated index.html file is properly formatted",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="read-index",
+            name="read",
+            arguments={"file_path": "/tmp/fortran/index.html"},
+        ),
+    )
+    assert (
+        "First, examine the current index.html file to understand its structure"
+        in dod.completed_items
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="glob-chapters",
+            name="glob",
+            arguments={"path": "/tmp/fortran/chapters", "pattern": "*.html"},
+        ),
+    )
+    assert (
+        "List and read all HTML files in the chapters directory to extract chapter information"
+        in dod.completed_items
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="read-chapter",
+            name="read",
+            arguments={"file_path": "/tmp/fortran/chapters/01-introduction.html"},
+        ),
+    )
+    assert "Parse chapter titles from each HTML file" in dod.completed_items
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="patch-index",
+            name="patch",
+            arguments={"file_path": "/tmp/fortran/index.html", "hunks": []},
+        ),
+    )
+    assert "Update index.html with correct chapter links and titles" in dod.completed_items
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="verify-index",
+            name="bash",
+            arguments={"command": "grep -o 'href=\"[^\"]*\"' /tmp/fortran/index.html"},
+        ),
+    )
+    assert "Verify the updated index.html file is properly formatted" in dod.completed_items

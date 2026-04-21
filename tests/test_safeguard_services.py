@@ -158,9 +158,23 @@ def test_pre_action_validator_blocks_patch_without_hunks() -> None:
     assert result == ValidationResult(
         valid=False,
         reason="Patch hunks are missing",
-        suggestion="Provide one or more structured patch hunks",
+        suggestion="Provide structured patch hunks or a unified diff patch string",
         severity="error",
     )
+
+
+def test_pre_action_validator_allows_patch_string_without_hunks() -> None:
+    validator = PreActionValidator()
+
+    result = validator.validate(
+        "patch",
+        {
+            "file_path": "notes.txt",
+            "patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+        },
+    )
+
+    assert result == ValidationResult(valid=True)
 
 
 def test_runtime_safeguards_wrap_runtime_owned_services() -> None:

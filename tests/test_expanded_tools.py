@@ -88,6 +88,43 @@ async def test_patch_tool_accepts_replacement_block_hunks(temp_dir: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_patch_tool_accepts_unified_diff_string(temp_dir: Path) -> None:
+    target = temp_dir / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n")
+    tool = PatchTool(workspace_root=temp_dir)
+
+    result = await tool.execute(
+        file_path=str(target),
+        patch=(
+            "--- a/sample.txt\n"
+            "+++ b/sample.txt\n"
+            "@@ -2,1 +2,1 @@\n"
+            "-beta\n"
+            "+beta updated\n"
+        ),
+    )
+
+    assert result.is_error is False
+    assert target.read_text() == "alpha\nbeta updated\ngamma\n"
+    assert result.metadata["structured_patch"]
+
+
+@pytest.mark.asyncio
+async def test_patch_tool_rejects_invalid_unified_diff_string(temp_dir: Path) -> None:
+    target = temp_dir / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n")
+    tool = PatchTool(workspace_root=temp_dir)
+
+    result = await tool.execute(
+        file_path=str(target),
+        patch="--- a/sample.txt\n+++ b/sample.txt\n@@ ...\n",
+    )
+
+    assert result.is_error is True
+    assert "invalid unified-diff hunk header" in result.output
+
+
+@pytest.mark.asyncio
 async def test_git_tool_inspects_read_only_repo_state(temp_dir: Path) -> None:
     subprocess.run(["git", "init", "--quiet"], cwd=temp_dir, check=True)
     (temp_dir / "README.md").write_text("loader\n")

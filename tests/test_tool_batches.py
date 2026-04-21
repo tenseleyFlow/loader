@@ -540,6 +540,108 @@ async def test_tool_batch_runner_clears_recovery_context_after_successful_mutati
     assert context.recovery_context is None
 
 
+@pytest.mark.asyncio
+async def test_tool_batch_runner_queues_duplicate_observation_nudge(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    messages = [
+        Message(
+            role=Role.TOOL,
+            content=(
+                "Observation [glob]: Result: "
+                f"{temp_dir}/chapters/01-introduction.html\n"
+                f"{temp_dir}/chapters/02-setup.html\n"
+                f"{temp_dir}/chapters/03-basics.html"
+            ),
+            tool_results=[],
+        ),
+        Message(
+            role=Role.ASSISTANT,
+            content="I should update the index now.",
+            tool_calls=[
+                ToolCall(
+                    id="read-index",
+                    name="read",
+                    arguments={"file_path": str(temp_dir / 'index.html')},
+                )
+            ],
+        ),
+    ]
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=messages,
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.session.current_task = (
+        f"Update {temp_dir / 'index.html'} with the right chapter links."
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="read-dup",
+        name="read",
+        arguments={"file_path": str(temp_dir / "index.html")},
+    )
+    duplicate_message = (
+        "[Skipped - duplicate action: Already read "
+        f"{temp_dir / 'index.html'} recently without any intervening changes; "
+        "reuse the earlier read result instead of rereading]"
+    )
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.DUPLICATE,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=duplicate_message,
+                    result_content=duplicate_message,
+                ),
+                event_content=duplicate_message,
+                is_error=False,
+                result_output=duplicate_message,
+            )
+        ]
+    )
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=TurnSummary(final_response=""),
+        dod=create_definition_of_done("Fix the chapter links"),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(queued_messages) == 1
+    assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
+    assert "index.html" in queued_messages[0]
+
+
 async def _noop_emit(event: AgentEvent) -> None:
     return None
 

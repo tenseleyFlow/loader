@@ -113,6 +113,22 @@ class FakeExecutor:
         return self._outcomes.pop(0)
 
 
+class RecordingExecutor:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    async def execute_tool_call(self, tool_call: ToolCall, **_: object) -> ToolExecutionOutcome:
+        command = str(tool_call.arguments.get("command", ""))
+        self.commands.append(command)
+        return tool_outcome(
+            tool_call=tool_call,
+            output="ok",
+            is_error=False,
+            exit_code=0,
+            stdout="ok",
+        )
+
+
 def build_context(temp_dir: Path, session: FakeSession) -> RuntimeContext:
     registry = create_default_registry(temp_dir)
     registry.configure_workspace_root(temp_dir)
@@ -301,7 +317,6 @@ async def test_turn_finalizer_records_passed_verification_observation(
     )
     dod = create_definition_of_done("Update the runtime tests.")
     dod.mutating_actions.append("write")
-    dod.touched_files.append(str(temp_dir / "tests" / "test_runtime.py"))
     dod.verification_commands = ["uv run pytest -q"]
     summary = TurnSummary(final_response="")
     tool_call = ToolCall(
@@ -360,6 +375,59 @@ async def test_turn_finalizer_records_passed_verification_observation(
     assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
         VerificationObservationStatus.PASSED.value
     ]
+
+
+@pytest.mark.asyncio
+async def test_turn_finalizer_appends_runtime_semantic_verifier_to_planned_commands(
+    temp_dir: Path,
+) -> None:
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    index = temp_dir / "index.html"
+    index.write_text(
+        "\n".join(
+            [
+                '<ul class="chapter-list">',
+                '  <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>',
+                "</ul>",
+            ]
+        )
+    )
+
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    dod = create_definition_of_done(
+        "Update index.html so the table of contents links and chapter titles are correct."
+    )
+    dod.mutating_actions.append("edit")
+    dod.touched_files.append(str(index))
+    dod.verification_commands = ['grep -n "href=" index.html']
+    summary = TurnSummary(final_response="")
+    executor = RecordingExecutor()
+
+    async def capture(event) -> None:
+        return None
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="Updated the index.html links.",
+        emit=capture,
+        summary=summary,
+        executor=executor,  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is False
+    assert any(command == 'grep -n "href=" index.html' for command in executor.commands)
+    assert any(command.startswith("/usr/bin/python3 - <<'PY'") for command in executor.commands)
     assert (
         session.workflow_timeline[-1].verification_observations[0].attempt_id
         == "verification-attempt-1"
