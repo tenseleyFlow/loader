@@ -32,7 +32,15 @@ from .verification_observations import (
 )
 from .workflow import sync_todos_to_definition_of_done
 from .workflow import advance_todos_from_tool_call
-from .compaction import infer_preferred_next_step
+from .compaction import infer_preferred_next_step, summarize_confirmed_facts
+from .safeguard_services import (
+    build_html_toc_edit_call_template,
+    build_html_toc_replacement_block,
+    extract_html_toc_excerpt,
+    extract_shell_text_rewrite_target,
+    summarize_html_inventory,
+    validate_html_toc,
+)
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = (
@@ -70,6 +78,7 @@ class ToolBatchRunner:
         self.confidence_gate = confidence_gate or ToolBatchConfidenceGate(context)
         self.recovery_controller = recovery_controller or ToolBatchRecoveryController(context)
         self.verification_gate = verification_gate or ToolBatchVerificationGate(context)
+        self._inventory_hint_targets: set[str] = set()
 
     async def execute_batch(
         self,
@@ -143,6 +152,7 @@ class ToolBatchRunner:
                 emit_confirmation=emit_confirmation,
                 source=tool_source,
             )
+            executed_tool_call = outcome.tool_call
             if (
                 outcome.rollback_action is not None
                 and self.context.config.reasoning.show_rollback_plan
@@ -163,7 +173,7 @@ class ToolBatchRunner:
                 and self.context.config.auto_recover
             ):
                 recovery_result = await self.recovery_controller.build_follow_up(
-                    tool_call=tool_call,
+                    tool_call=executed_tool_call,
                     outcome=outcome,
                     emit=emit,
                 )
@@ -174,17 +184,21 @@ class ToolBatchRunner:
 
             if outcome.state == ToolExecutionState.EXECUTED and not outcome.is_error:
                 loop_response = await self._record_successful_execution(
-                    tool_call=tool_call,
+                    tool_call=executed_tool_call,
                     outcome=outcome,
                     dod=dod,
                     emit=emit,
                     summary=summary,
                 )
                 # Mark this tool's label as completed and emit live progress
-                label = _tool_call_label(tool_call)
+                label = _tool_call_label(executed_tool_call)
                 if label:
                     completed_labels.append(label)
                 await _emit_batch_todos()
+                self._annotate_verified_html_inventory(executed_tool_call, outcome)
+                self._queue_verified_html_inventory_nudge(executed_tool_call)
+                self._annotate_validated_html_toc_completion(executed_tool_call, outcome)
+                self._queue_validated_html_toc_completion_nudge(executed_tool_call)
                 if loop_response is not None:
                     result.halted = True
                     result.final_response = loop_response
@@ -199,7 +213,7 @@ class ToolBatchRunner:
                 AgentEvent(
                     type="tool_result",
                     content=outcome.event_content,
-                    tool_name=tool_call.name,
+                    tool_name=executed_tool_call.name,
                     tool_call_id=outcome.tool_call.id,
                     tool_metadata=(
                         outcome.registry_result.metadata
@@ -219,6 +233,9 @@ class ToolBatchRunner:
             summary.tool_result_messages.append(outcome.message)
             if outcome.state == ToolExecutionState.DUPLICATE:
                 self._queue_duplicate_observation_nudge(tool_call)
+            elif outcome.state == ToolExecutionState.BLOCKED:
+                self._queue_blocked_shell_rewrite_nudge(tool_call)
+                self._queue_blocked_html_edit_nudge(tool_call, outcome.event_content)
 
             should_continue = await self.verification_gate.should_continue(
                 tool_call=tool_call,
@@ -258,10 +275,23 @@ class ToolBatchRunner:
             return
 
         current_task = getattr(self.context.session, "current_task", None)
+        confirmed_facts = summarize_confirmed_facts(
+            self.context.session.messages,
+            max_items=2,
+        )
         preferred_next_step = infer_preferred_next_step(
             self.context.session.messages,
             current_task=current_task,
         )
+        if preferred_next_step and confirmed_facts:
+            self.context.queue_steering_message(
+                "Reuse the earlier observation instead of repeating it. "
+                f"Confirmed facts: {confirmed_facts}. "
+                f"{preferred_next_step} "
+                "Only gather more evidence if a specific filename, href, or title is still unknown."
+            )
+            return
+
         if preferred_next_step:
             self.context.queue_steering_message(
                 "Reuse the earlier observation instead of repeating it. "
@@ -287,6 +317,259 @@ class ToolBatchRunner:
             "Reuse the earlier observation instead of repeating it. "
             "Choose a different next step that makes progress."
         )
+
+    def _queue_blocked_shell_rewrite_nudge(self, tool_call: ToolCall) -> None:
+        """Steer the model back to file tools after a blocked shell text rewrite."""
+
+        if tool_call.name != "bash":
+            return
+
+        target = extract_shell_text_rewrite_target(
+            str(tool_call.arguments.get("command", ""))
+        )
+        if target is None:
+            return
+
+        current_task = getattr(self.context.session, "current_task", None)
+        confirmed_facts = summarize_confirmed_facts(
+            self.context.session.messages,
+            max_items=2,
+        )
+        preferred_next_step = infer_preferred_next_step(
+            self.context.session.messages,
+            current_task=current_task,
+        )
+
+        if preferred_next_step and confirmed_facts:
+            self.context.queue_steering_message(
+                "Use Loader's file tools for this text edit instead of a shell rewrite. "
+                f"Confirmed facts: {confirmed_facts}. "
+                f"{preferred_next_step} "
+                f"Target `{target}` with edit/patch/write rather than `bash`."
+            )
+            return
+
+        self.context.queue_steering_message(
+            "Use Loader's file tools for this text edit instead of a shell rewrite. "
+            f"Apply the change to `{target}` with edit/patch/write."
+        )
+
+    def _queue_blocked_html_edit_nudge(self, tool_call: ToolCall, event_content: str) -> None:
+        """Steer blocked TOC edits back to the confirmed chapter inventory."""
+
+        if tool_call.name not in {"edit", "patch"}:
+            return
+
+        target_path = str(tool_call.arguments.get("file_path", "")).strip()
+        if not target_path.endswith("index.html"):
+            return
+
+        current_task = getattr(self.context.session, "current_task", None)
+        confirmed_facts = summarize_confirmed_facts(
+            self.context.session.messages,
+            max_items=2,
+        )
+        preferred_next_step = infer_preferred_next_step(
+            self.context.session.messages,
+            current_task=current_task,
+        )
+        verified_inventory = summarize_html_inventory(target_path, limit=12)
+        current_excerpt = extract_html_toc_excerpt(target_path)
+        suggested_replacement = build_html_toc_replacement_block(target_path)
+        suggested_call = build_html_toc_edit_call_template(target_path)
+        excerpt_suffix = (
+            f"\nCurrent TOC block:\n{current_excerpt}"
+            if current_excerpt
+            else ""
+        )
+        replacement_suffix = (
+            f"\nSuggested replacement block:\n{suggested_replacement}"
+            if suggested_replacement
+            else ""
+        )
+        call_suffix = (
+            f"\nSuggested edit call:\n{suggested_call}"
+            if suggested_call
+            else ""
+        )
+
+        if preferred_next_step and confirmed_facts and verified_inventory:
+            self.context.queue_steering_message(
+                "Use the current target contents plus the verified sibling inventory instead of guessing. "
+                f"Confirmed facts: {confirmed_facts}. "
+                f"Known chapter inventory: {verified_inventory}. "
+                f"{preferred_next_step} "
+                "Apply those exact href/title pairs in `index.html`. "
+                "Do not rewrite the whole document. For `edit`, set `old_string` to the "
+                "current TOC block above exactly and set `new_string` to the suggested "
+                "replacement block below exactly."
+                f"{excerpt_suffix}"
+                f"{replacement_suffix}"
+                f"{call_suffix}"
+            )
+            return
+
+        if verified_inventory:
+            self.context.queue_steering_message(
+                "Use the current target contents plus the verified sibling inventory instead of guessing. "
+                f"Known chapter inventory: {verified_inventory}. "
+                "Apply those exact href/title pairs in `index.html`. "
+                "Do not rewrite the whole document. For `edit`, set `old_string` to the "
+                "current TOC block above exactly and set `new_string` to the suggested "
+                "replacement block below exactly."
+                f"{excerpt_suffix}"
+                f"{replacement_suffix}"
+                f"{call_suffix}"
+            )
+            return
+
+        self.context.queue_steering_message(
+            "Use the current target contents when retrying this `index.html` edit instead of guessing. "
+            f"{excerpt_suffix}".strip()
+        )
+
+    def _queue_verified_html_inventory_nudge(self, tool_call: ToolCall) -> None:
+        """Proactively hand off verified chapter inventory after sibling discovery."""
+
+        if tool_call.name != "glob":
+            return
+
+        chapters_path = str(tool_call.arguments.get("path", "")).strip()
+        if not chapters_path.endswith("chapters"):
+            return
+
+        index_path = str(Path(chapters_path).expanduser().parent / "index.html")
+        if index_path in self._inventory_hint_targets:
+            return
+
+        current_task = str(getattr(self.context.session, "current_task", "") or "").lower()
+        if not any(
+            hint in current_task
+            for hint in ("href", "link", "links", "table of contents", "chapter", "index.html")
+        ):
+            return
+
+        verified_inventory = summarize_html_inventory(index_path, limit=12)
+        if not verified_inventory:
+            return
+
+        self._inventory_hint_targets.add(index_path)
+        self.context.queue_steering_message(
+            "You already have the verified sibling inventory needed for this edit. "
+            f"Known chapter inventory: {verified_inventory}. "
+            f"Update `{index_path}` using those exact href/title pairs instead of rereading files "
+            "unless one specific title is still unknown."
+        )
+
+    def _annotate_verified_html_inventory(self, tool_call: ToolCall, outcome) -> None:
+        """Attach verified chapter inventory directly to a successful discovery result."""
+
+        if tool_call.name != "glob":
+            return
+
+        chapters_path = str(tool_call.arguments.get("path", "")).strip()
+        if not chapters_path.endswith("chapters"):
+            return
+
+        current_task = str(getattr(self.context.session, "current_task", "") or "").lower()
+        if not any(
+            hint in current_task
+            for hint in ("href", "link", "links", "table of contents", "chapter", "index.html")
+        ):
+            return
+
+        index_path = str(Path(chapters_path).expanduser().parent / "index.html")
+        verified_inventory = summarize_html_inventory(index_path, limit=12)
+        if not verified_inventory:
+            return
+
+        action_tracker = getattr(self.context.safeguards, "action_tracker", None)
+        note_inventory = getattr(action_tracker, "note_verified_html_inventory", None)
+        if callable(note_inventory):
+            note_inventory(index_path)
+
+        note = (
+            "Verified chapter inventory: "
+            f"{verified_inventory}"
+        )
+        merged_event = outcome.event_content
+        if note not in merged_event:
+            merged_event = f"{note}\n{merged_event}".strip()
+            outcome.event_content = merged_event
+            outcome.result_output = merged_event
+            outcome.message.content = f"{note}\n{outcome.message.content}".strip()
+            if outcome.message.tool_results:
+                outcome.message.tool_results[0].content = merged_event
+
+    def _annotate_validated_html_toc_completion(self, tool_call: ToolCall, outcome) -> None:
+        """Attach semantic TOC validation evidence to a successful mutating result."""
+
+        target_path = self._validated_html_toc_target(tool_call)
+        if target_path is None:
+            return
+
+        validation = validate_html_toc(target_path)
+        if validation is None or not validation.valid:
+            return
+
+        action_tracker = getattr(self.context.safeguards, "action_tracker", None)
+        note_validated = getattr(action_tracker, "note_validated_html_toc", None)
+        if callable(note_validated):
+            note_validated(target_path)
+
+        note = (
+            "Semantic verification preview: "
+            f"validated {validation.link_count} toc links in {Path(target_path).name}"
+        )
+        merged_event = outcome.event_content
+        if note not in merged_event:
+            merged_event = f"{merged_event}\n{note}".strip()
+            outcome.event_content = merged_event
+            outcome.result_output = merged_event
+            outcome.message.content = f"{outcome.message.content}\n{note}".strip()
+            if outcome.message.tool_results:
+                outcome.message.tool_results[0].content = merged_event
+
+    def _queue_validated_html_toc_completion_nudge(self, tool_call: ToolCall) -> None:
+        """Push the next model turn toward finishing once the TOC already validates."""
+
+        target_path = self._validated_html_toc_target(tool_call)
+        if target_path is None:
+            return
+
+        validation = validate_html_toc(target_path)
+        if validation is None or not validation.valid:
+            return
+
+        self.context.queue_steering_message(
+            "The current `index.html` already satisfies the verified chapter-link constraints. "
+            f"Semantic verification preview: validated {validation.link_count} toc links in "
+            f"`{Path(target_path).name}`. "
+            "Do not reread `index.html` or files in `chapters/` unless a specific href or "
+            "title is still unresolved. Briefly state that the table of contents has been "
+            "updated so Loader can run the verification gate."
+        )
+
+    @staticmethod
+    def _validated_html_toc_target(tool_call: ToolCall) -> str | None:
+        """Return the index target for a successful HTML TOC mutation."""
+
+        target_path = ""
+        if tool_call.name in {"write", "edit", "patch"}:
+            target_path = str(tool_call.arguments.get("file_path", "")).strip()
+        elif tool_call.name == "bash":
+            target_path = (
+                extract_shell_text_rewrite_target(
+                    str(tool_call.arguments.get("command", ""))
+                )
+                or ""
+            ).strip()
+
+        if not target_path:
+            return None
+        if not target_path.endswith("index.html"):
+            return None
+        return str(Path(target_path).expanduser())
 
     async def _record_successful_execution(
         self,

@@ -7,6 +7,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any
 
+from .safeguard_services import extract_shell_text_rewrite_target
+
 
 class ErrorCategory(Enum):
     """Categories of errors for recovery strategies."""
@@ -174,6 +176,8 @@ class RecoveryContext:
 
         if tool_name == "bash":
             command = str(args.get("command", ""))
+            if extract_shell_text_rewrite_target(command) is not None:
+                return True
             mutating_tokens = (
                 "git commit",
                 "git add",
@@ -525,7 +529,11 @@ def categorize_error(error_message: str) -> ErrorCategory:
     return ErrorCategory.UNKNOWN
 
 
-def get_recovery_hints(category: ErrorCategory, tool_name: str) -> str:
+def get_recovery_hints(
+    category: ErrorCategory,
+    tool_name: str,
+    args: dict[str, Any] | None = None,
+) -> str:
     """Get hints for recovering from a specific error category."""
 
     hints = {
@@ -672,6 +680,14 @@ def get_recovery_hints(category: ErrorCategory, tool_name: str) -> str:
     if tool_name == "bash" and category == ErrorCategory.COMMAND_NOT_FOUND:
         category_hints = ["Check if installed: bash(which <command>)"] + category_hints
 
+    rewrite_target = extract_shell_text_rewrite_target(str((args or {}).get("command", "")))
+    if tool_name == "bash" and rewrite_target is not None:
+        category_hints = [
+            f"Switch to edit/patch/write for `{rewrite_target}` instead of shell rewriting it",
+            "Reuse the evidence you already gathered and apply the file change directly",
+            "If the exact replacement span is unclear, read just the target file and then edit it",
+        ] + category_hints
+
     return "\n".join(f"- {hint}" for hint in category_hints)
 
 
@@ -713,7 +729,7 @@ def format_recovery_prompt(
     """Format a prompt asking the LLM to recover from an error."""
 
     category = categorize_error(error)
-    hints = get_recovery_hints(category, tool_name)
+    hints = get_recovery_hints(category, tool_name, args)
     args_str = ", ".join(f"{key}={value!r}" for key, value in args.items())
 
     return RECOVERY_PROMPT.format(

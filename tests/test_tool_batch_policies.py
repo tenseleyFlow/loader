@@ -294,6 +294,22 @@ async def test_tool_batch_recovery_controller_includes_known_state_for_missing_f
             tool_results=[],
         ),
         Message(
+            role=Role.ASSISTANT,
+            content="I already inspected the setup chapter.",
+            tool_calls=[
+                ToolCall(
+                    id="read-setup",
+                    name="read",
+                    arguments={"file_path": "~/Loader/guides/fortran/chapters/02-setup.html"},
+                )
+            ],
+        ),
+        Message.tool_result_message(
+            tool_call_id="read-setup",
+            display_content="<h1>Chapter 2: Setting Up Fortran</h1>\n",
+            result_content="<h1>Chapter 2: Setting Up Fortran</h1>\n",
+        ),
+        Message(
             role=Role.TOOL,
             content=(
                 "Observation [notepad_write_working]: Result: "
@@ -354,6 +370,7 @@ async def test_tool_batch_recovery_controller_includes_known_state_for_missing_f
     assert "Prefer edit/write/patch on the target file" in follow_up.content
     assert "04-variables.html" in follow_up.content
     assert "02-basic-syntax.html -> 02-setup.html" in follow_up.content
+    assert "02-setup.html = Chapter 2: Setting Up Fortran" in follow_up.content
     assert "`~/Loader/guides/fortran/index.html`" in follow_up.content
     assert any(event.type == "recovery" for event in events)
 
@@ -368,20 +385,16 @@ async def test_tool_batch_recovery_controller_suggests_known_sibling_files(
     async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
         raise AssertionError("Verification should not run here")
 
-    messages = [
-        Message(
-            role=Role.TOOL,
-            content=(
-                "Observation [glob]: Result: "
-                "/private/tmp/fortran-qwen-recovery-check/chapters/01-introduction.html\n"
-                "/private/tmp/fortran-qwen-recovery-check/chapters/02-setup.html\n"
-                "/private/tmp/fortran-qwen-recovery-check/chapters/03-basics.html\n"
-                "/private/tmp/fortran-qwen-recovery-check/chapters/04-variables.html\n"
-                "/private/tmp/fortran-qwen-recovery-check/chapters/05-input-output.html"
-            ),
-            tool_results=[],
-        ),
-    ]
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "04-variables.html").write_text(
+        "<h1>Chapter 4: Variables and Data Types</h1>\n"
+    )
+    (chapters / "05-input-output.html").write_text(
+        "<h1>Chapter 5: Input and Output</h1>\n"
+    )
+
+    messages: list[Message] = []
     context = build_context(
         temp_dir=temp_dir,
         messages=messages,
@@ -392,11 +405,11 @@ async def test_tool_batch_recovery_controller_suggests_known_sibling_files(
     tool_call = ToolCall(
         id="read-missing",
         name="read",
-        arguments={"file_path": "/tmp/fortran-qwen-recovery-check/chapters/04-data-types.html"},
+        arguments={"file_path": str(chapters / "04-data-types.html")},
     )
     outcome = tool_outcome(
         tool_call=tool_call,
-        output="File not found: /tmp/fortran-qwen-recovery-check/chapters/04-data-types.html",
+        output=f"File not found: {chapters / '04-data-types.html'}",
         is_error=True,
     )
 
@@ -414,7 +427,90 @@ async def test_tool_batch_recovery_controller_suggests_known_sibling_files(
     assert follow_up is not None
     assert "## LIKELY FILE CANDIDATES" in follow_up.content
     assert "`04-variables.html`" in follow_up.content
+    assert "Chapter 4: Variables and Data Types" in follow_up.content
     assert "instead of retrying the missing path" in follow_up.content
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_includes_current_html_target_excerpt(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(tool_name: str, tool_args: dict, context: str) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    index = temp_dir / "index.html"
+    index.write_text(
+        "<h2>Table of Contents</h2>\n"
+        "<ul class=\"chapter-list\">\n"
+        "    <li><a href=\"chapters/01-introduction.html\">Chapter 1: Introduction to Fortran</a></li>\n"
+        "    <li><a href=\"chapters/02-basic-syntax.html\">Chapter 2: Basic Syntax</a></li>\n"
+        "</ul>\n"
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="patch-index",
+        name="patch",
+        arguments={
+            "file_path": str(index),
+            "hunks": [
+                {
+                    "old_start": 1,
+                    "old_lines": 1,
+                    "new_start": 1,
+                    "new_lines": 1,
+                    "lines": ["-bad", "+good"],
+                }
+            ],
+        },
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="Patch failed: hunk did not apply cleanly",
+        is_error=True,
+    )
+
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=emit,
+    )
+
+    assert follow_up is not None
+    assert "## CURRENT TARGET EXCERPT" in follow_up.content
+    assert "Verified chapter inventory:" in follow_up.content
+    assert "<ul class=\"chapter-list\">" in follow_up.content
+    assert "chapters/02-setup.html = Chapter 2: Setting Up Your Environment" in follow_up.content
+    assert "Suggested replacement block:" in follow_up.content
+    assert '<li><a href="chapters/02-setup.html">Chapter 2: Setting Up Your Environment</a></li>' in follow_up.content
+    assert "Exact edit guidance:" in follow_up.content
+    assert "old_string: use the Current TOC block above exactly" in follow_up.content
+    assert "new_string: use the Suggested replacement block above exactly" in follow_up.content
+    assert "Do not rewrite the whole file." in follow_up.content
+    assert "Suggested edit call:" in follow_up.content
+    assert 'old_string="""' in follow_up.content
 
 
 @pytest.mark.asyncio

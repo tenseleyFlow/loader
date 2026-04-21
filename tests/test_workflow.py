@@ -205,6 +205,43 @@ def test_extract_verification_commands_from_markdown_splits_code_blocks() -> Non
     ]
 
 
+def test_extract_verification_commands_from_markdown_ignores_prose_only_bullets() -> None:
+    markdown = "\n".join(
+        [
+            "# Verification Plan",
+            "",
+            "## Verification Commands",
+            "- Check that all chapter links in index.html resolve to existing files",
+            "- Validate chapter titles with `python3 scripts/check_titles.py`",
+            "- `test -f index.html`",
+        ]
+    )
+
+    assert extract_verification_commands_from_markdown(markdown) == [
+        "python3 scripts/check_titles.py",
+        "test -f index.html",
+    ]
+
+
+def test_extract_verification_commands_keeps_shell_pipelines_intact() -> None:
+    markdown = "\n".join(
+        [
+            "# Verification Plan",
+            "",
+            "## Verification Commands",
+            "```bash",
+            "ls -la chapters/",
+            "cat index.html | head -20",
+            "```",
+        ]
+    )
+
+    assert extract_verification_commands_from_markdown(markdown) == [
+        "ls -la chapters/",
+        "cat index.html | head -20",
+    ]
+
+
 def test_workflow_artifact_store_and_bridge_round_trip(tmp_path: Path) -> None:
     store = WorkflowArtifactStore(tmp_path)
     brief = ClarifyBrief.fallback(

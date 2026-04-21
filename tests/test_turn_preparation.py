@@ -10,6 +10,7 @@ from loader.agent.loop import AgentConfig
 from loader.llm.base import CompletionResponse, ToolCall
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.conversation import ConversationRuntime
+from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
 from loader.runtime.runtime_handle import RuntimeHandle
 from tests.helpers.runtime_harness import ScriptedBackend
 
@@ -170,3 +171,79 @@ async def test_turn_preparation_can_bootstrap_clarify_handoff(
         for event in events
         if event.type == "workflow_mode" and event.workflow_mode
     ] == ["clarify", "execute"]
+
+
+@pytest.mark.asyncio
+async def test_turn_preparation_does_not_resume_latest_dod_from_older_session(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    handle = RuntimeHandle(
+        backend=backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(handle)
+    task = "Update /tmp/fortran/index.html so the chapter list matches the real files."
+
+    stale_dod = create_definition_of_done(task)
+    stale_dod.status = "fixing"
+    stale_dod.touched_files.append("/tmp/fortran/index.html")
+    stale_dod.mutating_actions.append("edit")
+    stale_path = DefinitionOfDoneStore(temp_dir).save(stale_dod)
+
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task=task,
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+
+    assert prepared.definition_of_done.storage_path != str(stale_path)
+    assert prepared.definition_of_done.touched_files == []
+    assert prepared.definition_of_done.mutating_actions == []
+    assert prepared.definition_of_done.pending_items == ["Complete the requested work"]
+
+
+@pytest.mark.asyncio
+async def test_turn_preparation_resumes_active_session_dod(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    handle = RuntimeHandle(
+        backend=backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(handle)
+    task = "Keep repairing the runtime state controller."
+
+    existing_dod = create_definition_of_done(task)
+    existing_dod.status = "fixing"
+    existing_dod.pending_items.append("Collect verification evidence")
+    existing_dod.touched_files.append(str(temp_dir / "index.html"))
+    existing_path = DefinitionOfDoneStore(temp_dir).save(existing_dod)
+    handle.session.active_dod_path = str(existing_path)
+
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task=task,
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+
+    assert prepared.definition_of_done.storage_path == str(existing_path)
+    assert prepared.definition_of_done.touched_files == [str(temp_dir / "index.html")]
+    assert prepared.definition_of_done.status == "fixing"

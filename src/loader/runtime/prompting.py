@@ -119,6 +119,8 @@ MODE_GUIDANCE = {
 - For servers, watchers, preview commands, or anything else that keeps running,
   call `bash` with `background=true`, then inspect it with `bash_wait` or
   `bash_jobs` instead of blocking the turn in the foreground
+- Prefer `edit`/`patch`/`write` over shell one-liners like `sed -i`, `perl -pi`,
+  or heredoc rewrites when modifying text files
 - If the task names an external directory like `~/Loader/...`, keep operating on
   that exact path instead of falling back to the repo cwd; file tools accept
   absolute and `~` paths, and `glob` works best with `path="~/Loader/..."`

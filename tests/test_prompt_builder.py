@@ -85,3 +85,15 @@ def test_prompt_builder_keeps_sections_stable_across_formats(temp_dir: Path) -> 
     assert "`react`" in react.content
     assert "<tool_call>" in react.content
     assert "call tools" in native.content.lower()
+
+
+def test_execute_mode_guidance_prefers_file_tools_for_text_edits(temp_dir: Path) -> None:
+    result = build_system_prompt_result(
+        tools=[_tool_schema("edit")],
+        use_react=False,
+        workflow_mode="execute",
+        permission_mode="workspace-write",
+        cwd=temp_dir,
+    )
+
+    assert "Prefer `edit`/`patch`/`write` over shell one-liners" in result.content

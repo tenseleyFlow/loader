@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -17,6 +18,17 @@ class ParsedResponse:
     content: str
     tool_calls: list[ToolCall]
     is_final_answer: bool = False
+
+
+_TOOL_NAME_ALIASES = {
+    "bashcommand": "bash",
+    "editfile": "edit",
+    "globfile": "glob",
+    "globfiles": "glob",
+    "patchfile": "patch",
+    "readfile": "read",
+    "writefile": "write",
+}
 
 
 def _extract_arguments(data: dict) -> dict:
@@ -52,6 +64,23 @@ def _tool_name_map(allowed_tool_names: Iterable[str] | None) -> dict[str, str] |
     return {name.casefold(): name for name in allowed_tool_names}
 
 
+def _normalized_tool_key(name: str) -> str:
+    """Collapse separators and case so near-miss tool names can still match."""
+
+    return re.sub(r"[^a-z0-9]+", "", name.casefold())
+
+
+def _normalized_allowed_tool_map(tool_names: dict[str, str] | None) -> dict[str, str] | None:
+    """Build a separator-insensitive tool-name map."""
+
+    if tool_names is None:
+        return None
+    return {
+        _normalized_tool_key(canonical_name): canonical_name
+        for canonical_name in tool_names.values()
+    }
+
+
 def _canonicalize_tool_name(
     name: str,
     tool_names: dict[str, str] | None,
@@ -62,7 +91,43 @@ def _canonicalize_tool_name(
 
     if tool_names is None:
         return name.lower() if lowercase_default else name
-    return tool_names.get(name.casefold())
+
+    direct_match = tool_names.get(name.casefold())
+    if direct_match is not None:
+        return direct_match
+
+    normalized_allowed = _normalized_allowed_tool_map(tool_names)
+    if normalized_allowed is None:
+        return None
+
+    normalized_name = _normalized_tool_key(name)
+    normalized_match = normalized_allowed.get(normalized_name)
+    if normalized_match is not None:
+        return normalized_match
+
+    alias_target = _TOOL_NAME_ALIASES.get(normalized_name)
+    if alias_target is None:
+        return None
+
+    direct_alias_match = tool_names.get(alias_target.casefold())
+    if direct_alias_match is not None:
+        return direct_alias_match
+    return normalized_allowed.get(_normalized_tool_key(alias_target))
+
+
+def canonicalize_tool_name(
+    name: str,
+    *,
+    allowed_tool_names: Iterable[str] | None = None,
+    lowercase_default: bool = False,
+) -> str | None:
+    """Public helper for backend/native tool-call normalization."""
+
+    return _canonicalize_tool_name(
+        name,
+        _tool_name_map(allowed_tool_names),
+        lowercase_default=lowercase_default,
+    )
 
 
 def _extract_json_tool_calls(
@@ -168,6 +233,66 @@ def _extract_function_tag_tool_calls(
     return tool_calls, spans
 
 
+def _parse_fenced_tool_arguments(
+    tool_name: str,
+    command_line: str,
+) -> dict[str, str] | None:
+    """Convert one simple fenced command line into Loader tool arguments."""
+
+    try:
+        argv = shlex.split(command_line)
+    except ValueError:
+        return None
+    if len(argv) < 2:
+        return None
+
+    payload = command_line[len(argv[0]) :].strip()
+    if tool_name == "read" and len(argv) == 2:
+        return {"file_path": argv[1]}
+    if tool_name == "glob" and len(argv) == 2:
+        return {"pattern": argv[1]}
+    if tool_name == "bash" and payload:
+        return {"command": payload}
+    return None
+
+
+def _extract_fenced_command_tool_calls(
+    text: str,
+    tool_names: dict[str, str] | None = None,
+) -> tuple[list[ToolCall], list[tuple[int, int]]]:
+    """Recover simple one-line fenced tool commands from local-model prose."""
+
+    fence_pattern = r"```(?:[^\n`]*)\n(.*?)```"
+    tool_calls: list[ToolCall] = []
+    spans: list[tuple[int, int]] = []
+
+    for match in re.finditer(fence_pattern, text, re.DOTALL):
+        body = match.group(1).strip()
+        if not body or "\n" in body:
+            continue
+        raw_name = body.split(None, 1)[0]
+        canonical_name = _canonicalize_tool_name(
+            raw_name,
+            tool_names,
+            lowercase_default=True,
+        )
+        if canonical_name is None:
+            continue
+        arguments = _parse_fenced_tool_arguments(canonical_name, body)
+        if not arguments:
+            continue
+        tool_calls.append(
+            ToolCall(
+                id=f"call_{len(tool_calls)}",
+                name=canonical_name,
+                arguments=arguments,
+            )
+        )
+        spans.append(match.span())
+
+    return tool_calls, spans
+
+
 def parse_tool_calls(
     text: str,
     *,
@@ -252,6 +377,15 @@ def parse_tool_calls(
                 )
         if tool_calls:
             content = re.sub(bracket_pattern, "", content, flags=re.IGNORECASE)
+
+    if not tool_calls:
+        fenced_calls, fenced_spans = _extract_fenced_command_tool_calls(
+            text,
+            tool_names,
+        )
+        if fenced_calls:
+            tool_calls = fenced_calls
+            content = _remove_spans(content, fenced_spans)
 
     if is_final:
         content = final_content

@@ -26,6 +26,7 @@ class VerificationEvidence:
 
     command: str
     passed: bool
+    skipped: bool = False
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
@@ -54,6 +55,7 @@ class DefinitionOfDone:
     line_changes: int = 0
     storage_path: str | None = None
     last_verification_result: str | None = None
+    last_verification_signature: str | None = None
     verification_attempt_counter: int = 0
     active_verification_attempt_id: str | None = None
     active_verification_attempt_number: int | None = None
@@ -92,6 +94,7 @@ class DefinitionOfDone:
             line_changes=int(data.get("line_changes", 0)),
             storage_path=data.get("storage_path"),
             last_verification_result=data.get("last_verification_result"),
+            last_verification_signature=data.get("last_verification_signature"),
             verification_attempt_counter=int(data.get("verification_attempt_counter", 0)),
             active_verification_attempt_id=data.get("active_verification_attempt_id"),
             active_verification_attempt_number=(
@@ -265,8 +268,8 @@ def build_verification_summary(evidence: list[VerificationEvidence]) -> str:
 
     lines = ["Verification:"]
     for item in evidence:
-        status = "PASS" if item.passed else "FAIL"
-        detail = _first_non_empty_line(item.stdout) or _first_non_empty_line(item.stderr)
+        status = "SKIP" if item.skipped else "PASS" if item.passed else "FAIL"
+        detail = _summarize_verification_detail(item)
         if detail:
             lines.append(f"- `{item.command}`: {status} ({detail})")
         else:
@@ -325,12 +328,19 @@ class DefinitionOfDoneStore:
         task_statement: str,
         *,
         retry_budget: int = 3,
+        resume_path: Path | str | None = None,
     ) -> DefinitionOfDone:
-        """Load an unfinished DoD for the same task, or create a new one."""
+        """Resume the active DoD for this session, or create a new one."""
 
-        existing = self.load_latest(task_statement)
-        if existing is not None and existing.status not in {"done", "failed"}:
-            return existing
+        if resume_path is not None:
+            path = Path(resume_path)
+            if path.exists():
+                existing = self.load(path)
+                if (
+                    existing.task_statement == task_statement
+                    and existing.status not in {"done", "failed"}
+                ):
+                    return existing
 
         dod = create_definition_of_done(task_statement, retry_budget=retry_budget)
         slug = slugify(task_statement)
@@ -501,7 +511,7 @@ def _build_html_toc_verification_command(index_path: Path) -> str:
     path_literal = repr(str(index_path))
     return "\n".join(
         [
-            "/usr/bin/python3 - <<'PY'",
+            "python3 - <<'PY'",
             "from pathlib import Path",
             "import re",
             "import sys",
@@ -553,4 +563,24 @@ def _first_non_empty_line(text: str) -> str:
         stripped = line.strip()
         if stripped:
             return stripped[:120]
+    return ""
+
+
+def _summarize_verification_detail(item: VerificationEvidence) -> str:
+    for candidate in (item.stdout, item.stderr, item.output):
+        lines = [line.strip() for line in str(candidate).splitlines() if line.strip()]
+        if not lines:
+            continue
+        if len(lines) == 1:
+            return lines[0][:240]
+
+        head = lines[0][:120]
+        tail = [line[:120] for line in lines[1:3]]
+        if head.endswith(":") and tail:
+            detail = f"{head} {'; '.join(tail)}"
+        else:
+            detail = "; ".join([head, *tail[:1]])
+        if len(lines) > len(tail) + 1:
+            detail += "; ..."
+        return detail[:240]
     return ""

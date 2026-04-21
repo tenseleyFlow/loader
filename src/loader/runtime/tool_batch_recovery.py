@@ -13,6 +13,13 @@ from .context import RuntimeContext
 from .events import AgentEvent
 from .executor import ToolExecutionOutcome
 from .recovery import RecoveryContext, format_failure_message, format_recovery_prompt
+from .safeguard_services import (
+    build_html_toc_edit_call_template,
+    build_html_toc_replacement_block,
+    extract_html_toc_excerpt,
+    read_html_title,
+    summarize_html_inventory,
+)
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -130,34 +137,36 @@ class ToolBatchRecoveryController:
             current_task=current_task,
         )
         actionable_known_state = bool(confirmed_facts and preferred_next_step)
-        if not confirmed_facts and not preferred_next_step and not current_task:
-            return prompt
-
-        lines = [prompt, "", "## CONTINUE FROM KNOWN STATE"]
-        if current_task:
-            lines.append(f"- Current task: {current_task}")
-        if confirmed_facts:
-            lines.append(f"- Confirmed facts: {confirmed_facts}")
-        if preferred_next_step:
-            lines.append(f"- Preferred next step: {preferred_next_step}")
-        lines.append(
-            "- Preserve progress: do not restart by rereading already-confirmed files "
-            "unless you need genuinely new evidence."
-        )
-        if actionable_known_state:
-            lines.extend(
-                [
-                    "",
-                    "## ACTION BIAS FOR THIS RECOVERY",
-                    "- The confirmed findings above are already enough to keep moving.",
-                    "- Prefer edit/write/patch on the target file over rereading the same files.",
-                    "- Only inspect one more file if a specific filename, href, or title is still unknown.",
-                    "- Treat the preferred next step as the default path forward.",
-                ]
+        lines = [prompt]
+        if confirmed_facts or preferred_next_step or current_task:
+            lines.extend(["", "## CONTINUE FROM KNOWN STATE"])
+            if current_task:
+                lines.append(f"- Current task: {current_task}")
+            if confirmed_facts:
+                lines.append(f"- Confirmed facts: {confirmed_facts}")
+            if preferred_next_step:
+                lines.append(f"- Preferred next step: {preferred_next_step}")
+            lines.append(
+                "- Preserve progress: do not restart by rereading already-confirmed files "
+                "unless you need genuinely new evidence."
             )
+            if actionable_known_state:
+                lines.extend(
+                    [
+                        "",
+                        "## ACTION BIAS FOR THIS RECOVERY",
+                        "- The confirmed findings above are already enough to keep moving.",
+                        "- Prefer edit/write/patch on the target file over rereading the same files.",
+                        "- Only inspect one more file if a specific filename, href, or title is still unknown.",
+                        "- Treat the preferred next step as the default path forward.",
+                    ]
+                )
         candidate_lines = self._file_not_found_candidate_lines(tool_call, outcome)
         if candidate_lines:
             lines.extend(["", "## LIKELY FILE CANDIDATES", *candidate_lines])
+        target_excerpt_lines = self._target_excerpt_lines(tool_call)
+        if target_excerpt_lines:
+            lines.extend(["", "## CURRENT TARGET EXCERPT", *target_excerpt_lines])
         return "\n".join(lines)
 
     def _file_not_found_candidate_lines(
@@ -184,7 +193,7 @@ class ToolBatchRecoveryController:
         if not candidates:
             return []
 
-        names = ", ".join(f"`{Path(candidate).name}`" for candidate in candidates[:3])
+        names = ", ".join(self._describe_candidate(candidate) for candidate in candidates[:3])
         return [
             f"- Requested file does not exist: `{missing_path}`",
             f"- Closest known files in the same directory: {names}",
@@ -198,7 +207,7 @@ class ToolBatchRecoveryController:
 
         ranked: list[tuple[float, str]] = []
         seen: set[str] = set()
-        for candidate in self._known_file_paths():
+        for candidate in self._known_file_paths(missing_path):
             if candidate == missing_path:
                 continue
             if str(Path(candidate).parent) != missing_parent:
@@ -216,7 +225,7 @@ class ToolBatchRecoveryController:
         ranked.sort(key=lambda item: (-item[0], item[1]))
         return [candidate for _, candidate in ranked]
 
-    def _known_file_paths(self) -> list[str]:
+    def _known_file_paths(self, missing_path: str | None = None) -> list[str]:
         pattern = re.compile(r"(?:~|/)[^\s`\"']+\.html")
         discovered: list[str] = []
         seen: set[str] = set()
@@ -227,7 +236,72 @@ class ToolBatchRecoveryController:
                     continue
                 seen.add(candidate)
                 discovered.append(candidate)
+        if missing_path:
+            missing = Path(missing_path)
+            parent = missing.parent
+            if parent.is_dir():
+                sibling_candidates = sorted(
+                    child.resolve(strict=False)
+                    for child in parent.iterdir()
+                    if child.is_file()
+                    and child.name != missing.name
+                    and (
+                        not missing.suffix
+                        or child.suffix == missing.suffix
+                    )
+                )
+                for child in sibling_candidates:
+                    candidate = str(child)
+                    if candidate in seen:
+                        continue
+                    seen.add(candidate)
+                    discovered.append(candidate)
         return discovered
+
+    def _describe_candidate(self, candidate: str) -> str:
+        path = Path(candidate)
+        label = f"`{path.name}`"
+        if path.suffix == ".html":
+            title = read_html_title(path)
+            if title:
+                return f"{label} = {title}"
+        return label
+
+    def _target_excerpt_lines(self, tool_call: ToolCall) -> list[str]:
+        file_path = str(
+            tool_call.arguments.get("file_path")
+            or tool_call.arguments.get("path")
+            or ""
+        ).strip()
+        if not file_path:
+            return []
+
+        inventory = summarize_html_inventory(file_path, limit=12)
+        excerpt = extract_html_toc_excerpt(file_path)
+        if not inventory and not excerpt:
+            return []
+
+        lines: list[str] = []
+        if inventory:
+            lines.append(f"- Verified chapter inventory: {inventory}")
+        if excerpt:
+            lines.append("- Current TOC block:")
+            lines.extend(f"  {line}" for line in excerpt.splitlines())
+        replacement = build_html_toc_replacement_block(file_path)
+        if replacement:
+            lines.append("- Suggested replacement block:")
+            lines.extend(f"  {line}" for line in replacement.splitlines())
+        if excerpt and replacement:
+            lines.append("- Exact edit guidance:")
+            lines.append(f"  file_path: {file_path}")
+            lines.append("  old_string: use the Current TOC block above exactly")
+            lines.append("  new_string: use the Suggested replacement block above exactly")
+            lines.append("  Do not rewrite the whole file.")
+        edit_template = build_html_toc_edit_call_template(file_path)
+        if edit_template:
+            lines.append("- Suggested edit call:")
+            lines.extend(f"  {line}" for line in edit_template.splitlines())
+        return lines
 
     def _canonicalize_path(self, raw_path: str) -> str:
         if not raw_path:

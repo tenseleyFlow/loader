@@ -427,7 +427,7 @@ async def test_turn_finalizer_appends_runtime_semantic_verifier_to_planned_comma
 
     assert result.should_continue is False
     assert any(command == 'grep -n "href=" index.html' for command in executor.commands)
-    assert any(command.startswith("/usr/bin/python3 - <<'PY'") for command in executor.commands)
+    assert any(command.startswith("python3 - <<'PY'") for command in executor.commands)
     assert (
         session.workflow_timeline[-1].verification_observations[0].attempt_id
         == "verification-attempt-1"
@@ -483,3 +483,130 @@ async def test_turn_finalizer_records_missing_verification_observation(
     )
     assert session.messages[-1].role == Role.USER
     assert session.messages[-1].content.startswith("[DEFINITION OF DONE CHECK FAILED]")
+
+
+@pytest.mark.asyncio
+async def test_turn_finalizer_does_not_reverify_without_new_changes(
+    temp_dir: Path,
+) -> None:
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    index = temp_dir / "index.html"
+    index.write_text("<ul></ul>\n")
+    dod = create_definition_of_done("Fix the chapter list in index.html.")
+    dod.mutating_actions.append("edit")
+    dod.touched_files.append(str(index))
+    dod.line_changes = 12
+    dod.last_verification_result = "failed"
+    dod.last_verification_signature = (
+        f"lines={dod.line_changes};touched={index};actions=1;commands="
+    )
+    dod.evidence = []
+    summary = TurnSummary(final_response="")
+    executor = RecordingExecutor()
+
+    async def capture(event) -> None:
+        return None
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="I checked the file again.",
+        emit=capture,
+        summary=summary,
+        executor=executor,  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is True
+    assert result.reason_code == "verification_failed_no_new_changes"
+    assert executor.commands == []
+    assert summary.verification_status == "failed"
+    assert session.messages[-1].content.startswith("[DEFINITION OF DONE CHECK STILL FAILING]")
+
+
+@pytest.mark.asyncio
+async def test_turn_finalizer_accepts_missing_optional_html5validator_when_semantic_check_passes(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    dod = create_definition_of_done(
+        "Update index.html so the table of contents links and chapter titles are correct."
+    )
+    dod.mutating_actions.append("edit")
+    dod.touched_files.append(str(temp_dir / "index.html"))
+    dod.verification_commands = [
+        "python3 - <<'PY'\nprint('semantic ok')\nPY",
+        "html5validator --root /tmp/fortran-qwen-recovery-check/",
+    ]
+    summary = TurnSummary(final_response="")
+    semantic_call = ToolCall(
+        id="verify-1-1",
+        name="bash",
+        arguments={"command": dod.verification_commands[0], "cwd": str(temp_dir)},
+    )
+    html5validator_call = ToolCall(
+        id="verify-1-2",
+        name="bash",
+        arguments={"command": dod.verification_commands[1], "cwd": str(temp_dir)},
+    )
+
+    async def capture(event) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "loader.runtime.finalization.derive_verification_commands",
+        lambda *args, **kwargs: [],
+    )
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="Updated the chapter links and titles.",
+        emit=capture,
+        summary=summary,
+        executor=FakeExecutor(
+            [
+                tool_outcome(
+                    tool_call=semantic_call,
+                    output="semantic ok",
+                    is_error=False,
+                    exit_code=0,
+                    stdout="semantic ok",
+                ),
+                tool_outcome(
+                    tool_call=html5validator_call,
+                    output="/bin/sh: html5validator: command not found",
+                    is_error=True,
+                    exit_code=127,
+                    stderr="/bin/sh: html5validator: command not found",
+                ),
+            ]
+        ),  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is False
+    assert result.reason_code == "verification_passed"
+    assert summary.verification_status == "passed"
+    assert dod.status == "done"
+    assert dod.last_verification_result == "passed"
+    assert [item.passed for item in dod.evidence] == [True, False]
+    assert [item.skipped for item in dod.evidence] == [False, True]
+    assert "SKIP" in result.final_response
+    assert "html5validator" in result.final_response
+    assert session.workflow_timeline[-2].reason_code == "verification_command_passed"
+    assert session.workflow_timeline[-1].reason_code == "verification_command_skipped"
+    assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
+        VerificationObservationStatus.SKIPPED.value
+    ]

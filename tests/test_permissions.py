@@ -381,3 +381,35 @@ async def test_search_path_alias_hook_canonicalizes_common_aliases(
     assert result.updated_arguments["path"] == expected_path
     for alias in ("directory", "dir", "folder"):
         assert alias not in result.updated_arguments
+
+
+@pytest.mark.asyncio
+async def test_search_path_alias_hook_splits_full_glob_pattern(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    hook = SearchPathAliasHook()
+    chapters = temp_dir / "chapters"
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="glob-1",
+                name="glob",
+                arguments={"pattern": f"{chapters}/*.html"},
+            ),
+            tool=registry.get("glob"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.updated_arguments is not None
+    assert result.updated_arguments["path"] == str(chapters)
+    assert result.updated_arguments["pattern"] == "*.html"

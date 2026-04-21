@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from ..agent.parsing import parse_tool_calls
+from ..agent.parsing import canonicalize_tool_name, parse_tool_calls
 from ..runtime.capabilities import CapabilityProfile, resolve_capability_profile
 from .base import (
     CompletionResponse,
@@ -372,6 +372,23 @@ class OllamaBackend(LLMBackend):
         )
         return parsed.content, parsed.tool_calls
 
+    def _canonical_native_tool_name(
+        self,
+        raw_name: object,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Normalize native Ollama tool-call names to Loader's canonical names."""
+
+        name = str(raw_name or "").strip()
+        if not name:
+            return ""
+        canonical_name = canonicalize_tool_name(
+            name,
+            allowed_tool_names=self._allowed_tool_names(tools),
+        )
+        return canonical_name or name
+
     async def complete(
         self,
         messages: list[Message],
@@ -435,7 +452,10 @@ class OllamaBackend(LLMBackend):
                         args = {}
                 tool_calls.append(ToolCall(
                     id=tc.get("id", f"call_{i}"),
-                    name=func.get("name", ""),
+                    name=self._canonical_native_tool_name(
+                        func.get("name", ""),
+                        tools=tools,
+                    ),
                     arguments=args,
                 ))
         else:
@@ -561,7 +581,10 @@ class OllamaBackend(LLMBackend):
                             args = {}
                     accumulated_tool_calls.append(ToolCall(
                         id=tc.get("id", f"call_{len(accumulated_tool_calls)}"),
-                        name=func.get("name", ""),
+                        name=self._canonical_native_tool_name(
+                            func.get("name", ""),
+                            tools=tools,
+                        ),
                         arguments=args,
                     ))
                 continue
@@ -581,7 +604,10 @@ class OllamaBackend(LLMBackend):
                                 args = {}
                         tool_calls.append(ToolCall(
                             id=tc.get("id", f"call_{i}"),
-                            name=func.get("name", ""),
+                            name=self._canonical_native_tool_name(
+                                func.get("name", ""),
+                                tools=tools,
+                            ),
                             arguments=args,
                         ))
 

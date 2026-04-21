@@ -5,7 +5,9 @@ from pathlib import Path
 from loader.llm.base import ToolCall
 from loader.runtime.dod import (
     DefinitionOfDoneStore,
+    VerificationEvidence,
     begin_new_verification_attempt,
+    build_verification_summary,
     create_definition_of_done,
     derive_verification_commands,
     determine_task_size,
@@ -137,5 +139,25 @@ def test_derive_verification_commands_adds_semantic_html_toc_check(tmp_path: Pat
         task_statement=dod.task_statement,
     )
 
-    assert any(command.startswith("/usr/bin/python3 - <<'PY'") for command in commands)
+    assert any(command.startswith("python3 - <<'PY'") for command in commands)
     assert not any(command == f"test -f {index}" for command in commands)
+
+
+def test_build_verification_summary_keeps_concrete_missing_link_details() -> None:
+    summary = build_verification_summary(
+        [
+            VerificationEvidence(
+                command="python3 - <<'PY' ... PY",
+                passed=False,
+                stderr=(
+                    "Missing links:\n"
+                    "chapters/05-control-structures.html -> missing\n"
+                    "chapters/06-input-output.html -> missing\n"
+                ),
+            )
+        ]
+    )
+
+    assert "Missing links:" in summary
+    assert "chapters/05-control-structures.html -> missing" in summary
+    assert "chapters/06-input-output.html -> missing" in summary

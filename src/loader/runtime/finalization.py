@@ -203,6 +203,63 @@ class TurnFinalizer:
                 verification_observations=skip_observations,
             )
 
+        current_verification_signature = _verification_state_signature(dod)
+        if (
+            dod.last_verification_result == "failed"
+            and dod.last_verification_signature
+            and dod.last_verification_signature == current_verification_signature
+        ):
+            summary.verification_status = "failed"
+            summary.definition_of_done = dod
+            failed_provenance = _verification_result_provenance(dod, passed=False)
+            if dod.retry_count >= dod.retry_budget:
+                dod.status = "failed"
+                dod.confidence = "low"
+                self.dod_store.save(dod)
+                await self.emit_dod_status(emit, dod)
+                exhausted_response = (
+                    "I couldn't verify that the task is complete within the retry budget.\n\n"
+                    f"{build_verification_summary(dod.evidence)}"
+                )
+                return CompletionGateResult(
+                    should_continue=False,
+                    reason_code="verification_retry_budget_exhausted",
+                    reason_summary="stopped after verification retry budget was exhausted",
+                    final_response=exhausted_response,
+                    evidence_provenance=failed_provenance,
+                    verification_observations=_verification_result_observations(
+                        dod,
+                        passed=False,
+                        attempt_id=dod.active_verification_attempt_id,
+                        attempt_number=dod.active_verification_attempt_number,
+                    ),
+                )
+            repair_prompt = (
+                "[DEFINITION OF DONE CHECK STILL FAILING]\n"
+                f"Task: {dod.task_statement}\n"
+                "No new file changes were made since the last failed verification.\n\n"
+                f"{build_verification_summary(dod.evidence)}\n\n"
+                f"{_build_verification_repair_guidance(dod)}\n\n"
+                "Apply a concrete edit or patch before trying to finish again."
+            )
+            self.context.session.append(Message(role=Role.USER, content=repair_prompt))
+            return CompletionGateResult(
+                should_continue=True,
+                reason_code="verification_failed_no_new_changes",
+                reason_summary=(
+                    "continued because verification already failed and no new "
+                    "mutating changes were made before trying to finish again"
+                ),
+                final_response="",
+                evidence_provenance=failed_provenance,
+                verification_observations=_verification_result_observations(
+                    dod,
+                    passed=False,
+                    attempt_id=dod.active_verification_attempt_id,
+                    attempt_number=dod.active_verification_attempt_number,
+                ),
+            )
+
         verify_item = "Collect verification evidence"
         if verify_item not in dod.pending_items and verify_item not in dod.completed_items:
             dod.pending_items.append(verify_item)
@@ -365,6 +422,7 @@ class TurnFinalizer:
             f"Attempt: {dod.retry_count}/{dod.retry_budget}\n"
             f"Pending items: {', '.join(dod.pending_items)}\n\n"
             f"{build_verification_summary(dod.evidence)}\n\n"
+            f"{_build_verification_repair_guidance(dod)}\n\n"
             "Fix the failures above, then finish the task again."
         )
         self.context.session.append(Message(role=Role.USER, content=failure_prompt))
@@ -391,6 +449,7 @@ class TurnFinalizer:
         """Collect verification evidence for one DoD."""
 
         dod.status = "verifying"
+        dod.last_verification_signature = _verification_state_signature(dod)
         self.dod_store.save(dod)
         await self.emit_dod_status(emit, dod)
         attempt = ensure_active_verification_attempt(dod)
@@ -464,6 +523,7 @@ class TurnFinalizer:
                 output=outcome.result_output,
                 kind=_classify_verification_kind(command),
             )
+            evidence = _maybe_mark_optional_verification_skip(evidence)
             dod.evidence.append(evidence)
             observation = _verification_observation_from_evidence(
                 evidence,
@@ -474,20 +534,12 @@ class TurnFinalizer:
             append_verification_timeline_entry(
                 self.context,
                 summary,
-                reason_code=(
-                    "verification_command_passed"
-                    if evidence.passed
-                    else "verification_command_failed"
-                ),
-                reason_summary=(
-                    f"verification passed for `{command}`"
-                    if evidence.passed
-                    else f"verification failed for `{command}`"
-                ),
+                reason_code=_verification_timeline_reason_code(evidence),
+                reason_summary=_verification_timeline_reason_summary(evidence),
                 evidence_provenance=provenance,
                 verification_observations=[observation],
             )
-            all_passed = all_passed and evidence.passed
+            all_passed = all_passed and (evidence.passed or evidence.skipped)
             summary.tool_result_messages.append(outcome.message)
             self.context.session.append(outcome.message)
 
@@ -731,15 +783,13 @@ def _verification_observation_from_evidence(
     command = evidence.command or "verification"
     return VerificationObservation(
         status=(
-            VerificationObservationStatus.PASSED.value
+            VerificationObservationStatus.SKIPPED.value
+            if evidence.skipped
+            else VerificationObservationStatus.PASSED.value
             if evidence.passed
             else VerificationObservationStatus.FAILED.value
         ),
-        summary=(
-            f"verification passed for `{command}`"
-            if evidence.passed
-            else f"verification failed for `{command}`"
-        ),
+        summary=_verification_timeline_reason_summary(evidence),
         command=evidence.command or None,
         kind=evidence.kind,
         exit_code=evidence.exit_code,
@@ -757,13 +807,11 @@ def _verification_provenance_from_evidence(
         EvidenceProvenance(
             category="verification",
             source="dod.evidence",
-            summary=(
-                f"verification passed for `{command}`"
-                if evidence.passed
-                else f"verification failed for `{command}`"
-            ),
+            summary=_verification_timeline_reason_summary(evidence),
             status=(
-                EvidenceProvenanceStatus.SUPPORTS.value
+                EvidenceProvenanceStatus.CONTEXT.value
+                if evidence.skipped
+                else EvidenceProvenanceStatus.SUPPORTS.value
                 if evidence.passed
                 else EvidenceProvenanceStatus.CONTRADICTS.value
             ),
@@ -842,6 +890,113 @@ def _verification_detail(evidence: VerificationEvidence) -> str | None:
         if text:
             return text.splitlines()[0]
     return None
+
+
+def _verification_timeline_reason_code(evidence: VerificationEvidence) -> str:
+    if evidence.skipped:
+        return "verification_command_skipped"
+    if evidence.passed:
+        return "verification_command_passed"
+    return "verification_command_failed"
+
+
+def _verification_timeline_reason_summary(evidence: VerificationEvidence) -> str:
+    command = evidence.command or "verification"
+    if evidence.skipped:
+        return f"verification skipped for `{command}`"
+    if evidence.passed:
+        return f"verification passed for `{command}`"
+    return f"verification failed for `{command}`"
+
+
+def _maybe_mark_optional_verification_skip(
+    evidence: VerificationEvidence,
+) -> VerificationEvidence:
+    detail = "\n".join(
+        part for part in (evidence.stderr, evidence.output) if str(part).strip()
+    ).lower()
+    command = (evidence.command or "").lower()
+    if (
+        not evidence.passed
+        and evidence.exit_code == 127
+        and "command not found" in detail
+        and "html5validator" in command
+    ):
+        evidence.skipped = True
+    return evidence
+
+
+def _verification_state_signature(dod: DefinitionOfDone) -> str:
+    touched = "|".join(sorted(set(dod.touched_files)))
+    commands = "|".join(sorted(set(dod.successful_commands)))
+    return (
+        f"lines={dod.line_changes}"
+        f";touched={touched}"
+        f";actions={len(dod.mutating_actions)}"
+        f";commands={commands}"
+    )
+
+
+def _build_verification_repair_guidance(dod: DefinitionOfDone) -> str:
+    fixes = _extract_verification_repairs(dod.evidence)
+    if not fixes:
+        return (
+            "Use the failed verification evidence directly, avoid rereading unrelated "
+            "files, and fix the target file before retrying."
+        )
+
+    return "\n".join(
+        [
+            "Repair focus:",
+            *[f"- {item}" for item in fixes],
+            "- Reuse these exact failures instead of restarting discovery from earlier chapters.",
+        ]
+    )
+
+
+def _extract_verification_repairs(
+    evidence_items: list[VerificationEvidence],
+) -> list[str]:
+    fixes: list[str] = []
+    for evidence in evidence_items:
+        for candidate in (evidence.stderr, evidence.output, evidence.stdout):
+            missing, mismatches = _parse_verification_failures(str(candidate))
+            for href in missing:
+                item = f"Fix the missing TOC href `{href}` in `index.html`."
+                if item not in fixes:
+                    fixes.append(item)
+            for mismatch in mismatches:
+                item = f"Fix the TOC label mismatch `{mismatch}`."
+                if item not in fixes:
+                    fixes.append(item)
+    return fixes
+
+
+def _parse_verification_failures(text: str) -> tuple[list[str], list[str]]:
+    missing: list[str] = []
+    mismatches: list[str] = []
+    mode: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if lowered == "missing links:":
+            mode = "missing"
+            continue
+        if lowered == "title mismatches:":
+            mode = "mismatch"
+            continue
+        if mode == "missing" and "->" in line:
+            href = line.split("->", 1)[0].strip()
+            if href and href not in missing:
+                missing.append(href)
+            continue
+        if mode == "mismatch" and "!=" in line and line not in mismatches:
+            mismatches.append(line)
+
+    return missing, mismatches
 
 
 def _classify_verification_kind(command: str) -> str:

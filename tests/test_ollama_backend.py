@@ -104,6 +104,47 @@ async def test_ollama_complete_uses_shared_parser_with_allowed_tool_names() -> N
 
 
 @pytest.mark.asyncio
+async def test_ollama_complete_canonicalizes_native_tool_aliases() -> None:
+    backend = OllamaBackend()
+
+    async def fake_describe_model() -> None:
+        return None
+
+    backend.describe_model = fake_describe_model  # type: ignore[method-assign]
+    backend._client = FakeClient(
+        [
+            FakeResponse(
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_read",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": {"file_path": "/tmp/test.txt"},
+                                },
+                            }
+                        ],
+                    },
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            )
+        ]
+    )
+
+    response = await backend.complete(
+        messages=[],
+        tools=[{"name": "read"}, {"name": "write"}, {"name": "patch"}],
+    )
+
+    assert response.tool_calls[0].name == "read"
+    assert response.tool_calls[0].arguments == {"file_path": "/tmp/test.txt"}
+    await backend.close()
+
+
+@pytest.mark.asyncio
 async def test_ollama_stream_response_uses_shared_parser_for_text_tool_calls() -> None:
     backend = OllamaBackend()
 
@@ -139,6 +180,80 @@ async def test_ollama_stream_response_uses_shared_parser_for_text_tool_calls() -
     assert final_chunk.tool_calls[0].arguments == {
         "question": "Which path should we take?"
     }
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_response_canonicalizes_native_tool_aliases() -> None:
+    backend = OllamaBackend()
+
+    chunks = [
+        chunk
+        async for chunk in backend._stream_response(
+            FakeStreamResponse(
+                [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_read",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": {"file_path": "/tmp/test.txt"},
+                                    },
+                                }
+                            ],
+                        },
+                        "done": True,
+                        "prompt_eval_count": 4,
+                        "eval_count": 2,
+                    }
+                ]
+            ),
+            tools=[{"name": "read"}, {"name": "write"}, {"name": "patch"}],
+        )
+    ]
+
+    final_chunk = chunks[-1]
+    assert final_chunk.tool_calls[0].name == "read"
+    assert final_chunk.tool_calls[0].arguments == {"file_path": "/tmp/test.txt"}
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_response_parses_fenced_read_command() -> None:
+    backend = OllamaBackend()
+
+    chunks = [
+        chunk
+        async for chunk in backend._stream_response(
+            FakeStreamResponse(
+                [
+                    {
+                        "message": {
+                            "content": (
+                                "I need to inspect the file first.\n"
+                                "```bash\nread /tmp/test.txt\n```"
+                            )
+                        },
+                        "done": False,
+                    },
+                    {
+                        "message": {"content": ""},
+                        "done": True,
+                        "prompt_eval_count": 4,
+                        "eval_count": 2,
+                    },
+                ]
+            ),
+            tools=[{"name": "read"}, {"name": "glob"}, {"name": "bash"}],
+        )
+    ]
+
+    final_chunk = chunks[-1]
+    assert final_chunk.tool_calls[0].name == "read"
+    assert final_chunk.tool_calls[0].arguments == {"file_path": "/tmp/test.txt"}
     await backend.close()
 
 

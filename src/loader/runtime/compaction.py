@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import html
 import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..llm.base import Message, Role
+from ..llm.base import Message, Role, ToolCall
 
 DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 100_000
 MIN_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 12_000
@@ -302,37 +303,7 @@ def extract_key_files(messages: list[Message], *, limit: int | None = 6) -> list
 def summarize_confirmed_facts(messages: list[Message], *, max_items: int = 2) -> str | None:
     """Summarize recent confirmed discoveries from successful tool results."""
 
-    facts: list[str] = []
-    for message in reversed(messages):
-        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
-            continue
-        if any(result.is_error for result in message.tool_results):
-            continue
-
-        tool_name = _observed_tool_name(message.content)
-        payload = "\n".join(
-            result.content.strip()
-            for result in message.tool_results
-            if result.content.strip()
-        ) or message.content
-
-        if tool_name in {
-            "notepad_write_working",
-            "notepad_append",
-            "notepad_write_priority",
-            "notepad_write_manual",
-        }:
-            mapping_fact = _summarize_html_mappings(payload)
-            if mapping_fact and mapping_fact not in facts:
-                facts.append(mapping_fact)
-
-        if tool_name in {"glob", "bash"}:
-            file_fact = _summarize_html_file_discovery(payload)
-            if file_fact and file_fact not in facts:
-                facts.append(file_fact)
-
-        if len(facts) >= max_items:
-            break
+    facts = _collect_confirmed_facts(messages)
 
     if not facts:
         return None
@@ -350,7 +321,19 @@ def infer_preferred_next_step(
         return None
 
     target_path = _choose_target_path(messages, current_task=current_task)
+    has_confirmed_titles = _summarize_html_title_discovery(messages) is not None
+    verification_gap = _summarize_latest_html_verification_gap(messages)
     if target_path:
+        if verification_gap:
+            return (
+                f"Update `{target_path}` to fix the specific verification failures "
+                f"({verification_gap}) instead of restarting discovery."
+            )
+        if has_confirmed_titles:
+            return (
+                f"Update `{target_path}` using the confirmed chapter file/title pairs "
+                "instead of rereading files."
+            )
         return (
             f"Update `{target_path}` using the confirmed findings instead of "
             "restarting earlier discovery steps."
@@ -426,6 +409,92 @@ def _observed_tool_name(content: str) -> str | None:
     return None
 
 
+def _collect_confirmed_facts(messages: list[Message]) -> list[str]:
+    facts: list[str] = []
+    tool_calls_by_id = {
+        tool_call.id: tool_call
+        for message in messages
+        for tool_call in message.tool_calls
+    }
+
+    explicit_mapping_fact = _collect_explicit_mapping_fact(
+        messages,
+        tool_calls_by_id=tool_calls_by_id,
+    )
+    if explicit_mapping_fact:
+        facts.append(explicit_mapping_fact)
+
+    verification_gap_fact = _collect_html_verification_gap_fact(
+        messages,
+        tool_calls_by_id=tool_calls_by_id,
+    )
+    if verification_gap_fact:
+        facts.append(verification_gap_fact)
+
+    title_fact = _summarize_html_title_discovery(
+        messages,
+        tool_calls_by_id=tool_calls_by_id,
+    )
+    if title_fact:
+        facts.append(title_fact)
+
+    file_fact = _collect_html_file_discovery_fact(
+        messages,
+        tool_calls_by_id=tool_calls_by_id,
+    )
+    if file_fact:
+        facts.append(file_fact)
+
+    return facts
+
+
+def _collect_explicit_mapping_fact(
+    messages: list[Message],
+    *,
+    tool_calls_by_id: dict[str, ToolCall],
+) -> str | None:
+    mappings: list[str] = []
+    for message in messages:
+        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
+            continue
+        if any(result.is_error for result in message.tool_results):
+            continue
+
+        tool_name = _resolve_tool_name(
+            message,
+            tool_calls_by_id=tool_calls_by_id,
+        )
+        if tool_name not in {
+            "notepad_write_working",
+            "notepad_append",
+            "notepad_write_priority",
+            "notepad_write_manual",
+        }:
+            continue
+
+        payload = "\n".join(
+            result.content.strip()
+            for result in message.tool_results
+            if result.content.strip()
+        ) or message.content
+        pairs = re.findall(
+            r"([A-Za-z0-9_.-]+\.html)\s*->\s*([A-Za-z0-9_.-]+\.html)",
+            payload,
+        )
+        for left, right in pairs:
+            mapping = f"{left} -> {right}"
+            if mapping not in mappings:
+                mappings.append(mapping)
+
+    if not mappings:
+        return None
+
+    preview = ", ".join(mappings[:4])
+    if len(mappings) > 4:
+        preview += ", ..."
+    return f"Filename mappings confirmed: {preview}"
+
+
 def _summarize_html_mappings(payload: str) -> str | None:
     pairs = re.findall(
         r"([A-Za-z0-9_.-]+\.html)\s*->\s*([A-Za-z0-9_.-]+\.html)",
@@ -444,6 +513,209 @@ def _summarize_html_mappings(payload: str) -> str | None:
     return f"Filename mappings confirmed: {preview}"
 
 
+def _summarize_html_title_discovery(
+    messages: list[Message],
+    *,
+    max_pairs: int = 4,
+    tool_calls_by_id: dict[str, ToolCall] | None = None,
+) -> str | None:
+    if tool_calls_by_id is None:
+        tool_calls_by_id = {
+            tool_call.id: tool_call
+            for message in messages
+            for tool_call in message.tool_calls
+        }
+
+    confirmed_pairs: list[str] = []
+    for message in messages:
+        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
+            continue
+        if any(result.is_error for result in message.tool_results):
+            continue
+
+        tool_call = next(
+            (
+                tool_calls_by_id.get(result.tool_call_id)
+                for result in message.tool_results
+                if result.tool_call_id in tool_calls_by_id
+            ),
+            None,
+        )
+        if tool_call is None or tool_call.name != "read":
+            continue
+
+        raw_path = tool_call.arguments.get("file_path")
+        if not isinstance(raw_path, str):
+            continue
+        normalized_path = _normalize_path_candidate(raw_path) or raw_path
+        if Path(normalized_path).name == "index.html" or "/chapters/" not in normalized_path:
+            continue
+
+        payload = "\n".join(
+            result.content.strip()
+            for result in message.tool_results
+            if result.content.strip()
+        ) or message.content
+        title = _extract_html_title(payload)
+        if not title:
+            continue
+
+        pair = f"{Path(normalized_path).name} = {title}"
+        if pair not in confirmed_pairs:
+            confirmed_pairs.append(pair)
+
+    if not confirmed_pairs:
+        return None
+
+    preview = ", ".join(confirmed_pairs[:max_pairs])
+    if len(confirmed_pairs) > max_pairs:
+        preview += ", ..."
+    return f"Chapter titles confirmed: {preview}"
+
+
+def _extract_html_title(payload: str) -> str | None:
+    for pattern in (
+        r"<h1[^>]*>(.*?)</h1>",
+        r"<title[^>]*>(.*?)</title>",
+    ):
+        match = re.search(pattern, payload, re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        title = re.sub(r"<[^>]+>", " ", match.group(1))
+        title = _collapse_inline_whitespace(html.unescape(title))
+        if title:
+            return title
+    return None
+
+
+def _collect_html_file_discovery_fact(
+    messages: list[Message],
+    *,
+    tool_calls_by_id: dict[str, ToolCall],
+) -> str | None:
+    filenames: list[str] = []
+    for message in messages:
+        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
+            continue
+        if any(result.is_error for result in message.tool_results):
+            continue
+
+        tool_name = _resolve_tool_name(
+            message,
+            tool_calls_by_id=tool_calls_by_id,
+        )
+        if tool_name not in {"glob", "bash"}:
+            continue
+
+        payload = "\n".join(
+            result.content.strip()
+            for result in message.tool_results
+            if result.content.strip()
+        ) or message.content
+        matches = re.findall(r"([A-Za-z0-9_.-]+\.html)", payload)
+        for name in matches:
+            if name not in filenames:
+                filenames.append(name)
+
+    if len(filenames) < 3:
+        return None
+
+    preview = ", ".join(filenames[:6])
+    if len(filenames) > 6:
+        preview += ", ..."
+    return f"Existing files include {preview}"
+
+
+def _collect_html_verification_gap_fact(
+    messages: list[Message],
+    *,
+    tool_calls_by_id: dict[str, ToolCall],
+) -> str | None:
+    gap = _summarize_latest_html_verification_gap(
+        messages,
+        tool_calls_by_id=tool_calls_by_id,
+    )
+    if not gap:
+        return None
+    return f"Verification gaps: {gap}"
+
+
+def _summarize_latest_html_verification_gap(
+    messages: list[Message],
+    *,
+    max_items: int = 2,
+    tool_calls_by_id: dict[str, ToolCall] | None = None,
+) -> str | None:
+    if tool_calls_by_id is None:
+        tool_calls_by_id = {
+            tool_call.id: tool_call
+            for message in messages
+            for tool_call in message.tool_calls
+        }
+
+    for message in reversed(messages):
+        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
+            continue
+        if not any(result.is_error for result in message.tool_results):
+            continue
+        tool_name = _resolve_tool_name(
+            message,
+            tool_calls_by_id=tool_calls_by_id,
+        )
+        if tool_name != "bash":
+            continue
+
+        payload = "\n".join(
+            result.content.strip()
+            for result in message.tool_results
+            if result.content.strip()
+        ) or message.content
+        gap = _extract_html_verification_gap(payload, max_items=max_items)
+        if gap:
+            return gap
+
+    return None
+
+
+def _extract_html_verification_gap(payload: str, *, max_items: int = 2) -> str | None:
+    missing: list[str] = []
+    mismatches: list[str] = []
+    mode: str | None = None
+
+    for raw_line in payload.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if lowered == "missing links:":
+            mode = "missing"
+            continue
+        if lowered == "title mismatches:":
+            mode = "mismatch"
+            continue
+        if mode == "missing" and "->" in line:
+            href = line.split("->", 1)[0].strip()
+            if href and href not in missing:
+                missing.append(href)
+            continue
+        if mode == "mismatch" and "!=" in line:
+            if line not in mismatches:
+                mismatches.append(line)
+
+    parts: list[str] = []
+    if missing:
+        preview = ", ".join(missing[:max_items])
+        if len(missing) > max_items:
+            preview += ", ..."
+        parts.append(f"missing TOC links {preview}")
+    if mismatches:
+        preview = ", ".join(mismatches[:max_items])
+        if len(mismatches) > max_items:
+            preview += ", ..."
+        parts.append(f"title mismatches {preview}")
+    return "; ".join(parts) if parts else None
+
+
 def _summarize_html_file_discovery(payload: str) -> str | None:
     filenames = re.findall(r"([A-Za-z0-9_.-]+\.html)", payload)
     unique_names: list[str] = []
@@ -456,6 +728,22 @@ def _summarize_html_file_discovery(payload: str) -> str | None:
     if len(unique_names) > 6:
         preview += ", ..."
     return f"Existing files include {preview}"
+
+
+def _resolve_tool_name(
+    message: Message,
+    *,
+    tool_calls_by_id: dict[str, ToolCall],
+) -> str | None:
+    observed = _observed_tool_name(message.content)
+    if observed:
+        return observed
+
+    for result in message.tool_results:
+        tool_call = tool_calls_by_id.get(result.tool_call_id)
+        if tool_call is not None:
+            return tool_call.name
+    return None
 
 
 def _choose_target_path(

@@ -108,6 +108,7 @@ class ExploreRuntime:
                 validator=self.context.safeguards.validator,
                 registry=self.registry,
                 rollback_plan=None,
+                workspace_root=self.context.project_root,
             ),
         )
 

@@ -104,6 +104,7 @@ class TurnPreparationController:
         dod = self.dod_store.create_or_resume(
             effective_task,
             retry_budget=self.context.config.verification_retry_budget,
+            resume_path=self.context.session.active_dod_path,
         )
         summary.definition_of_done = dod
 
@@ -158,6 +159,7 @@ class TurnPreparationController:
                 validator=self.context.safeguards.validator,
                 registry=self.context.registry,
                 rollback_plan=rollback_plan,
+                workspace_root=self.context.project_root,
             ),
         )
         return executor, rollback_plan

@@ -225,6 +225,38 @@ Created the file.'''
         assert result.tool_calls == []
         assert "TotallyUnknownTool" in result.content
 
+    def test_parse_bare_json_maps_read_file_alias_to_read(self):
+        text = '{"name": "read_file", "arguments": {"file_path": "/tmp/test.txt"}}'
+        result = parse_tool_calls(
+            text,
+            allowed_tool_names=["read", "write", "patch"],
+        )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "read"
+        assert result.tool_calls[0].arguments == {"file_path": "/tmp/test.txt"}
+
+    def test_parse_fenced_read_command_into_tool_call(self):
+        text = "Let me inspect the file first.\n```bash\nread /tmp/test.txt\n```"
+        result = parse_tool_calls(
+            text,
+            allowed_tool_names=["read", "glob", "bash"],
+        )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "read"
+        assert result.tool_calls[0].arguments == {"file_path": "/tmp/test.txt"}
+
+    def test_parse_fenced_glob_command_into_tool_call(self):
+        text = "```bash\nglob /tmp/guide/chapters/*.html\n```"
+        result = parse_tool_calls(
+            text,
+            allowed_tool_names=["read", "glob", "bash"],
+        )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "glob"
+        assert result.tool_calls[0].arguments == {
+            "pattern": "/tmp/guide/chapters/*.html"
+        }
+
 
 class TestFormatToolResult:
     """Tests for format_tool_result function."""

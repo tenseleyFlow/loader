@@ -453,12 +453,13 @@ async def test_tool_batch_runner_preserves_recovery_context_across_diagnostic_su
         [tool_outcome(tool_call=tool_call, output="01-introduction.html", is_error=False)]
     )
 
+    summary = TurnSummary(final_response="")
     await runner.execute_batch(
         tool_calls=[tool_call],
         tool_source="assistant",
         pending_tool_calls_seen=set(),
         emit=_noop_emit,
-        summary=TurnSummary(final_response=""),
+        summary=summary,
         dod=create_definition_of_done("Fix the chapter links"),
         executor=executor,  # type: ignore[arg-type]
         on_confirmation=None,
@@ -523,12 +524,13 @@ async def test_tool_batch_runner_clears_recovery_context_after_successful_mutati
         [tool_outcome(tool_call=tool_call, output="Patched index.html", is_error=False)]
     )
 
+    summary = TurnSummary(final_response="")
     await runner.execute_batch(
         tool_calls=[tool_call],
         tool_source="assistant",
         pending_tool_calls_seen=set(),
         emit=_noop_emit,
-        summary=TurnSummary(final_response=""),
+        summary=summary,
         dod=create_definition_of_done("Fix the chapter links"),
         executor=executor,  # type: ignore[arg-type]
         on_confirmation=None,
@@ -569,6 +571,22 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
                 f"{temp_dir}/chapters/03-basics.html"
             ),
             tool_results=[],
+        ),
+        Message(
+            role=Role.ASSISTANT,
+            content="I already inspected the first chapter title.",
+            tool_calls=[
+                ToolCall(
+                    id="read-ch1",
+                    name="read",
+                    arguments={"file_path": str(temp_dir / 'chapters' / '01-introduction.html')},
+                )
+            ],
+        ),
+        Message.tool_result_message(
+            tool_call_id="read-ch1",
+            display_content="<h1>Chapter 1: Introduction to Fortran</h1>\n",
+            result_content="<h1>Chapter 1: Introduction to Fortran</h1>\n",
         ),
         Message(
             role=Role.ASSISTANT,
@@ -623,12 +641,13 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
         ]
     )
 
+    summary = TurnSummary(final_response="")
     await runner.execute_batch(
         tool_calls=[tool_call],
         tool_source="assistant",
         pending_tool_calls_seen=set(),
         emit=_noop_emit,
-        summary=TurnSummary(final_response=""),
+        summary=summary,
         dod=create_definition_of_done("Fix the chapter links"),
         executor=executor,  # type: ignore[arg-type]
         on_confirmation=None,
@@ -639,7 +658,194 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
 
     assert len(queued_messages) == 1
     assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
+    assert "01-introduction.html = Chapter 1: Introduction to Fortran" in queued_messages[0]
     assert "index.html" in queued_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_proactively_queues_verified_html_inventory(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    (temp_dir / "index.html").write_text("<ul></ul>\n")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.session.current_task = (
+        f"Update {temp_dir / 'index.html'} so the chapter links match the sibling files."
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="glob-1",
+        name="glob",
+        arguments={"path": str(chapters), "pattern": "*.html"},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="\n".join(
+                    [
+                        str(chapters / "01-introduction.html"),
+                        str(chapters / "02-setup.html"),
+                    ]
+                ),
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=create_definition_of_done("Fix the chapter links"),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(queued_messages) == 1
+    assert "verified sibling inventory" in queued_messages[0]
+    assert "chapters/01-introduction.html = Chapter 1: Introduction to Fortran" in queued_messages[0]
+    assert str(temp_dir / "index.html") in queued_messages[0]
+    assert len(summary.tool_result_messages) == 1
+    assert (
+        "Verified chapter inventory: chapters/01-introduction.html = Chapter 1: Introduction to Fortran"
+        in summary.tool_result_messages[0].content
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_marks_validated_html_toc_completion_after_successful_edit(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    index_path = temp_dir / "index.html"
+    old_block = (
+        '<ul class="chapter-list">\n'
+        '    <li><a href="chapters/01-old.html">Chapter 1: Old</a></li>\n'
+        '    <li><a href="chapters/02-old.html">Chapter 2: Old</a></li>\n'
+        "</ul>\n"
+    )
+    new_block = (
+        '<ul class="chapter-list">\n'
+        '    <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>\n'
+        '    <li><a href="chapters/02-setup.html">Chapter 2: Setting Up Your Environment</a></li>\n'
+        "</ul>\n"
+    )
+    index_path.write_text(new_block)
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="edit-1",
+        name="edit",
+        arguments={
+            "file_path": str(index_path),
+            "old_string": old_block,
+            "new_string": new_block,
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output=f"Successfully edited {index_path}",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=create_definition_of_done("Fix the chapter links"),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert any(
+        "Semantic verification preview: validated 2 toc links in index.html"
+        in message.content
+        for message in summary.tool_result_messages
+    )
+    assert len(queued_messages) == 1
+    assert "already satisfies the verified chapter-link constraints" in queued_messages[0]
+    assert "Do not reread `index.html` or files in `chapters/`" in queued_messages[0]
 
 
 async def _noop_emit(event: AgentEvent) -> None:

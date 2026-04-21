@@ -124,7 +124,7 @@ _VERIFY_STEP_HINTS = (
 )
 _SHELL_COMMAND_START = re.compile(
     r"(?<![\w/.-])("
-    r"ls|grep|pytest|uv|python3?|html5validator|cargo|npm|node|mypy|ruff|find|git|cat|sed|head|tail"
+    r"ls|grep|pytest|uv|python3?|html5validator|cargo|npm|node|mypy|ruff|find|git|cat|sed|head|tail|test|diff|cmp|bash|sh|make"
     r")\b"
 )
 
@@ -875,13 +875,11 @@ def _extract_commands(items: list[str]) -> list[str]:
             candidate = re.sub(r"^-\s+", "", candidate)
             match = re.match(r"^`(.+)`$", candidate)
             candidate = (match.group(1) if match else candidate).strip()
-            if candidate.startswith("#"):
-                candidate = _extract_shell_command_from_text(candidate)
-                if not candidate:
-                    continue
+            candidate = _extract_shell_command_from_text(candidate)
+            candidate = candidate.strip().strip("`")
             if candidate:
                 commands.append(candidate)
-    return [command for command in commands if command]
+    return _merge_continued_shell_commands([command for command in commands if command])
 
 
 def _extract_collapsed_shell_commands(text: str) -> list[str]:
@@ -909,6 +907,40 @@ def _extract_shell_command_from_text(text: str) -> str:
     if match is None:
         return ""
     return text[match.start():].strip()
+
+
+def _merge_continued_shell_commands(commands: list[str]) -> list[str]:
+    merged: list[str] = []
+    pending: str | None = None
+
+    for command in commands:
+        stripped = command.strip()
+        if not stripped:
+            continue
+
+        if pending is not None:
+            combined = f"{pending} {stripped}".strip()
+            if _has_dangling_shell_continuation(combined):
+                pending = combined
+                continue
+            merged.append(combined)
+            pending = None
+            continue
+
+        if _has_dangling_shell_continuation(stripped):
+            pending = stripped
+            continue
+        merged.append(stripped)
+
+    if pending is not None:
+        merged.append(pending.rstrip("|& ").strip())
+
+    return [command for command in merged if command]
+
+
+def _has_dangling_shell_continuation(command: str) -> bool:
+    stripped = command.rstrip()
+    return stripped.endswith("|") or stripped.endswith("&&") or stripped.endswith("||")
 
 
 def _has_concrete_anchor(task: str) -> bool:

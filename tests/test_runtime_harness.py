@@ -1867,6 +1867,394 @@ async def test_duplicate_observation_queues_steering_to_reuse_prior_evidence(
 
 
 @pytest.mark.asyncio
+async def test_relative_file_read_stays_on_recent_external_context(
+    temp_dir: Path,
+) -> None:
+    external_dir = temp_dir.parent / f"{temp_dir.name}-external-guide"
+    external_dir.mkdir(exist_ok=True)
+    external_index = external_dir / "index.html"
+    external_index.write_text("external guide index\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"file_path": str(external_index)},
+                ),
+                content="I'll inspect the external index first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-2",
+                    name="read",
+                    arguments={"file_path": "index.html"},
+                ),
+                content="I'll reopen index.html in the same guide.",
+            ),
+            final_response("I stayed on the external guide instead of snapping back to the repo."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Inspect the external guide index twice.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read", "read"]
+    messages = tool_result_messages(run)
+    assert any("external guide index" in message for message in messages)
+    assert not any("File not found: index.html" in message for message in messages)
+    assert any(
+        "Skipped - duplicate action" in message or "external guide index" in message
+        for message in messages[1:]
+    )
+
+
+@pytest.mark.asyncio
+async def test_blocked_shell_text_rewrite_queues_file_tool_steering(
+    temp_dir: Path,
+) -> None:
+    target = temp_dir / "notes.txt"
+    target.write_text("old value\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="bash-1",
+                    name="bash",
+                    arguments={"command": "sed -i '1s/old/new/' notes.txt"},
+                ),
+                content="I'll update the file with sed.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="edit-1",
+                    name="edit",
+                    arguments={
+                        "file_path": str(target),
+                        "old_string": "old value",
+                        "new_string": "new value",
+                    },
+                ),
+                content="I'll switch to the edit tool instead.",
+            ),
+            final_response("Updated the file with Loader's file tools."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Update notes.txt from old value to new value.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["bash", "edit"]
+    assert target.read_text() == "new value\n"
+    messages = tool_result_messages(run)
+    assert any("Shell-based text rewrites are brittle" in message for message in messages)
+    steering_messages = [
+        event.content
+        for event in run.events
+        if event.type == "steering" and event.content
+    ]
+    assert any("Use Loader's file tools for this text edit" in message for message in steering_messages)
+
+
+@pytest.mark.asyncio
+async def test_blocked_html_index_edit_queues_inventory_reuse_steering(
+    temp_dir: Path,
+) -> None:
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "05-input-output.html").write_text("<h1>Chapter 5: Input and Output</h1>\n")
+    index_file = temp_dir / "index.html"
+    index_file.write_text(
+        '<ul class="chapter-list">\n'
+        '    <li><a href="chapters/05-input-output.html">Chapter 5: Input and Output</a></li>\n'
+        '</ul>\n'
+    )
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="glob-1",
+                    name="glob",
+                    arguments={"path": str(chapters), "pattern": "*.html"},
+                ),
+                content="I'll check which chapter files exist first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="edit-1",
+                    name="edit",
+                    arguments={
+                        "file_path": str(index_file),
+                        "old_string": '<li><a href="chapters/05-input-output.html">Chapter 5: Input and Output</a></li>',
+                        "new_string": '<li><a href="chapters/05-control-structures.html">Chapter 5: Control Structures</a></li>',
+                    },
+                ),
+                content="I'll update the TOC entry.",
+            ),
+            final_response("I'll reuse the known chapter inventory and correct the TOC."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Fix the index table of contents so it matches the chapters directory.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    messages = tool_result_messages(run)
+    steering_messages = [
+        event.content
+        for event in run.events
+        if event.type == "steering" and event.content
+    ]
+
+    assert any("TOC references chapter files that do not exist" in message for message in messages)
+    assert any(
+        "Use the current target contents plus the verified sibling inventory instead of guessing." in message
+        for message in steering_messages
+    )
+    assert any(
+        "chapters/05-input-output.html = Chapter 5: Input and Output" in message
+        for message in steering_messages
+    )
+    assert any("<ul class=\"chapter-list\">" in message for message in steering_messages)
+    assert any("Suggested replacement block:" in message for message in steering_messages)
+    assert any("Do not rewrite the whole document." in message for message in steering_messages)
+    assert any("set `old_string` to the current TOC block above exactly" in message for message in steering_messages)
+    assert any("Suggested edit call:" in message for message in steering_messages)
+    assert any('old_string="""' in message for message in steering_messages)
+    assert any(
+        '<li><a href="chapters/05-input-output.html">Chapter 5: Input and Output</a></li>' in message
+        for message in steering_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_path_glob_pattern_still_injects_verified_html_inventory(
+    temp_dir: Path,
+) -> None:
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Fortran</h1>\n"
+    )
+    index_file = temp_dir / "index.html"
+    index_file.write_text("broken table of contents\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="glob-1",
+                    name="glob",
+                    arguments={"pattern": f"{chapters}/*.html"},
+                ),
+                content="I'll inspect the chapter inventory first.",
+            ),
+            final_response("I'll update index.html using the verified inventory."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Fix index.html so the chapter links match the real chapter files.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["glob"]
+    messages = tool_result_messages(run)
+    assert any(
+        "Verified chapter inventory: chapters/01-introduction.html = Chapter 1: Introduction to Fortran"
+        in message
+        for message in messages
+    )
+    assert any(
+        "chapters/02-setup.html = Chapter 2: Setting Up Fortran" in message
+        for message in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_verified_html_inventory_blocks_redundant_chapter_reread(
+    temp_dir: Path,
+) -> None:
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    index_file = temp_dir / "index.html"
+    index_file.write_text("broken table of contents\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="glob-1",
+                    name="glob",
+                    arguments={"path": str(chapters), "pattern": "*.html"},
+                ),
+                content="I'll inspect the chapter inventory first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"file_path": str(chapters / '01-introduction.html')},
+                ),
+                content="I'll open the first chapter file to extract its title.",
+            ),
+            final_response("I'll update index.html using the verified chapter inventory."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Fix index.html so the chapter links and titles match the real chapter files.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    messages = tool_result_messages(run)
+    assert any(
+        "Verified chapter inventory: chapters/01-introduction.html = Chapter 1: Introduction to Fortran"
+        in message
+        for message in messages
+    )
+    assert any(
+        "The verified chapter inventory already lists the exact href/title pairs for this directory"
+        in message
+        for message in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_html_toc_edit_blocks_post_success_reread_and_steers_to_finish(
+    temp_dir: Path,
+) -> None:
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    index_file = temp_dir / "index.html"
+    old_block = (
+        '<h2>Table of Contents</h2>\n'
+        '<ul class="chapter-list">\n'
+        '    <li><a href="chapters/01-old.html">Chapter 1: Old</a></li>\n'
+        '    <li><a href="chapters/02-old.html">Chapter 2: Old</a></li>\n'
+        '</ul>\n'
+    )
+    new_block = (
+        '<h2>Table of Contents</h2>\n'
+        '<ul class="chapter-list">\n'
+        '    <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>\n'
+        '    <li><a href="chapters/02-setup.html">Chapter 2: Setting Up Your Environment</a></li>\n'
+        '</ul>\n'
+    )
+    index_file.write_text(new_block.replace("01-introduction.html", "01-old.html").replace("02-setup.html", "02-old.html").replace("Introduction to Fortran", "Old").replace("Setting Up Your Environment", "Old"))
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="glob-1",
+                    name="glob",
+                    arguments={"path": str(chapters), "pattern": "*.html"},
+                ),
+                content="I'll inspect the chapter inventory first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"file_path": str(index_file)},
+                ),
+                content="I'll inspect index.html next.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="edit-1",
+                    name="edit",
+                    arguments={
+                        "file_path": str(index_file),
+                        "old_string": old_block,
+                        "new_string": new_block,
+                    },
+                ),
+                content="I'll fix the TOC now.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-2",
+                    name="read",
+                    arguments={"file_path": str(index_file)},
+                ),
+                content="I'll reread index.html to confirm the change.",
+            ),
+            final_response(
+                "I updated index.html so the table of contents matches the real chapter files."
+            ),
+        ]
+    )
+
+    run = await run_scenario(
+        "Update index.html so every chapter link and title matches the real HTML files in chapters/.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    messages = tool_result_messages(run)
+    steering_messages = [
+        event.content
+        for event in run.events
+        if event.type == "steering" and event.content
+    ]
+
+    assert any(
+        "Semantic verification preview: validated 2 toc links in index.html"
+        in message
+        for message in messages
+    )
+    assert any(
+        "already passes the validated chapter-link check" in message
+        for message in messages
+    )
+    assert any(
+        "already satisfies the verified chapter-link constraints" in message
+        for message in steering_messages
+    )
+    assert any(
+        "Do not reread `index.html` or files in `chapters/`" in message
+        for message in steering_messages
+    )
+    assert "validated 2 toc links in index.html" in run.response
+
+
+@pytest.mark.asyncio
 async def test_interleaved_reread_is_allowed_once_without_intervening_mutation(
     temp_dir: Path,
 ) -> None:

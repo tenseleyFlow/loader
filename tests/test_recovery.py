@@ -122,6 +122,15 @@ class TestGetRecoveryHints:
         hints = get_recovery_hints(ErrorCategory.COMMAND_NOT_FOUND, "bash")
         assert "which" in hints.lower()
 
+    def test_bash_text_rewrite_hint_prefers_file_tools(self):
+        hints = get_recovery_hints(
+            ErrorCategory.UNKNOWN,
+            "bash",
+            {"command": "sed -i '1,3c\\updated' index.html"},
+        )
+        assert "edit/patch/write" in hints.lower()
+        assert "index.html" in hints
+
 
 class TestFormatRecoveryPrompt:
     """Tests for recovery prompt formatting."""
@@ -139,6 +148,27 @@ class TestFormatRecoveryPrompt:
         assert "No such file" in prompt
         assert "1/3" in prompt
         assert "retry the same command with slight variations" in prompt
+
+    def test_format_recovery_prompt_for_failed_shell_rewrite_points_to_file_tools(self):
+        ctx = RecoveryContext(
+            original_tool="bash",
+            original_args={"command": "sed -i '1,3c\\updated' index.html"},
+        )
+        ctx.add_attempt(
+            "bash",
+            {"command": "sed -i '1,3c\\updated' index.html"},
+            "Exit code 1",
+        )
+
+        prompt = format_recovery_prompt(
+            ctx,
+            "bash",
+            {"command": "sed -i '1,3c\\updated' index.html"},
+            "Exit code 1",
+        )
+
+        assert "edit/patch/write" in prompt.lower()
+        assert "index.html" in prompt
 
 
 class TestFormatFailureMessage:

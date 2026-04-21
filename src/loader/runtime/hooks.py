@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 
 from ..llm.base import ToolCall
@@ -157,7 +158,92 @@ class SearchPathAliasHook(BaseToolHook):
                 updated_arguments.pop(cleanup_key, None)
             return HookResult(updated_arguments=updated_arguments)
 
+        if context.tool_call.name == "glob":
+            normalized_arguments = self._normalize_glob_pattern_path(arguments)
+            if normalized_arguments is not None:
+                return HookResult(updated_arguments=normalized_arguments)
+
         return HookResult()
+
+    def _normalize_glob_pattern_path(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        pattern = str(arguments.get("pattern", "")).strip()
+        if not pattern or not pattern.startswith(("/", "~", "./", "../")):
+            return None
+
+        pattern_path = Path(pattern)
+        parent = str(pattern_path.parent).strip()
+        basename = pattern_path.name.strip()
+        if not parent or not basename:
+            return None
+        if any(token in parent for token in ("*", "?", "[")):
+            return None
+
+        updated_arguments = dict(arguments)
+        updated_arguments["path"] = parent
+        updated_arguments["pattern"] = basename
+        return updated_arguments
+
+
+class RelativePathContextHook(BaseToolHook):
+    """Recover relative file/search paths against recently-used external directories."""
+
+    _FILE_TOOLS = frozenset({"read", "write", "edit", "patch"})
+    _SEARCH_TOOLS = frozenset({"glob", "grep"})
+
+    def __init__(self, action_tracker: ActionTracker, workspace_root: Path) -> None:
+        self.action_tracker = action_tracker
+        self.workspace_root = workspace_root.expanduser().resolve()
+
+    async def pre_tool_use(self, context: HookContext) -> HookResult:
+        argument_key = self._argument_key(context.tool_call.name)
+        if argument_key is None:
+            return HookResult()
+
+        arguments = context.tool_call.arguments
+        raw_path = str(arguments.get(argument_key, "")).strip()
+        if not raw_path or raw_path.startswith(("/", "~")):
+            return HookResult()
+
+        resolved = self._resolve_recent_context_path(
+            raw_path,
+            require_existing=True,
+        )
+        if resolved is None:
+            return HookResult()
+
+        updated_arguments = dict(arguments)
+        updated_arguments[argument_key] = resolved
+        return HookResult(updated_arguments=updated_arguments)
+
+    def _argument_key(self, tool_name: str) -> str | None:
+        if tool_name in self._FILE_TOOLS:
+            return "file_path"
+        if tool_name in self._SEARCH_TOOLS:
+            return "path"
+        return None
+
+    def _resolve_recent_context_path(
+        self,
+        raw_path: str,
+        *,
+        require_existing: bool,
+    ) -> str | None:
+        workspace_candidate = (self.workspace_root / raw_path).expanduser()
+        if workspace_candidate.exists():
+            return None
+
+        for base_dir in self.action_tracker.recent_path_contexts():
+            candidate = (Path(base_dir) / raw_path).expanduser()
+            if require_existing:
+                if candidate.exists():
+                    return str(candidate)
+                continue
+            if candidate.exists() or candidate.parent.exists():
+                return str(candidate)
+        return None
 
 
 class HookManager:
@@ -350,6 +436,7 @@ def build_default_tool_hooks(
     validator: PreActionValidator,
     registry: ToolRegistry,
     rollback_plan: RollbackPlan | None,
+    workspace_root: Path,
 ) -> HookManager:
     """Build Loader's default tool hook stack for one runtime turn."""
 
@@ -357,6 +444,7 @@ def build_default_tool_hooks(
         [
             FilePathAliasHook(),
             SearchPathAliasHook(),
+            RelativePathContextHook(action_tracker, workspace_root),
             DuplicateActionHook(action_tracker),
             ActionValidationHook(validator),
             RollbackTrackingHook(registry, rollback_plan),

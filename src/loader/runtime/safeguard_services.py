@@ -4,8 +4,378 @@ from __future__ import annotations
 
 import re
 import shlex
+from difflib import get_close_matches
 from dataclasses import dataclass
 from pathlib import Path
+
+
+TEXT_REWRITE_SUFFIXES = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".css",
+        ".csv",
+        ".go",
+        ".h",
+        ".hpp",
+        ".html",
+        ".htm",
+        ".java",
+        ".js",
+        ".json",
+        ".jsx",
+        ".md",
+        ".py",
+        ".rb",
+        ".rs",
+        ".sh",
+        ".sql",
+        ".svg",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
+TEXT_REWRITE_FILENAMES = frozenset(
+    {
+        "dockerfile",
+        "index.html",
+        "makefile",
+        "package.json",
+        "pyproject.toml",
+        "readme",
+        "readme.md",
+    }
+)
+
+
+def _strip_shell_token(token: str) -> str:
+    return token.strip().strip("\"'").rstrip(";|&")
+
+
+def _looks_like_text_rewrite_target(token: str) -> bool:
+    candidate = _strip_shell_token(token)
+    if not candidate or candidate in {"-", "/dev/null"}:
+        return False
+    if candidate.startswith("-"):
+        return False
+    lowered = Path(candidate).name.lower()
+    if lowered in TEXT_REWRITE_FILENAMES:
+        return True
+    return Path(candidate).suffix.lower() in TEXT_REWRITE_SUFFIXES
+
+
+def _extract_redirect_target(argv: list[str]) -> str | None:
+    for index, token in enumerate(argv):
+        if token in {">", ">>"} and index + 1 < len(argv):
+            candidate = argv[index + 1]
+            if _looks_like_text_rewrite_target(candidate):
+                return _strip_shell_token(candidate)
+        if token == "tee":
+            for candidate in argv[index + 1 :]:
+                if candidate.startswith("-"):
+                    continue
+                if _looks_like_text_rewrite_target(candidate):
+                    return _strip_shell_token(candidate)
+                break
+    return None
+
+
+def extract_shell_text_rewrite_target(command: str) -> str | None:
+    """Return the target file when bash is used as a brittle text editor."""
+
+    normalized = " ".join(str(command or "").split())
+    if not normalized:
+        return None
+
+    try:
+        argv = shlex.split(normalized)
+    except ValueError:
+        argv = []
+
+    if argv:
+        for index, token in enumerate(argv):
+            if token == "sed" and any(part.startswith("-i") for part in argv[index + 1 :]):
+                for candidate in reversed(argv[index + 1 :]):
+                    if _looks_like_text_rewrite_target(candidate):
+                        return _strip_shell_token(candidate)
+            if token == "perl" and any(
+                part.startswith("-p") or part.startswith("-0p") for part in argv[index + 1 :]
+            ):
+                for candidate in reversed(argv[index + 1 :]):
+                    if _looks_like_text_rewrite_target(candidate):
+                        return _strip_shell_token(candidate)
+
+        redirect_target = _extract_redirect_target(argv)
+        if redirect_target is not None:
+            return redirect_target
+
+    regex_match = re.search(
+        r"(?:sed\s+-i(?:\s+''|\s+\"\"|\s+'[^']*'|\s+\"[^\"]*\")?.*?|perl\s+-[0-9]*p[i0-9-]*.*?)\s+([^\s\"';|&]+(?:\.[A-Za-z0-9]+)?)",
+        normalized,
+    )
+    if regex_match:
+        candidate = _strip_shell_token(regex_match.group(1))
+        if _looks_like_text_rewrite_target(candidate):
+            return candidate
+
+    redirect_match = re.search(r"(?:>>?|tee(?:\s+-a)?)\s+([^\s\"';|&]+)", normalized)
+    if redirect_match:
+        candidate = _strip_shell_token(redirect_match.group(1))
+        if _looks_like_text_rewrite_target(candidate):
+            return candidate
+
+    return None
+
+
+def extract_html_title_from_text(payload: str) -> str | None:
+    """Extract one human-readable HTML title from raw file contents."""
+
+    for pattern in (r"<h1[^>]*>(.*?)</h1>", r"<title[^>]*>(.*?)</title>"):
+        match = re.search(pattern, payload, re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        title = re.sub(r"<[^>]+>", " ", match.group(1))
+        normalized = " ".join(title.split()).strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def read_html_title(path: Path) -> str:
+    """Read one HTML file title for inventory and validation helpers."""
+
+    try:
+        return extract_html_title_from_text(path.read_text()) or ""
+    except OSError:
+        return ""
+
+
+def format_html_inventory_entry(root: Path, candidate: Path) -> str:
+    """Format one exact href/title pair for model-facing guidance."""
+
+    normalized_root = root.expanduser().resolve(strict=False)
+    normalized_candidate = candidate.expanduser().resolve(strict=False)
+    try:
+        href = str(normalized_candidate.relative_to(normalized_root))
+    except ValueError:
+        href = normalized_candidate.name
+    title = read_html_title(candidate)
+    if title:
+        return f"{href} = {title}"
+    return href
+
+
+def _collect_html_inventory_entries(index_path: str | Path) -> list[tuple[str, str]]:
+    """Return exact href/title pairs for sibling HTML chapters."""
+
+    index = Path(index_path).expanduser()
+    if index.name != "index.html":
+        return []
+
+    chapters_dir = index.parent / "chapters"
+    if not chapters_dir.is_dir():
+        return []
+
+    entries: list[tuple[str, str]] = []
+    for candidate in sorted(chapters_dir.glob("*.html")):
+        if not candidate.is_file():
+            continue
+        title = read_html_title(candidate)
+        if not title:
+            continue
+        href = format_html_inventory_entry(index.parent, candidate).split(" = ", 1)[0]
+        entries.append((href, title))
+    return entries
+
+
+def summarize_html_inventory(
+    index_path: str | Path,
+    *,
+    limit: int | None = 12,
+) -> str | None:
+    """Summarize the existing sibling HTML inventory for one index page."""
+
+    index = Path(index_path).expanduser()
+    if index.name != "index.html":
+        return None
+
+    entries = [f"{href} = {title}" for href, title in _collect_html_inventory_entries(index)]
+    if not entries:
+        return None
+
+    if limit is not None and len(entries) > limit:
+        return "; ".join(entries[:limit]) + "; ..."
+    return "; ".join(entries)
+
+
+def extract_html_toc_excerpt(
+    index_path: str | Path,
+    *,
+    max_lines: int = 16,
+) -> str | None:
+    """Extract the current HTML table-of-contents block for recovery guidance."""
+
+    index = Path(index_path).expanduser()
+    if index.name != "index.html":
+        return None
+
+    try:
+        text = index.read_text()
+    except OSError:
+        return None
+
+    match = re.search(
+        r"(<h2[^>]*>\s*Table of Contents\s*</h2>.*?</ul>)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        match = re.search(
+            r"(<ul[^>]*class=\"[^\"]*chapter-list[^\"]*\"[^>]*>.*?</ul>)",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+    if not match:
+        return None
+
+    snippet_lines = [line.rstrip() for line in match.group(1).splitlines() if line.strip()]
+    if not snippet_lines:
+        return None
+    if len(snippet_lines) > max_lines:
+        snippet_lines = snippet_lines[:max_lines] + ["..."]
+    return "\n".join(snippet_lines)
+
+
+def build_html_toc_replacement_block(index_path: str | Path) -> str | None:
+    """Build one exact replacement TOC block from the verified sibling inventory."""
+
+    entries = _collect_html_inventory_entries(index_path)
+    if not entries:
+        return None
+
+    excerpt = extract_html_toc_excerpt(index_path, max_lines=64)
+    excerpt_lines = excerpt.splitlines() if excerpt else []
+
+    heading_line = next(
+        (line.rstrip() for line in excerpt_lines if "<h2" in line.lower()),
+        "<h2>Table of Contents</h2>",
+    )
+    ul_line = next(
+        (
+            line.rstrip()
+            for line in excerpt_lines
+            if "<ul" in line.lower() and "chapter-list" in line.lower()
+        ),
+        '        <ul class="chapter-list">',
+    )
+    li_indent = next(
+        (
+            re.match(r"^\s*", line).group(0)
+            for line in excerpt_lines
+            if "<li><a " in line
+        ),
+        re.match(r"^\s*", ul_line).group(0) + "    ",
+    )
+    closing_line = next(
+        (line.rstrip() for line in excerpt_lines if "</ul>" in line.lower()),
+        f"{re.match(r'^\s*', ul_line).group(0)}</ul>",
+    )
+
+    lines = [heading_line, ul_line]
+    lines.extend(
+        f'{li_indent}<li><a href="{href}">{title}</a></li>'
+        for href, title in entries
+    )
+    lines.append(closing_line)
+    return "\n".join(lines)
+
+
+def build_html_toc_edit_call_template(index_path: str | Path) -> str | None:
+    """Build one concrete `edit(...)` template for replacing the TOC block."""
+
+    index = Path(index_path).expanduser()
+    excerpt = extract_html_toc_excerpt(index, max_lines=64)
+    replacement = build_html_toc_replacement_block(index)
+    if not excerpt or not replacement:
+        return None
+
+    return "\n".join(
+        [
+            "edit(",
+            f'  file_path="{index}",',
+            '  old_string="""',
+            excerpt,
+            '""",',
+            '  new_string="""',
+            replacement,
+            '"""',
+            ")",
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class HtmlTocValidationResult:
+    """Semantic validation result for one chapter-list table of contents."""
+
+    valid: bool
+    link_count: int
+    missing: tuple[str, ...] = ()
+    mismatched: tuple[str, ...] = ()
+
+
+def validate_html_toc(index_path: str | Path) -> HtmlTocValidationResult | None:
+    """Validate that one HTML index TOC points at real chapter files with matching titles."""
+
+    index = Path(index_path).expanduser()
+    if index.name != "index.html":
+        return None
+
+    try:
+        text = index.read_text()
+    except OSError:
+        return None
+
+    section_match = re.search(r'<ul class="chapter-list">(.*?)</ul>', text, re.S)
+    if section_match is None:
+        return HtmlTocValidationResult(
+            valid=False,
+            link_count=0,
+            missing=("Missing chapter-list table of contents",),
+        )
+
+    links = re.findall(r'<a href="([^"]+)">([^<]+)</a>', section_match.group(1))
+    if not links:
+        return HtmlTocValidationResult(
+            valid=False,
+            link_count=0,
+            missing=("No chapter links found in table of contents",),
+        )
+
+    root = index.parent
+    missing: list[str] = []
+    mismatched: list[str] = []
+    for href, label in links:
+        target = (root / href).expanduser().resolve(strict=False)
+        if not target.exists():
+            missing.append(f"{href} -> missing")
+            continue
+        title = read_html_title(target)
+        if title and label.strip() != title:
+            mismatched.append(f"{href} -> {label.strip()} != {title}")
+
+    return HtmlTocValidationResult(
+        valid=not missing and not mismatched,
+        link_count=len(links),
+        missing=tuple(missing),
+        mismatched=tuple(mismatched),
+    )
 
 
 class ActionTracker:
@@ -19,6 +389,8 @@ class ActionTracker:
     READ_REPEAT_THRESHOLD = 3
     SEARCH_REPEAT_THRESHOLD = 2
     BASH_OBSERVATION_REPEAT_THRESHOLD = 2
+    HTML_CHAPTER_EVIDENCE_THRESHOLD = 3
+    RECENT_PATH_CONTEXT_LIMIT = 12
 
     def __init__(self) -> None:
         self._file_writes: dict[str, list[str]] = {}
@@ -32,6 +404,10 @@ class ActionTracker:
         self._recent_reads: dict[str, tuple[int, int, int]] = {}
         self._recent_searches: dict[str, tuple[int, int, int]] = {}
         self._recent_bash_observations: dict[str, tuple[int, int, int]] = {}
+        self._recent_html_directory_reads: dict[str, tuple[int, set[str]]] = {}
+        self._recent_path_contexts: list[str] = []
+        self._validated_html_tocs: dict[str, int] = {}
+        self._verified_html_inventory_dirs: set[str] = set()
 
     def reset(self) -> None:
         self._file_writes.clear()
@@ -45,6 +421,10 @@ class ActionTracker:
         self._recent_reads.clear()
         self._recent_searches.clear()
         self._recent_bash_observations.clear()
+        self._recent_html_directory_reads.clear()
+        self._recent_path_contexts.clear()
+        self._validated_html_tocs.clear()
+        self._verified_html_inventory_dirs.clear()
 
     def _normalize_path(self, path: str) -> str:
         expanded = Path(path).expanduser()
@@ -111,6 +491,25 @@ class ActionTracker:
     def record_mkdir(self, dir_path: str) -> None:
         self._dirs_created.add(self._normalize_path(dir_path))
 
+    def recent_path_contexts(self) -> list[str]:
+        return list(self._recent_path_contexts)
+
+    def note_validated_html_toc(self, index_path: str) -> None:
+        """Record that one index currently satisfies the semantic chapter-link check."""
+
+        normalized = self._normalize_path(index_path)
+        if Path(normalized).name != "index.html":
+            return
+        self._validated_html_tocs[normalized] = self._mutation_epoch
+
+    def note_verified_html_inventory(self, index_path: str) -> None:
+        """Record that one sibling chapter inventory is already known exactly."""
+
+        normalized = self._normalize_path(index_path)
+        path = Path(normalized)
+        chapters_dir = path if path.name == "chapters" else path.parent / "chapters"
+        self._verified_html_inventory_dirs.add(self._normalize_path(str(chapters_dir)))
+
     def check_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str]:
         if tool_name == "write":
             file_path = arguments.get("file_path", "")
@@ -136,8 +535,28 @@ class ActionTracker:
                     return True, f"Same patch already applied to: {file_path}"
 
         elif tool_name == "read":
+            inventory_duplicate, inventory_reason = self._check_verified_html_inventory_observation(
+                tool_name,
+                arguments,
+            )
+            if inventory_duplicate:
+                return True, inventory_reason
+            validated_duplicate, validated_reason = self._check_validated_html_toc_observation(
+                tool_name,
+                arguments,
+            )
+            if validated_duplicate:
+                return True, validated_reason
             read_key = self._make_read_key(arguments)
             if read_key:
+                sufficiency_duplicate, sufficiency_reason = (
+                    self._check_html_observation_sufficiency(
+                        tool_name,
+                        arguments,
+                    )
+                )
+                if sufficiency_duplicate:
+                    return True, sufficiency_reason
                 duplicate, reason = self._check_recent_observation(
                     self._recent_reads,
                     read_key,
@@ -153,8 +572,28 @@ class ActionTracker:
                     return True, reason
 
         elif tool_name in {"glob", "grep"}:
+            inventory_duplicate, inventory_reason = self._check_verified_html_inventory_observation(
+                tool_name,
+                arguments,
+            )
+            if inventory_duplicate:
+                return True, inventory_reason
+            validated_duplicate, validated_reason = self._check_validated_html_toc_observation(
+                tool_name,
+                arguments,
+            )
+            if validated_duplicate:
+                return True, validated_reason
             observation_key = self._make_search_key(tool_name, arguments)
             if observation_key:
+                sufficiency_duplicate, sufficiency_reason = (
+                    self._check_html_observation_sufficiency(
+                        tool_name,
+                        arguments,
+                    )
+                )
+                if sufficiency_duplicate:
+                    return True, sufficiency_reason
                 duplicate, reason = self._check_recent_observation(
                     self._recent_searches,
                     observation_key,
@@ -170,6 +609,18 @@ class ActionTracker:
         elif tool_name == "bash":
             command = str(arguments.get("command", "")).strip()
             if self._is_observational_bash(command):
+                inventory_duplicate, inventory_reason = self._check_verified_html_inventory_observation(
+                    tool_name,
+                    arguments,
+                )
+                if inventory_duplicate:
+                    return True, inventory_reason
+                validated_duplicate, validated_reason = self._check_validated_html_toc_observation(
+                    tool_name,
+                    arguments,
+                )
+                if validated_duplicate:
+                    return True, validated_reason
                 duplicate, reason = self._check_recent_observation(
                     self._recent_bash_observations,
                     self._normalize_command(command),
@@ -198,6 +649,8 @@ class ActionTracker:
             content = arguments.get("content", "")
             if file_path:
                 self.record_file_create(file_path, content)
+                self._record_path_context(file_path)
+                self._clear_verified_html_inventory_for_path(file_path)
                 self._note_mutation()
 
         elif tool_name == "edit":
@@ -206,6 +659,8 @@ class ActionTracker:
             new_string = arguments.get("new_string", "")
             if file_path:
                 self.record_edit(file_path, old_string, new_string)
+                self._record_path_context(file_path)
+                self._clear_verified_html_inventory_for_path(file_path)
                 self._note_mutation()
 
         elif tool_name == "patch":
@@ -217,6 +672,8 @@ class ActionTracker:
                     self.record_edit(file_path, str(hunks), "structured_patch")
                 elif isinstance(raw_patch, str) and raw_patch.strip():
                     self.record_edit(file_path, raw_patch, "raw_patch")
+                self._record_path_context(file_path)
+                self._clear_verified_html_inventory_for_path(file_path)
                 self._note_mutation()
 
         elif tool_name == "read":
@@ -226,6 +683,10 @@ class ActionTracker:
                     self._recent_reads,
                     read_key,
                 )
+            file_path = str(arguments.get("file_path", "")).strip()
+            if file_path:
+                self._record_path_context(file_path)
+            self._record_html_directory_read(arguments)
 
         elif tool_name in {"glob", "grep"}:
             observation_key = self._make_search_key(tool_name, arguments)
@@ -234,12 +695,18 @@ class ActionTracker:
                     self._recent_searches,
                     observation_key,
                 )
+            search_path = str(arguments.get("path", "")).strip()
+            if search_path:
+                self._record_path_context(search_path, is_directory_hint=True)
 
         elif tool_name == "bash":
             command = arguments.get("command", "")
             if command:
                 self.record_command(command)
                 if self._is_mutating_bash(command):
+                    target = extract_shell_text_rewrite_target(command)
+                    if target:
+                        self._clear_verified_html_inventory_for_path(target)
                     self._note_mutation()
                 elif self._is_observational_bash(command):
                     self._record_observation(
@@ -411,6 +878,8 @@ class ActionTracker:
         norm_cmd = self._normalize_command(command)
         if not norm_cmd:
             return False
+        if extract_shell_text_rewrite_target(norm_cmd) is not None:
+            return True
         mutating_fragments = (
             " >",
             ">>",
@@ -435,6 +904,248 @@ class ActionTracker:
         if not argv:
             return False
         return argv[0] in {"touch", "mkdir", "rm", "mv", "cp", "chmod", "chown"}
+
+    def _record_path_context(self, path_value: str, *, is_directory_hint: bool = False) -> None:
+        normalized = self._normalize_path(path_value)
+        path = Path(normalized)
+        primary_dir = path if is_directory_hint or path.is_dir() else path.parent
+        candidate_dirs = [primary_dir]
+        if primary_dir.parent != primary_dir:
+            candidate_dirs.append(primary_dir.parent)
+
+        for candidate_dir in candidate_dirs:
+            normalized_dir = self._normalize_path(str(candidate_dir))
+            if normalized_dir in self._recent_path_contexts:
+                self._recent_path_contexts.remove(normalized_dir)
+            self._recent_path_contexts.insert(0, normalized_dir)
+
+        if len(self._recent_path_contexts) > self.RECENT_PATH_CONTEXT_LIMIT:
+            del self._recent_path_contexts[self.RECENT_PATH_CONTEXT_LIMIT :]
+
+    def _record_html_directory_read(self, arguments: dict) -> None:
+        file_path = str(arguments.get("file_path", "")).strip()
+        if not file_path:
+            return
+        normalized_path = self._normalize_path(file_path)
+        path = Path(normalized_path)
+        if path.suffix != ".html" or path.name == "index.html" or path.parent.name != "chapters":
+            return
+
+        directory = str(path.parent)
+        last_seen = self._recent_html_directory_reads.get(directory)
+        if last_seen is None or last_seen[0] != self._mutation_epoch:
+            self._recent_html_directory_reads[directory] = (
+                self._mutation_epoch,
+                {path.name},
+            )
+            return
+
+        _, seen_files = last_seen
+        updated = set(seen_files)
+        updated.add(path.name)
+        self._recent_html_directory_reads[directory] = (
+            self._mutation_epoch,
+            updated,
+        )
+
+    def _check_html_observation_sufficiency(
+        self,
+        tool_name: str,
+        arguments: dict,
+    ) -> tuple[bool, str]:
+        if tool_name == "read":
+            file_path = str(arguments.get("file_path", "")).strip()
+            if not file_path:
+                return False, ""
+            normalized_path = self._normalize_path(file_path)
+            path = Path(normalized_path)
+            if path.name != "index.html":
+                return False, ""
+            chapters_dir = str(path.parent / "chapters")
+            chapter_count = self._chapter_evidence_count(chapters_dir)
+            if chapter_count < self.HTML_CHAPTER_EVIDENCE_THRESHOLD:
+                return False, ""
+            read_key = self._make_read_key(arguments)
+            if read_key is None:
+                return False, ""
+            last_seen = self._recent_reads.get(read_key)
+            if last_seen is None:
+                return False, ""
+            _, _, repeat_count = last_seen
+            if repeat_count < 2:
+                return False, ""
+            return (
+                True,
+                "Already confirmed multiple chapter files in the sibling chapters "
+                "directory; reuse the known file/title evidence and update index.html "
+                "instead of rereading it",
+            )
+
+        if tool_name in {"glob", "grep"}:
+            search_path = str(arguments.get("path", "")).strip()
+            if not search_path:
+                return False, ""
+            normalized_path = self._normalize_path(search_path)
+            path = Path(normalized_path)
+            if path.name != "chapters":
+                return False, ""
+            chapter_count = self._chapter_evidence_count(str(path))
+            if chapter_count < self.HTML_CHAPTER_EVIDENCE_THRESHOLD:
+                return False, ""
+            observation_key = self._make_search_key(tool_name, arguments)
+            if observation_key is None or observation_key not in self._recent_searches:
+                return False, ""
+            return (
+                True,
+                "Already confirmed multiple chapter files in this directory; reuse "
+                "the known filename/title evidence and update the target index instead "
+                "of rerunning the directory search",
+            )
+
+        return False, ""
+
+    def _chapter_evidence_count(self, directory: str) -> int:
+        last_seen = self._recent_html_directory_reads.get(directory)
+        if last_seen is None:
+            return 0
+        last_epoch, seen_files = last_seen
+        if last_epoch != self._mutation_epoch:
+            return 0
+        return len(seen_files)
+
+    def _check_validated_html_toc_observation(
+        self,
+        tool_name: str,
+        arguments: dict,
+    ) -> tuple[bool, str]:
+        related_paths = self._validated_html_related_paths(tool_name, arguments)
+        if not related_paths:
+            return False, ""
+
+        for path in related_paths:
+            if self._matches_validated_html_toc(path):
+                return (
+                    True,
+                    "The current index.html already passes the validated chapter-link "
+                    "check; stop rereading index.html or chapters/ and finish the task "
+                    "unless a specific href or title is still unresolved",
+                )
+        return False, ""
+
+    def _check_verified_html_inventory_observation(
+        self,
+        tool_name: str,
+        arguments: dict,
+    ) -> tuple[bool, str]:
+        related_paths = self._verified_inventory_related_paths(tool_name, arguments)
+        if not related_paths:
+            return False, ""
+
+        for path in related_paths:
+            if self._matches_verified_html_inventory(path):
+                return (
+                    True,
+                    "The verified chapter inventory already lists the exact href/title "
+                    "pairs for this directory; update index.html from that inventory "
+                    "instead of rereading chapter files",
+                )
+        return False, ""
+
+    def _validated_html_related_paths(
+        self,
+        tool_name: str,
+        arguments: dict,
+    ) -> list[str]:
+        if tool_name == "read":
+            file_path = str(arguments.get("file_path", "")).strip()
+            return [self._normalize_path(file_path)] if file_path else []
+
+        if tool_name in {"glob", "grep"}:
+            search_path = str(arguments.get("path", "")).strip()
+            return [self._normalize_path(search_path)] if search_path else []
+
+        if tool_name == "bash":
+            command = str(arguments.get("command", "")).strip()
+            if not command:
+                return []
+            return self._extract_observational_bash_paths(command)
+
+        return []
+
+    def _verified_inventory_related_paths(
+        self,
+        tool_name: str,
+        arguments: dict,
+    ) -> list[str]:
+        if tool_name == "read":
+            file_path = str(arguments.get("file_path", "")).strip()
+            return [self._normalize_path(file_path)] if file_path else []
+
+        if tool_name in {"glob", "grep"}:
+            search_path = str(arguments.get("path", "")).strip()
+            return [self._normalize_path(search_path)] if search_path else []
+
+        if tool_name == "bash":
+            command = str(arguments.get("command", "")).strip()
+            if not command:
+                return []
+            return self._extract_observational_bash_paths(command)
+
+        return []
+
+    def _matches_validated_html_toc(self, path: str) -> bool:
+        normalized = self._normalize_path(path)
+        candidate = Path(normalized)
+        for index_path, epoch in self._validated_html_tocs.items():
+            if epoch != self._mutation_epoch:
+                continue
+            index = Path(index_path)
+            chapters = Path(self._normalize_path(str(index.parent / "chapters")))
+            if candidate == index or candidate == chapters:
+                return True
+            if candidate.parent == chapters:
+                return True
+        return False
+
+    def _matches_verified_html_inventory(self, path: str) -> bool:
+        normalized = self._normalize_path(path)
+        candidate = Path(normalized)
+        for directory in self._verified_html_inventory_dirs:
+            chapters = Path(directory)
+            if candidate == chapters or candidate.parent == chapters:
+                return True
+        return False
+
+    def _clear_verified_html_inventory_for_path(self, path_value: str) -> None:
+        normalized = self._normalize_path(path_value)
+        candidate = Path(normalized)
+        stale: set[str] = set()
+        for directory in self._verified_html_inventory_dirs:
+            chapters = Path(directory)
+            if candidate == chapters or candidate.parent == chapters:
+                stale.add(directory)
+        self._verified_html_inventory_dirs.difference_update(stale)
+
+    def _extract_observational_bash_paths(self, command: str) -> list[str]:
+        norm_cmd = self._normalize_command(command)
+        try:
+            argv = shlex.split(norm_cmd)
+        except ValueError:
+            return []
+        if not argv:
+            return []
+
+        paths: list[str] = []
+        for token in argv[1:]:
+            candidate = _strip_shell_token(token)
+            if not candidate or candidate.startswith("-"):
+                continue
+            if any(marker in candidate for marker in ("/", "~")) or Path(candidate).suffix == ".html":
+                paths.append(self._normalize_path(candidate))
+                continue
+            if candidate.rstrip("/").endswith("chapters"):
+                paths.append(self._normalize_path(candidate))
+        return paths
 
 
 @dataclass
@@ -500,9 +1211,20 @@ class PreActionValidator:
                 return ValidationResult(
                     valid=False,
                     reason=reason,
-                    suggestion="This command is too dangerous to execute",
-                    severity="block",
-                )
+                suggestion="This command is too dangerous to execute",
+                severity="block",
+            )
+
+        rewrite_target = extract_shell_text_rewrite_target(str(command))
+        if rewrite_target is not None:
+            return ValidationResult(
+                valid=False,
+                reason="Shell-based text rewrites are brittle and bypass Loader's safer file tools",
+                suggestion=(
+                    f"Use edit/patch/write for `{rewrite_target}` instead of rewriting it with bash"
+                ),
+                severity="error",
+            )
 
         for pattern, reason in self.SUSPICIOUS_PATTERNS:
             if re.search(pattern, command):
@@ -607,6 +1329,10 @@ class PreActionValidator:
                 severity="error",
             )
 
+        html_index_result = self._validate_html_index_links(str(file_path), str(new_string))
+        if not html_index_result.valid:
+            return html_index_result
+
         return ValidationResult(valid=True)
 
     def _validate_patch(self, arguments: dict) -> ValidationResult:
@@ -663,6 +1389,130 @@ class PreActionValidator:
             )
 
         return ValidationResult(valid=True)
+
+    def _validate_html_index_links(
+        self,
+        file_path: str,
+        content: str,
+    ) -> ValidationResult:
+        normalized = Path(file_path).expanduser()
+        if normalized.name != "index.html" or "<a " not in content:
+            return ValidationResult(valid=True)
+
+        link_pairs = re.findall(r'<a\s+href="([^"]+)">([^<]+)</a>', content)
+        if not link_pairs:
+            return ValidationResult(valid=True)
+
+        root = normalized.parent
+        missing: list[str] = []
+        mismatched: list[str] = []
+        for href, label in link_pairs:
+            target = (root / href).resolve(strict=False)
+            if not target.exists():
+                if href not in missing:
+                    missing.append(href)
+                continue
+
+            title = read_html_title(target)
+            if title and label.strip() != title:
+                if href not in mismatched:
+                    mismatched.append(href)
+
+        if missing:
+            suggestions = self._suggest_existing_html_targets(root, missing)
+            preview_items = [
+                format_html_inventory_entry(root, root / suggestion)
+                for suggestion in suggestions
+            ]
+            if not preview_items:
+                preview_items = missing
+            preview = ", ".join(preview_items[:3])
+            if len(preview_items) > 3:
+                preview += ", ..."
+            return ValidationResult(
+                valid=False,
+                reason="Edited TOC references chapter files that do not exist",
+                suggestion=(
+                    "Use only existing chapter href/title pairs from beside index.html, for example: "
+                    f"{preview}"
+                ),
+                severity="error",
+            )
+
+        if mismatched:
+            exact_entries = [
+                format_html_inventory_entry(root, (root / href).resolve(strict=False))
+                for href in mismatched
+                if (root / href).resolve(strict=False).exists()
+            ]
+            if not exact_entries:
+                exact_entries = mismatched
+            preview = "; ".join(exact_entries[:2])
+            if len(exact_entries) > 2:
+                preview += "; ..."
+            return ValidationResult(
+                valid=False,
+                reason="Edited TOC labels do not match the linked chapter titles",
+                suggestion=(
+                    "Copy the exact href/title pair from the linked HTML file, for example: "
+                    f"{preview}"
+                ),
+                severity="error",
+            )
+
+        return ValidationResult(valid=True)
+
+    def _suggest_existing_html_targets(self, root: Path, missing: list[str]) -> list[str]:
+        available_by_directory: dict[Path, list[str]] = {}
+        suggestions: list[str] = []
+
+        for href in missing:
+            href_path = Path(href)
+            directory = (root / href_path).parent
+            if directory not in available_by_directory:
+                available_by_directory[directory] = sorted(
+                    str(path.relative_to(root))
+                    for path in directory.glob("*.html")
+                    if path.is_file()
+                )
+
+            available = available_by_directory[directory]
+            if not available:
+                continue
+
+            missing_name = href_path.name
+            chapter_match = re.match(r"(\d+)-", missing_name)
+            preferred = available
+            if chapter_match is not None:
+                prefix = f"{chapter_match.group(1)}-"
+                same_prefix = [
+                    candidate
+                    for candidate in available
+                    if Path(candidate).name.startswith(prefix)
+                ]
+                if same_prefix:
+                    preferred = same_prefix
+
+            matched_names = get_close_matches(
+                missing_name,
+                [Path(candidate).name for candidate in preferred],
+                n=1,
+                cutoff=0.0,
+            )
+            if matched_names:
+                matched_name = matched_names[0]
+                candidate = next(
+                    (
+                        candidate
+                        for candidate in preferred
+                        if Path(candidate).name == matched_name
+                    ),
+                    None,
+                )
+                if candidate is not None and candidate not in suggestions:
+                    suggestions.append(candidate)
+
+        return suggestions
 
     def _validate_path(self, file_path: str) -> ValidationResult:
         if '\x00' in file_path:
