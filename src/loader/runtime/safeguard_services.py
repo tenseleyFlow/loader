@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 import shlex
-from difflib import get_close_matches
 from dataclasses import dataclass
+from difflib import get_close_matches
 from pathlib import Path
 
+from .semantic_rules import html_toc as html_toc_rule
 
 TEXT_REWRITE_SUFFIXES = frozenset(
     {
@@ -133,251 +134,6 @@ def extract_shell_text_rewrite_target(command: str) -> str | None:
     return None
 
 
-def extract_html_title_from_text(payload: str) -> str | None:
-    """Extract one human-readable HTML title from raw file contents."""
-
-    for pattern in (r"<h1[^>]*>(.*?)</h1>", r"<title[^>]*>(.*?)</title>"):
-        match = re.search(pattern, payload, re.IGNORECASE | re.DOTALL)
-        if not match:
-            continue
-        title = re.sub(r"<[^>]+>", " ", match.group(1))
-        normalized = " ".join(title.split()).strip()
-        if normalized:
-            return normalized
-    return None
-
-
-def read_html_title(path: Path) -> str:
-    """Read one HTML file title for inventory and validation helpers."""
-
-    try:
-        return extract_html_title_from_text(path.read_text()) or ""
-    except OSError:
-        return ""
-
-
-def format_html_inventory_entry(root: Path, candidate: Path) -> str:
-    """Format one exact href/title pair for model-facing guidance."""
-
-    normalized_root = root.expanduser().resolve(strict=False)
-    normalized_candidate = candidate.expanduser().resolve(strict=False)
-    try:
-        href = str(normalized_candidate.relative_to(normalized_root))
-    except ValueError:
-        href = normalized_candidate.name
-    title = read_html_title(candidate)
-    if title:
-        return f"{href} = {title}"
-    return href
-
-
-def _collect_html_inventory_entries(index_path: str | Path) -> list[tuple[str, str]]:
-    """Return exact href/title pairs for sibling HTML chapters."""
-
-    index = Path(index_path).expanduser()
-    if index.name != "index.html":
-        return []
-
-    chapters_dir = index.parent / "chapters"
-    if not chapters_dir.is_dir():
-        return []
-
-    entries: list[tuple[str, str]] = []
-    for candidate in sorted(chapters_dir.glob("*.html")):
-        if not candidate.is_file():
-            continue
-        title = read_html_title(candidate)
-        if not title:
-            continue
-        href = format_html_inventory_entry(index.parent, candidate).split(" = ", 1)[0]
-        entries.append((href, title))
-    return entries
-
-
-def summarize_html_inventory(
-    index_path: str | Path,
-    *,
-    limit: int | None = 12,
-) -> str | None:
-    """Summarize the existing sibling HTML inventory for one index page."""
-
-    index = Path(index_path).expanduser()
-    if index.name != "index.html":
-        return None
-
-    entries = [f"{href} = {title}" for href, title in _collect_html_inventory_entries(index)]
-    if not entries:
-        return None
-
-    if limit is not None and len(entries) > limit:
-        return "; ".join(entries[:limit]) + "; ..."
-    return "; ".join(entries)
-
-
-def extract_html_toc_excerpt(
-    index_path: str | Path,
-    *,
-    max_lines: int = 16,
-) -> str | None:
-    """Extract the current HTML table-of-contents block for recovery guidance."""
-
-    index = Path(index_path).expanduser()
-    if index.name != "index.html":
-        return None
-
-    try:
-        text = index.read_text()
-    except OSError:
-        return None
-
-    match = re.search(
-        r"(<h2[^>]*>\s*Table of Contents\s*</h2>.*?</ul>)",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if not match:
-        match = re.search(
-            r"(<ul[^>]*class=\"[^\"]*chapter-list[^\"]*\"[^>]*>.*?</ul>)",
-            text,
-            re.IGNORECASE | re.DOTALL,
-        )
-    if not match:
-        return None
-
-    snippet_lines = [line.rstrip() for line in match.group(1).splitlines() if line.strip()]
-    if not snippet_lines:
-        return None
-    if len(snippet_lines) > max_lines:
-        snippet_lines = snippet_lines[:max_lines] + ["..."]
-    return "\n".join(snippet_lines)
-
-
-def build_html_toc_replacement_block(index_path: str | Path) -> str | None:
-    """Build one exact replacement TOC block from the verified sibling inventory."""
-
-    entries = _collect_html_inventory_entries(index_path)
-    if not entries:
-        return None
-
-    excerpt = extract_html_toc_excerpt(index_path, max_lines=64)
-    excerpt_lines = excerpt.splitlines() if excerpt else []
-
-    heading_line = next(
-        (line.rstrip() for line in excerpt_lines if "<h2" in line.lower()),
-        "<h2>Table of Contents</h2>",
-    )
-    ul_line = next(
-        (
-            line.rstrip()
-            for line in excerpt_lines
-            if "<ul" in line.lower() and "chapter-list" in line.lower()
-        ),
-        '        <ul class="chapter-list">',
-    )
-    li_indent = next(
-        (
-            re.match(r"^\s*", line).group(0)
-            for line in excerpt_lines
-            if "<li><a " in line
-        ),
-        re.match(r"^\s*", ul_line).group(0) + "    ",
-    )
-    closing_line = next(
-        (line.rstrip() for line in excerpt_lines if "</ul>" in line.lower()),
-        f"{re.match(r'^\s*', ul_line).group(0)}</ul>",
-    )
-
-    lines = [heading_line, ul_line]
-    lines.extend(
-        f'{li_indent}<li><a href="{href}">{title}</a></li>'
-        for href, title in entries
-    )
-    lines.append(closing_line)
-    return "\n".join(lines)
-
-
-def build_html_toc_edit_call_template(index_path: str | Path) -> str | None:
-    """Build one concrete `edit(...)` template for replacing the TOC block."""
-
-    index = Path(index_path).expanduser()
-    excerpt = extract_html_toc_excerpt(index, max_lines=64)
-    replacement = build_html_toc_replacement_block(index)
-    if not excerpt or not replacement:
-        return None
-
-    return "\n".join(
-        [
-            "edit(",
-            f'  file_path="{index}",',
-            '  old_string="""',
-            excerpt,
-            '""",',
-            '  new_string="""',
-            replacement,
-            '"""',
-            ")",
-        ]
-    )
-
-
-@dataclass(frozen=True)
-class HtmlTocValidationResult:
-    """Semantic validation result for one chapter-list table of contents."""
-
-    valid: bool
-    link_count: int
-    missing: tuple[str, ...] = ()
-    mismatched: tuple[str, ...] = ()
-
-
-def validate_html_toc(index_path: str | Path) -> HtmlTocValidationResult | None:
-    """Validate that one HTML index TOC points at real chapter files with matching titles."""
-
-    index = Path(index_path).expanduser()
-    if index.name != "index.html":
-        return None
-
-    try:
-        text = index.read_text()
-    except OSError:
-        return None
-
-    section_match = re.search(r'<ul class="chapter-list">(.*?)</ul>', text, re.S)
-    if section_match is None:
-        return HtmlTocValidationResult(
-            valid=False,
-            link_count=0,
-            missing=("Missing chapter-list table of contents",),
-        )
-
-    links = re.findall(r'<a href="([^"]+)">([^<]+)</a>', section_match.group(1))
-    if not links:
-        return HtmlTocValidationResult(
-            valid=False,
-            link_count=0,
-            missing=("No chapter links found in table of contents",),
-        )
-
-    root = index.parent
-    missing: list[str] = []
-    mismatched: list[str] = []
-    for href, label in links:
-        target = (root / href).expanduser().resolve(strict=False)
-        if not target.exists():
-            missing.append(f"{href} -> missing")
-            continue
-        title = read_html_title(target)
-        if title and label.strip() != title:
-            mismatched.append(f"{href} -> {label.strip()} != {title}")
-
-    return HtmlTocValidationResult(
-        valid=not missing and not mismatched,
-        link_count=len(links),
-        missing=tuple(missing),
-        mismatched=tuple(mismatched),
-    )
-
-
 class ActionTracker:
     """Tracks completed actions to prevent duplicates and detect loops."""
 
@@ -498,7 +254,7 @@ class ActionTracker:
         """Record that one index currently satisfies the semantic chapter-link check."""
 
         normalized = self._normalize_path(index_path)
-        if Path(normalized).name != "index.html":
+        if not html_toc_rule.is_html_toc_index_path(normalized):
             return
         self._validated_html_tocs[normalized] = self._mutation_epoch
 
@@ -507,7 +263,7 @@ class ActionTracker:
 
         normalized = self._normalize_path(index_path)
         path = Path(normalized)
-        chapters_dir = path if path.name == "chapters" else path.parent / "chapters"
+        chapters_dir = path if html_toc_rule.is_html_toc_chapters_dir(path) else path.parent / "chapters"
         self._verified_html_inventory_dirs.add(self._normalize_path(str(chapters_dir)))
 
     def check_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str]:
@@ -928,7 +684,7 @@ class ActionTracker:
             return
         normalized_path = self._normalize_path(file_path)
         path = Path(normalized_path)
-        if path.suffix != ".html" or path.name == "index.html" or path.parent.name != "chapters":
+        if not html_toc_rule.is_html_toc_chapter_file(path):
             return
 
         directory = str(path.parent)
@@ -959,7 +715,7 @@ class ActionTracker:
                 return False, ""
             normalized_path = self._normalize_path(file_path)
             path = Path(normalized_path)
-            if path.name != "index.html":
+            if not html_toc_rule.is_html_toc_index_path(path):
                 return False, ""
             chapters_dir = str(path.parent / "chapters")
             chapter_count = self._chapter_evidence_count(chapters_dir)
@@ -976,9 +732,10 @@ class ActionTracker:
                 return False, ""
             return (
                 True,
-                "Already confirmed multiple chapter files in the sibling chapters "
-                "directory; reuse the known file/title evidence and update index.html "
-                "instead of rereading it",
+                "Already confirmed multiple linked chapter files in "
+                f"{html_toc_rule.describe_html_toc_chapters_dir(path)}; reuse that file/title "
+                f"evidence and update {html_toc_rule.describe_html_toc_target(path)} instead of "
+                "rereading it",
             )
 
         if tool_name in {"glob", "grep"}:
@@ -987,7 +744,7 @@ class ActionTracker:
                 return False, ""
             normalized_path = self._normalize_path(search_path)
             path = Path(normalized_path)
-            if path.name != "chapters":
+            if not html_toc_rule.is_html_toc_chapters_dir(path):
                 return False, ""
             chapter_count = self._chapter_evidence_count(str(path))
             if chapter_count < self.HTML_CHAPTER_EVIDENCE_THRESHOLD:
@@ -997,9 +754,10 @@ class ActionTracker:
                 return False, ""
             return (
                 True,
-                "Already confirmed multiple chapter files in this directory; reuse "
-                "the known filename/title evidence and update the target index instead "
-                "of rerunning the directory search",
+                "Already confirmed multiple linked chapter files in "
+                f"{html_toc_rule.describe_html_toc_chapters_dir(path)}; reuse that filename/title "
+                f"evidence and update {html_toc_rule.describe_html_toc_target(path)} instead of "
+                "rerunning the directory search",
             )
 
         return False, ""
@@ -1026,9 +784,7 @@ class ActionTracker:
             if self._matches_validated_html_toc(path):
                 return (
                     True,
-                    "The current index.html already passes the validated chapter-link "
-                    "check; stop rereading index.html or chapters/ and finish the task "
-                    "unless a specific href or title is still unresolved",
+                    html_toc_rule.build_validated_html_toc_observation_reason(path),
                 )
         return False, ""
 
@@ -1045,9 +801,7 @@ class ActionTracker:
             if self._matches_verified_html_inventory(path):
                 return (
                     True,
-                    "The verified chapter inventory already lists the exact href/title "
-                    "pairs for this directory; update index.html from that inventory "
-                    "instead of rereading chapter files",
+                    html_toc_rule.build_verified_html_inventory_observation_reason(path),
                 )
         return False, ""
 
@@ -1396,7 +1150,7 @@ class PreActionValidator:
         content: str,
     ) -> ValidationResult:
         normalized = Path(file_path).expanduser()
-        if normalized.name != "index.html" or "<a " not in content:
+        if not html_toc_rule.is_html_toc_index_path(normalized) or "<a " not in content:
             return ValidationResult(valid=True)
 
         link_pairs = re.findall(r'<a\s+href="([^"]+)">([^<]+)</a>', content)
@@ -1413,7 +1167,7 @@ class PreActionValidator:
                     missing.append(href)
                 continue
 
-            title = read_html_title(target)
+            title = html_toc_rule.read_html_title(target)
             if title and label.strip() != title:
                 if href not in mismatched:
                     mismatched.append(href)
@@ -1421,7 +1175,7 @@ class PreActionValidator:
         if missing:
             suggestions = self._suggest_existing_html_targets(root, missing)
             preview_items = [
-                format_html_inventory_entry(root, root / suggestion)
+                html_toc_rule.format_html_inventory_entry(root, root / suggestion)
                 for suggestion in suggestions
             ]
             if not preview_items:
@@ -1433,7 +1187,8 @@ class PreActionValidator:
                 valid=False,
                 reason="Edited TOC references chapter files that do not exist",
                 suggestion=(
-                    "Use only existing chapter href/title pairs from beside index.html, for example: "
+                    f"Use only existing chapter href/title pairs from beside "
+                    f"{html_toc_rule.describe_html_toc_target(normalized)}, for example: "
                     f"{preview}"
                 ),
                 severity="error",
@@ -1441,7 +1196,7 @@ class PreActionValidator:
 
         if mismatched:
             exact_entries = [
-                format_html_inventory_entry(root, (root / href).resolve(strict=False))
+                html_toc_rule.format_html_inventory_entry(root, (root / href).resolve(strict=False))
                 for href in mismatched
                 if (root / href).resolve(strict=False).exists()
             ]
@@ -1454,7 +1209,8 @@ class PreActionValidator:
                 valid=False,
                 reason="Edited TOC labels do not match the linked chapter titles",
                 suggestion=(
-                    "Copy the exact href/title pair from the linked HTML file, for example: "
+                    f"Copy the exact href/title pair from the linked HTML file for "
+                    f"{html_toc_rule.describe_html_toc_target(normalized)}, for example: "
                     f"{preview}"
                 ),
                 severity="error",

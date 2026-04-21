@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..llm.base import Role, ToolCall
+from .compaction import infer_preferred_next_step, summarize_confirmed_facts
 from .context import RuntimeContext
 from .dod import (
     DefinitionOfDone,
@@ -24,23 +25,15 @@ from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .executor import ToolExecutionState, ToolExecutor
 from .logging import get_runtime_logger
 from .policy_timeline import append_verification_timeline_entry
+from .safeguard_services import extract_shell_text_rewrite_target
+from .semantic_rules import html_toc as html_toc_rule
 from .tool_batch_checks import ToolBatchConfidenceGate, ToolBatchVerificationGate
 from .tool_batch_recovery import ToolBatchRecoveryController
 from .verification_observations import (
     VerificationObservation,
     VerificationObservationStatus,
 )
-from .workflow import sync_todos_to_definition_of_done
-from .workflow import advance_todos_from_tool_call
-from .compaction import infer_preferred_next_step, summarize_confirmed_facts
-from .safeguard_services import (
-    build_html_toc_edit_call_template,
-    build_html_toc_replacement_block,
-    extract_html_toc_excerpt,
-    extract_shell_text_rewrite_target,
-    summarize_html_inventory,
-    validate_html_toc,
-)
+from .workflow import advance_todos_from_tool_call, sync_todos_to_definition_of_done
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 ConfirmationHandler = (
@@ -49,6 +42,10 @@ ConfirmationHandler = (
 UserQuestionHandler = Callable[[str, list[str] | None], Awaitable[str]] | None
 
 _VERIFY_ITEM = "Collect verification evidence"
+_TODO_NUDGE_EXCLUDED_ITEMS = {
+    "Complete the requested work",
+    _VERIFY_ITEM,
+}
 
 
 @dataclass
@@ -232,7 +229,7 @@ class ToolBatchRunner:
             self.context.session.append(outcome.message)
             summary.tool_result_messages.append(outcome.message)
             if outcome.state == ToolExecutionState.DUPLICATE:
-                self._queue_duplicate_observation_nudge(tool_call)
+                self._queue_duplicate_observation_nudge(tool_call, dod=dod)
             elif outcome.state == ToolExecutionState.BLOCKED:
                 self._queue_blocked_shell_rewrite_nudge(tool_call)
                 self._queue_blocked_html_edit_nudge(tool_call, outcome.event_content)
@@ -268,17 +265,46 @@ class ToolBatchRunner:
 
         return result
 
-    def _queue_duplicate_observation_nudge(self, tool_call: ToolCall) -> None:
+    def _queue_duplicate_observation_nudge(
+        self,
+        tool_call: ToolCall,
+        *,
+        dod: DefinitionOfDone,
+    ) -> None:
         """Queue a concrete next-step nudge after duplicate observational actions."""
 
         if tool_call.name not in {"read", "glob", "grep", "bash"}:
             return
 
         current_task = getattr(self.context.session, "current_task", None)
+        next_pending = next(
+            (
+                item
+                for item in dod.pending_items
+                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
+            ),
+            None,
+        )
         confirmed_facts = summarize_confirmed_facts(
             self.context.session.messages,
             max_items=2,
         )
+        if next_pending and not html_toc_rule.task_targets_html_toc(current_task):
+            if confirmed_facts:
+                self.context.queue_steering_message(
+                    "Reuse the earlier observation instead of repeating it. "
+                    f"Confirmed facts: {confirmed_facts}. "
+                    f"Continue with the next pending item: `{next_pending}`. "
+                    "Only gather more evidence if a specific fact required for that step is still unknown."
+                )
+            else:
+                self.context.queue_steering_message(
+                    "Reuse the earlier observation instead of repeating it. "
+                    f"Continue with the next pending item: `{next_pending}`. "
+                    "Only gather more evidence if a specific fact required for that step is still unknown."
+                )
+            return
+
         preferred_next_step = infer_preferred_next_step(
             self.context.session.messages,
             current_task=current_task,
@@ -359,12 +385,14 @@ class ToolBatchRunner:
 
         if tool_call.name not in {"edit", "patch"}:
             return
-
-        target_path = str(tool_call.arguments.get("file_path", "")).strip()
-        if not target_path.endswith("index.html"):
+        if not self._targets_html_toc_task():
             return
 
-        validation = validate_html_toc(target_path)
+        target_path = str(tool_call.arguments.get("file_path", "")).strip()
+        if not html_toc_rule.is_html_toc_index_path(target_path):
+            return
+
+        validation = html_toc_rule.validate_html_toc(target_path)
         if (
             "old_string and new_string are identical" in event_content
             and validation is not None
@@ -374,12 +402,14 @@ class ToolBatchRunner:
             note_validated = getattr(action_tracker, "note_validated_html_toc", None)
             if callable(note_validated):
                 note_validated(target_path)
+            target_label = html_toc_rule.describe_html_toc_target(target_path)
             self.context.queue_steering_message(
-                "The current `index.html` already matches the validated replacement block. "
-                f"Semantic verification preview: validated {validation.link_count} toc links in "
-                f"`{Path(target_path).name}`. "
+                f"The HTML table-of-contents target {target_label} already matches the "
+                "validated replacement block. "
+                f"Semantic verification preview: validated {validation.link_count} linked "
+                "entries. "
                 "Do not call `edit`, `patch`, or reread the same TOC again. Briefly state "
-                "that the table of contents is already updated so Loader can continue the "
+                f"that {target_label} is already updated so Loader can continue the "
                 "verification gate or finish the task."
             )
             return
@@ -388,15 +418,18 @@ class ToolBatchRunner:
         confirmed_facts = summarize_confirmed_facts(
             self.context.session.messages,
             max_items=2,
+            focus_path=target_path,
         )
         preferred_next_step = infer_preferred_next_step(
             self.context.session.messages,
             current_task=current_task,
+            focus_path=target_path,
         )
-        verified_inventory = summarize_html_inventory(target_path, limit=12)
-        current_excerpt = extract_html_toc_excerpt(target_path)
-        suggested_replacement = build_html_toc_replacement_block(target_path)
-        suggested_call = build_html_toc_edit_call_template(target_path)
+        verified_inventory = html_toc_rule.summarize_html_inventory(target_path, limit=12)
+        current_excerpt = html_toc_rule.extract_html_toc_excerpt(target_path)
+        suggested_replacement = html_toc_rule.build_html_toc_replacement_block(target_path)
+        suggested_call = html_toc_rule.build_html_toc_edit_call_template(target_path)
+        target_label = html_toc_rule.describe_html_toc_target(target_path)
         excerpt_suffix = (
             f"\nCurrent TOC block:\n{current_excerpt}"
             if current_excerpt
@@ -415,11 +448,12 @@ class ToolBatchRunner:
 
         if preferred_next_step and confirmed_facts and verified_inventory:
             self.context.queue_steering_message(
-                "Use the current target contents plus the verified sibling inventory instead of guessing. "
+                f"Use the current TOC target contents plus the verified sibling inventory for "
+                f"{target_label} instead of guessing. "
                 f"Confirmed facts: {confirmed_facts}. "
                 f"Known chapter inventory: {verified_inventory}. "
                 f"{preferred_next_step} "
-                "Apply those exact href/title pairs in `index.html`. "
+                f"Apply those exact href/title pairs in {target_label}. "
                 "Do not rewrite the whole document. For `edit`, set `old_string` to the "
                 "current TOC block above exactly and set `new_string` to the suggested "
                 "replacement block below exactly."
@@ -431,9 +465,10 @@ class ToolBatchRunner:
 
         if verified_inventory:
             self.context.queue_steering_message(
-                "Use the current target contents plus the verified sibling inventory instead of guessing. "
+                f"Use the current TOC target contents plus the verified sibling inventory for "
+                f"{target_label} instead of guessing. "
                 f"Known chapter inventory: {verified_inventory}. "
-                "Apply those exact href/title pairs in `index.html`. "
+                f"Apply those exact href/title pairs in {target_label}. "
                 "Do not rewrite the whole document. For `edit`, set `old_string` to the "
                 "current TOC block above exactly and set `new_string` to the suggested "
                 "replacement block below exactly."
@@ -444,7 +479,8 @@ class ToolBatchRunner:
             return
 
         self.context.queue_steering_message(
-            "Use the current target contents when retrying this `index.html` edit instead of guessing. "
+            f"Use the current TOC target contents when retrying the edit for {target_label} "
+            "instead of guessing. "
             f"{excerpt_suffix}".strip()
         )
 
@@ -465,16 +501,18 @@ class ToolBatchRunner:
         if not self._targets_html_toc_task():
             return
 
-        verified_inventory = summarize_html_inventory(index_path, limit=12)
+        verified_inventory = html_toc_rule.summarize_html_inventory(index_path, limit=12)
         if not verified_inventory:
             return
 
         self._inventory_hint_targets.add(index_path)
+        target_label = html_toc_rule.describe_html_toc_target(index_path)
+        chapters_label = html_toc_rule.describe_html_toc_chapters_dir(index_path)
         self.context.queue_steering_message(
-            "You already have the verified sibling inventory needed for this edit. "
+            f"You already have the verified sibling inventory needed for {target_label}. "
             f"Known chapter inventory: {verified_inventory}. "
-            f"Update `{index_path}` using those exact href/title pairs instead of rereading files "
-            "unless one specific title is still unknown."
+            f"Update {target_label} using those exact href/title pairs instead of rereading "
+            f"files in {chapters_label} unless one specific title is still unknown."
         )
 
     def _annotate_verified_html_inventory(self, tool_call: ToolCall, outcome) -> None:
@@ -491,7 +529,7 @@ class ToolBatchRunner:
             return
 
         index_path = str(Path(chapters_path).expanduser().parent / "index.html")
-        verified_inventory = summarize_html_inventory(index_path, limit=12)
+        verified_inventory = html_toc_rule.summarize_html_inventory(index_path, limit=12)
         if not verified_inventory:
             return
 
@@ -500,10 +538,7 @@ class ToolBatchRunner:
         if callable(note_inventory):
             note_inventory(index_path)
 
-        note = (
-            "Verified chapter inventory: "
-            f"{verified_inventory}"
-        )
+        note = f"Verified chapter inventory: {verified_inventory}"
         merged_event = outcome.event_content
         if note not in merged_event:
             merged_event = f"{note}\n{merged_event}".strip()
@@ -516,13 +551,13 @@ class ToolBatchRunner:
     def _annotate_validated_html_toc_completion(self, tool_call: ToolCall, outcome) -> None:
         """Attach semantic TOC validation evidence to a successful mutating result."""
 
+        if not self._targets_html_toc_task():
+            return
         target_path = self._validated_html_toc_target(tool_call)
         if target_path is None:
             return
-        if tool_call.name == "read" and not self._targets_html_toc_task():
-            return
 
-        validation = validate_html_toc(target_path)
+        validation = html_toc_rule.validate_html_toc(target_path)
         if validation is None or not validation.valid:
             return
 
@@ -547,34 +582,41 @@ class ToolBatchRunner:
     def _queue_validated_html_toc_completion_nudge(self, tool_call: ToolCall) -> None:
         """Push the next model turn toward finishing once the TOC already validates."""
 
+        if not self._targets_html_toc_task():
+            return
         target_path = self._validated_html_toc_target(tool_call)
         if target_path is None:
             return
-        if tool_call.name == "read" and not self._targets_html_toc_task():
-            return
 
-        validation = validate_html_toc(target_path)
+        validation = html_toc_rule.validate_html_toc(target_path)
         if validation is None or not validation.valid:
             return
 
         if tool_call.name == "read":
+            target_label = html_toc_rule.describe_html_toc_target(target_path)
+            chapters_label = html_toc_rule.describe_html_toc_chapters_dir(target_path)
             self.context.queue_steering_message(
-                "The current `index.html` already satisfies the verified chapter-link constraints. "
-                f"Semantic verification preview: validated {validation.link_count} toc links in "
-                f"`{Path(target_path).name}`. "
+                f"The HTML table-of-contents target {target_label} already satisfies the "
+                "verified link/title constraints. "
+                f"Semantic verification preview: validated {validation.link_count} linked "
+                "entries. "
                 "No TOC edit is required unless you can point to one specific incorrect href or "
-                "title. Do not reread `index.html` or files in `chapters/` again. Briefly state "
-                "that the table of contents is already correct so Loader can finish the task."
+                f"title. Do not reread {target_label} or files in {chapters_label} again. "
+                "Briefly state that the table of contents is already correct so Loader can "
+                "finish the task."
             )
             return
 
+        target_label = html_toc_rule.describe_html_toc_target(target_path)
+        chapters_label = html_toc_rule.describe_html_toc_chapters_dir(target_path)
         self.context.queue_steering_message(
-            "The current `index.html` already satisfies the verified chapter-link constraints. "
-            f"Semantic verification preview: validated {validation.link_count} toc links in "
-            f"`{Path(target_path).name}`. "
-            "Do not reread `index.html` or files in `chapters/` unless a specific href or "
-            "title is still unresolved. Briefly state that the table of contents has been "
-            "updated so Loader can run the verification gate."
+            f"The HTML table-of-contents target {target_label} already satisfies the "
+            "verified link/title constraints. "
+            f"Semantic verification preview: validated {validation.link_count} linked "
+            "entries. "
+            f"Do not reread {target_label} or files in {chapters_label} unless a specific "
+            "href or title is still unresolved. Briefly state that the table of contents has "
+            "been updated so Loader can run the verification gate."
         )
 
     @staticmethod
@@ -594,7 +636,7 @@ class ToolBatchRunner:
 
         if not target_path:
             return None
-        if not target_path.endswith("index.html"):
+        if not html_toc_rule.is_html_toc_index_path(target_path):
             return None
         return str(Path(target_path).expanduser())
 
@@ -608,10 +650,7 @@ class ToolBatchRunner:
                 if content:
                     current_task = content
                     break
-        return any(
-            hint in current_task
-            for hint in ("href", "link", "links", "table of contents", "chapter", "index.html")
-        )
+        return html_toc_rule.task_targets_html_toc(current_task)
 
     async def _record_successful_execution(
         self,
@@ -646,7 +685,13 @@ class ToolBatchRunner:
             if isinstance(new_todos, list):
                 sync_todos_to_definition_of_done(dod, new_todos)
         else:
-            advance_todos_from_tool_call(dod, tool_call)
+            pending_before = list(dod.pending_items)
+            if advance_todos_from_tool_call(dod, tool_call):
+                self._queue_next_pending_todo_nudge(
+                    tool_call=tool_call,
+                    pending_before=pending_before,
+                    dod=dod,
+                )
         self.dod_store.save(dod)
         recovery_context = self.context.recovery_context
         if recovery_context is not None:
@@ -657,6 +702,61 @@ class ToolBatchRunner:
             ):
                 self.context.recovery_context = None
         return None
+
+    def _queue_next_pending_todo_nudge(
+        self,
+        *,
+        tool_call: ToolCall,
+        pending_before: list[str],
+        dod: DefinitionOfDone,
+    ) -> None:
+        if is_state_mutating_tool_call(tool_call):
+            return
+        if tool_call.name not in {"read", "glob", "grep", "bash"}:
+            return
+        if tool_call.name == "bash":
+            command = str(tool_call.arguments.get("command", "")).lower()
+            if not any(
+                token in command
+                for token in (
+                    "ls ",
+                    " ls",
+                    "find ",
+                    "grep ",
+                    "rg ",
+                    "cat ",
+                    "sed ",
+                    "head ",
+                    "tail ",
+                )
+            ):
+                return
+
+        completed_label = next(
+            (
+                item
+                for item in pending_before
+                if item not in dod.pending_items
+                and item not in _TODO_NUDGE_EXCLUDED_ITEMS
+            ),
+            None,
+        )
+        next_pending = next(
+            (
+                item
+                for item in dod.pending_items
+                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
+            ),
+            None,
+        )
+        if not completed_label or not next_pending or next_pending == completed_label:
+            return
+
+        self.context.queue_steering_message(
+            f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
+            f"`{tool_call.name}` result. Continue with the next pending item: "
+            f"`{next_pending}` instead of rereading the same evidence."
+        )
 
 
 def _mark_verification_stale(

@@ -251,6 +251,9 @@ async def test_tool_batch_recovery_controller_returns_follow_up(
         assess_confidence=assess_confidence,
         verify_action=verify_action,
     )
+    context.session.current_task = (
+        "Update index.html so every chapter link and title matches the real HTML files in chapters/."
+    )
     controller = ToolBatchRecoveryController(context)
     tool_call = ToolCall(id="bash-1", name="bash", arguments={"command": "pytest"})
     outcome = tool_outcome(tool_call=tool_call, output="command failed", is_error=True)
@@ -371,7 +374,7 @@ async def test_tool_batch_recovery_controller_includes_known_state_for_missing_f
     assert "04-variables.html" in follow_up.content
     assert "02-basic-syntax.html -> 02-setup.html" in follow_up.content
     assert "02-setup.html = Chapter 2: Setting Up Fortran" in follow_up.content
-    assert "`~/Loader/guides/fortran/index.html`" in follow_up.content
+    assert "/Users/mfwolffe/Loader/guides/fortran/index.html" in follow_up.content
     assert any(event.type == "recovery" for event in events)
 
 
@@ -464,6 +467,9 @@ async def test_tool_batch_recovery_controller_includes_current_html_target_excer
         assess_confidence=assess_confidence,
         verify_action=verify_action,
     )
+    context.session.current_task = (
+        "Update index.html so every chapter link and title matches the real HTML files in chapters/."
+    )
     controller = ToolBatchRecoveryController(context)
     tool_call = ToolCall(
         id="patch-index",
@@ -511,6 +517,97 @@ async def test_tool_batch_recovery_controller_includes_current_html_target_excer
     assert "Do not rewrite the whole file." in follow_up.content
     assert "Suggested edit call:" in follow_up.content
     assert 'old_string="""' in follow_up.content
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_scopes_known_state_to_active_target(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    nginx_chapters = temp_dir / "nginx" / "chapters"
+    nginx_chapters.mkdir(parents=True)
+    nginx_index = temp_dir / "nginx" / "index.html"
+    nginx_index.write_text(
+        "<h2>Table of Contents</h2>\n"
+        "<ul>\n"
+        '    <li><a href="chapters/01_getting_started.html">Getting Started with NGINX</a></li>\n'
+        '    <li><a href="chapters/02_installation.html">Installation</a></li>\n'
+        "</ul>\n"
+    )
+    (nginx_chapters / "01_getting_started.html").write_text(
+        "<h1>Getting Started with NGINX</h1>\n"
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(
+                role=Role.TOOL,
+                content=(
+                    "Observation [read]: Result: "
+                    f"{temp_dir / 'fortran' / 'index.html'}\n"
+                    "Semantic verification preview: validated 12 toc links in index.html"
+                ),
+            ),
+        ],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    context.session.current_task = (  # type: ignore[attr-defined]
+        "Have a look at ~/Loader/guides/fortran and chapters/ within. Get a feel "
+        "for the structure and cadence of the guide. We are going to make an all "
+        "new equally thorough guide on how to use the nginx tool. It will live in "
+        "~/Loader/guides/nginx/index.html and ~/Loader/guides/nginx/chapters/."
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="edit-nginx",
+        name="edit",
+        arguments={
+            "file_path": str(nginx_index),
+            "old_string": "<ul>\n</ul>",
+            "new_string": "<ul class=\"chapter-list\">\n</ul>",
+        },
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output=(
+            "Tool execution error: EditTool.execute() missing 1 required positional "
+            "argument: 'new_string'"
+        ),
+        is_error=True,
+    )
+
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=emit,
+    )
+
+    assert follow_up is not None
+    assert (
+        "Preferred next step: Update "
+        f"`{temp_dir / 'fortran' / 'index.html'}`"
+    ) not in follow_up.content
 
 
 @pytest.mark.asyncio

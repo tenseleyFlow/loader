@@ -17,6 +17,8 @@ from loader.runtime.workflow import (
     build_execute_bridge,
     enrich_clarify_brief_with_grounding,
     extract_verification_commands_from_markdown,
+    merge_refreshed_todos_with_existing_scope,
+    preserve_task_grounded_acceptance_criteria,
     sync_todos_to_definition_of_done,
 )
 
@@ -258,6 +260,115 @@ def test_extract_verification_commands_keeps_shell_pipelines_intact() -> None:
         "ls -la chapters/",
         "cat index.html | head -20",
     ]
+
+
+def test_preserve_task_grounded_acceptance_criteria_keeps_original_scope_on_refresh() -> None:
+    task = (
+        "Create an equally thorough nginx guide with index.html plus chapter files "
+        "covering getting started, installation, first website setup, configs, and "
+        "advanced topics."
+    )
+
+    preserved = preserve_task_grounded_acceptance_criteria(
+        task,
+        existing_acceptance_criteria=[
+            "All files are created in the correct locations with proper directory structure",
+            "Content covers all required topics: getting started, installation, first website, configuration basics, advanced configurations, and troubleshooting",
+        ],
+        refreshed_acceptance_criteria=[
+            "At least one chapter file exists in ~/Loader/guides/nginx/chapters/",
+            "~/Loader/guides/nginx/index.html exists and contains proper table of contents",
+        ],
+    )
+
+    assert (
+        "All files are created in the correct locations with proper directory structure"
+        in preserved
+    )
+    assert (
+        "Content covers all required topics: getting started, installation, first website, configuration basics, advanced configurations, and troubleshooting"
+        in preserved
+    )
+    assert "At least one chapter file exists in ~/Loader/guides/nginx/chapters/" in preserved
+
+
+def test_preserve_task_grounded_acceptance_criteria_drops_stale_plan_specific_scope() -> None:
+    task = (
+        "Implement a persistent workflow artifact with planning artifacts, "
+        "verification commands, and plan refresh discipline."
+    )
+
+    preserved = preserve_task_grounded_acceptance_criteria(
+        task,
+        existing_acceptance_criteria=["planned.txt exists in the workspace root."],
+        refreshed_acceptance_criteria=["notes.txt exists in the workspace root."],
+    )
+
+    assert preserved == ["notes.txt exists in the workspace root."]
+
+
+def test_planning_artifacts_with_acceptance_criteria_rewrites_verification_markdown() -> None:
+    artifacts = PlanningArtifacts.from_model_output(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## Execution Order",
+                "1. Create the guide files.",
+                "",
+                "<<<VERIFICATION>>>",
+                "",
+                "# Verification Plan",
+                "",
+                "## Acceptance Criteria",
+                "- At least one chapter file exists.",
+                "",
+                "## Verification Commands",
+                "- `find chapters -name \"*.html\" | wc -l`",
+            ]
+        ),
+        task_statement="Create a thorough nginx guide.",
+    )
+
+    updated = artifacts.with_acceptance_criteria(
+        [
+            "All files are created in the correct locations.",
+            "Content covers getting started, installation, and advanced topics.",
+        ]
+    )
+
+    assert "At least one chapter file exists." not in updated.verification_markdown
+    assert "All files are created in the correct locations." in updated.verification_markdown
+    assert (
+        "Content covers getting started, installation, and advanced topics."
+        in updated.verification_markdown
+    )
+
+
+def test_merge_refreshed_todos_with_existing_scope_keeps_grounded_progress() -> None:
+    task = (
+        "Create an equally thorough nginx guide with index.html plus chapter files "
+        "covering getting started, installation, first website setup, configs, and "
+        "advanced topics."
+    )
+
+    todos = merge_refreshed_todos_with_existing_scope(
+        task,
+        existing_pending_items=[
+            "Create each chapter file in sequence, following the established pattern",
+            "Collect verification evidence",
+        ],
+        existing_completed_items=["Create directory structure for the new nginx guide"],
+        refreshed_steps=["Create sample chapter file to verify the structure works"],
+    )
+
+    assert todos[0]["content"] == "Create directory structure for the new nginx guide"
+    assert todos[0]["status"] == "completed"
+    assert any(
+        item["content"] == "Create each chapter file in sequence, following the established pattern"
+        and item["status"] == "pending"
+        for item in todos
+    )
 
 
 def test_workflow_artifact_store_and_bridge_round_trip(tmp_path: Path) -> None:

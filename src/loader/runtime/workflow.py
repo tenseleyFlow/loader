@@ -50,6 +50,8 @@ __all__ = [
     "extract_verification_commands_from_markdown",
     "load_brief",
     "load_planning_artifacts",
+    "merge_refreshed_todos_with_existing_scope",
+    "preserve_task_grounded_acceptance_criteria",
     "sync_todos_to_definition_of_done",
 ]
 
@@ -103,6 +105,7 @@ _PARSE_STEP_HINTS = (
     "determine",
 )
 _MUTATION_STEP_HINTS = (
+    "create",
     "update",
     "edit",
     "write",
@@ -122,6 +125,24 @@ _VERIFY_STEP_HINTS = (
     "confirm",
     "check",
 )
+_TASK_COVERAGE_STOP_WORDS = {
+    "the",
+    "and",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "your",
+    "have",
+    "make",
+    "will",
+    "then",
+    "each",
+    "file",
+    "files",
+    "guide",
+}
 _SHELL_COMMAND_START = re.compile(
     r"(?<![\w/.-])("
     r"ls|grep|pytest|uv|python3?|html5validator|cargo|npm|node|mypy|ruff|find|git|cat|sed|head|tail|test|diff|cmp|bash|sh|make"
@@ -451,6 +472,25 @@ class PlanningArtifacts:
             "It does not run a planner/critic consensus loop.",
         ]
 
+    def with_acceptance_criteria(self, acceptance_criteria: list[str]) -> PlanningArtifacts:
+        """Return one copy with a rewritten acceptance-criteria section."""
+
+        merged = [item.strip() for item in acceptance_criteria if item.strip()]
+        if not merged or merged == self.acceptance_criteria:
+            return self
+
+        return PlanningArtifacts(
+            implementation_markdown=self.implementation_markdown,
+            verification_markdown=_replace_markdown_section_items(
+                self.verification_markdown,
+                "Acceptance Criteria",
+                merged,
+            ),
+            verification_commands=list(self.verification_commands),
+            acceptance_criteria=list(merged),
+            implementation_steps=list(self.implementation_steps),
+        )
+
 
 class WorkflowArtifactStore:
     """Persist briefs and plans under `.loader/`."""
@@ -546,6 +586,76 @@ def sync_todos_to_definition_of_done(
     dod.completed_items = list(dict.fromkeys(completed + special_completed))
 
 
+def preserve_task_grounded_acceptance_criteria(
+    task_statement: str,
+    *,
+    existing_acceptance_criteria: list[str],
+    refreshed_acceptance_criteria: list[str],
+) -> list[str]:
+    """Preserve task-grounded scope when refreshed artifacts are narrower."""
+
+    grounded_existing = [
+        item
+        for item in existing_acceptance_criteria
+        if item.strip()
+        and item.strip().lower() != task_statement.strip().lower()
+        and _task_text_covers_requirement(task_statement, item)
+    ]
+    return list(dict.fromkeys([*grounded_existing, *refreshed_acceptance_criteria]))
+
+
+def merge_refreshed_todos_with_existing_scope(
+    task_statement: str,
+    *,
+    existing_pending_items: list[str],
+    existing_completed_items: list[str],
+    refreshed_steps: list[str],
+) -> list[dict[str, str]]:
+    """Merge one refreshed plan with task-grounded todo scope already in flight."""
+
+    grounded_completed = [
+        item
+        for item in existing_completed_items
+        if item.strip()
+        and item not in _SPECIAL_TODO_ITEMS
+        and _task_text_covers_requirement(task_statement, item)
+    ]
+    grounded_pending = [
+        item
+        for item in existing_pending_items
+        if item.strip()
+        and item not in _SPECIAL_TODO_ITEMS
+        and _task_text_covers_requirement(task_statement, item)
+    ]
+
+    todos: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in grounded_completed:
+        if item in seen:
+            continue
+        seen.add(item)
+        todos.append(
+            {
+                "content": item,
+                "active_form": f"Working on: {item}",
+                "status": "completed",
+            }
+        )
+    for item in [*grounded_pending, *refreshed_steps]:
+        label = item.strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        todos.append(
+            {
+                "content": label,
+                "active_form": f"Working on: {label}",
+                "status": "pending",
+            }
+        )
+    return todos
+
+
 def advance_todos_from_tool_call(dod, tool_call: ToolCall) -> bool:
     """Advance the best-matching pending todo from a successful tool call."""
 
@@ -584,6 +694,21 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
     parent = Path(path_hint).parent.name.lower() if path_hint else ""
 
     score = 0
+    is_discovery_tool = name in {"read", "glob", "grep"}
+    if name == "bash":
+        is_discovery_tool = _looks_like_search_command(command) or _looks_like_read_command(command)
+    if (
+        is_discovery_tool
+        and _contains_any(text, _MUTATION_STEP_HINTS)
+        and not (
+            _contains_any(text, _READ_STEP_HINTS)
+            or _contains_any(text, _SEARCH_STEP_HINTS)
+            or _contains_any(text, _PARSE_STEP_HINTS)
+            or _contains_any(text, _VERIFY_STEP_HINTS)
+        )
+    ):
+        return 0
+
     if basename and basename in text:
         score += 3
     if parent and parent not in {"", "."} and parent in text:
@@ -826,6 +951,34 @@ def _render_section(title: str, items: list[str]) -> list[str]:
     return lines
 
 
+def _replace_markdown_section_items(
+    markdown: str,
+    title: str,
+    items: list[str],
+) -> str:
+    lines = markdown.rstrip().splitlines()
+    heading = f"## {title}".lower()
+    start_index: int | None = None
+    end_index = len(lines)
+    for index, line in enumerate(lines):
+        if line.strip().lower() == heading:
+            start_index = index
+            continue
+        if start_index is not None and re.match(r"^##+\s+", line.strip()):
+            end_index = index
+            break
+
+    replacement = _render_section(title, items)
+    if start_index is None:
+        body = "\n".join(lines).rstrip()
+        suffix = "\n\n" if body else ""
+        replacement_text = "\n".join(replacement).rstrip()
+        return f"{body}{suffix}{replacement_text}\n"
+
+    updated = [*lines[:start_index], *replacement, *lines[end_index:]]
+    return "\n".join(updated).rstrip() + "\n"
+
+
 def _first_item(items: list[str] | None) -> str | None:
     if not items:
         return None
@@ -845,6 +998,63 @@ def _merge_grounded_items(
     meaningful = [item for item in current if item not in generic_markers]
     merged = list(dict.fromkeys([*meaningful, *grounded]))
     return merged, merged != current
+
+
+def _task_text_covers_requirement(task_text: str, requirement: str) -> bool:
+    normalized_text = task_text.lower()
+    normalized_requirement = requirement.lower()
+    if normalized_requirement in normalized_text:
+        return True
+    if (
+        _requirement_describes_output_scope(normalized_requirement)
+        and _task_mentions_multiple_outputs(normalized_text)
+    ):
+        return True
+
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9_./-]+", normalized_requirement)
+        if len(token) > 2 and token not in _TASK_COVERAGE_STOP_WORDS
+    ]
+    if not tokens:
+        return normalized_requirement.strip() in normalized_text
+    matches = sum(1 for token in tokens if token in normalized_text)
+    threshold = max(1, min(2, len(tokens)))
+    return matches >= threshold
+
+
+def _task_mentions_multiple_outputs(task_text: str) -> bool:
+    matches = re.findall(
+        r"(?:~/(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?|"
+        r"/(?:Users|home|tmp|var|private)/(?:[A-Za-z0-9_. -]+/)+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?|"
+        r"[A-Za-z0-9_.-]+\.html|chapters/)",
+        task_text,
+    )
+    if len(matches) >= 2:
+        return True
+    if matches and re.search(
+        r"\b(chapter files?|files?|directories|directory structure|folders|pages|artifacts?|outputs?)\b",
+        task_text,
+    ):
+        return True
+    return False
+
+
+def _requirement_describes_output_scope(requirement: str) -> bool:
+    return any(
+        phrase in requirement
+        for phrase in (
+            "all files",
+            "file naming",
+            "correct locations",
+            "directory structure",
+            "proper directory structure",
+            "all links",
+            "no broken links",
+            "formatted and consistent",
+            "consistent in style",
+        )
+    )
 
 
 def _mark_explicit_section(brief: ClarifyBrief, section: str) -> None:

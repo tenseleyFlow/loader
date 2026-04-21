@@ -11,12 +11,17 @@ from loader.runtime.safeguard_services import (
     ActionTracker,
     PreActionValidator,
     ValidationResult,
-    build_html_toc_edit_call_template,
-    build_html_toc_replacement_block,
-    format_html_inventory_entry,
-    validate_html_toc,
 )
 from loader.runtime.safeguards import RuntimeSafeguards
+from loader.runtime.semantic_rules.html_toc import (
+    build_html_toc_edit_call_template,
+    build_html_toc_replacement_block,
+    build_validated_html_toc_observation_reason,
+    build_verified_html_inventory_observation_reason,
+    format_html_inventory_entry,
+    task_targets_html_toc,
+    validate_html_toc,
+)
 
 
 def test_action_tracker_detects_duplicate_write_after_recording(tmp_path) -> None:
@@ -32,6 +37,17 @@ def test_action_tracker_detects_duplicate_write_after_recording(tmp_path) -> Non
 
     assert is_duplicate is True
     assert str(file_path) in reason
+
+
+def test_task_targets_html_toc_requires_explicit_repair_intent() -> None:
+    prompt = (
+        "Have a look at ~/Loader/guides/fortran and chapters/ within. Get a feel "
+        "for the structure and cadence of the guide. We are going to make an all "
+        "new equally thorough guide on how to use the nginx tool. It will live in "
+        "~/Loader/guides/nginx/index.html and ~/Loader/guides/nginx/chapters/."
+    )
+
+    assert task_targets_html_toc(prompt) is False
 
 
 def test_build_html_toc_replacement_block_uses_verified_inventory(tmp_path) -> None:
@@ -215,25 +231,25 @@ def test_action_tracker_blocks_post_validation_html_rereads_until_new_mutation(t
 
     assert tracker.check_tool_call("read", {"file_path": str(index_path)}) == (
         True,
-        "The current index.html already passes the validated chapter-link check; stop rereading index.html or chapters/ and finish the task unless a specific href or title is still unresolved",
+        build_validated_html_toc_observation_reason(index_path),
     )
     assert tracker.check_tool_call("read", {"file_path": str(chapter_path)}) == (
         True,
-        "The current index.html already passes the validated chapter-link check; stop rereading index.html or chapters/ and finish the task unless a specific href or title is still unresolved",
+        build_validated_html_toc_observation_reason(chapter_path),
     )
     assert tracker.check_tool_call(
         "glob",
         {"path": str(chapters), "pattern": "*.html"},
     ) == (
         True,
-        "The current index.html already passes the validated chapter-link check; stop rereading index.html or chapters/ and finish the task unless a specific href or title is still unresolved",
+        build_validated_html_toc_observation_reason(chapters),
     )
     assert tracker.check_tool_call(
         "bash",
         {"command": f"cat {index_path}"},
     ) == (
         True,
-        "The current index.html already passes the validated chapter-link check; stop rereading index.html or chapters/ and finish the task unless a specific href or title is still unresolved",
+        build_validated_html_toc_observation_reason(index_path),
     )
 
     tracker.record_tool_call(
@@ -262,21 +278,21 @@ def test_action_tracker_blocks_chapter_rereads_after_verified_inventory(tmp_path
     assert tracker.check_tool_call("read", {"file_path": str(index_path)}) == (False, "")
     assert tracker.check_tool_call("read", {"file_path": str(chapter_path)}) == (
         True,
-        "The verified chapter inventory already lists the exact href/title pairs for this directory; update index.html from that inventory instead of rereading chapter files",
+        build_verified_html_inventory_observation_reason(chapter_path),
     )
     assert tracker.check_tool_call(
         "glob",
         {"path": str(chapters), "pattern": "*.html"},
     ) == (
         True,
-        "The verified chapter inventory already lists the exact href/title pairs for this directory; update index.html from that inventory instead of rereading chapter files",
+        build_verified_html_inventory_observation_reason(chapters),
     )
     assert tracker.check_tool_call(
         "bash",
         {"command": f"head -20 {chapter_path}"},
     ) == (
         True,
-        "The verified chapter inventory already lists the exact href/title pairs for this directory; update index.html from that inventory instead of rereading chapter files",
+        build_verified_html_inventory_observation_reason(chapter_path),
     )
 
 
@@ -356,7 +372,7 @@ def test_action_tracker_blocks_second_target_index_reread_after_chapter_discover
     is_duplicate, reason = tracker.check_tool_call("read", {"file_path": str(index_path)})
 
     assert is_duplicate is True
-    assert "known file/title evidence" in reason
+    assert "reuse that file/title evidence" in reason
 
 
 def test_action_tracker_blocks_repeated_chapter_directory_search_once_titles_are_known(
@@ -374,7 +390,7 @@ def test_action_tracker_blocks_repeated_chapter_directory_search_once_titles_are
     is_duplicate, reason = tracker.check_tool_call("glob", search_args)
 
     assert is_duplicate is True
-    assert "known filename/title evidence" in reason
+    assert "reuse that filename/title evidence" in reason
 
 
 def test_action_tracker_allows_repeated_read_after_mutation(tmp_path) -> None:

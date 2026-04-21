@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from ..llm.base import ToolCall
 from ..tools.shell_tools import BashTool
+from .semantic_rules import html_toc as html_toc_rule
 from .verification_observations import VerificationAttempt, verification_attempt_id
 
 TaskSize = Literal["small", "standard", "large"]
@@ -490,72 +491,23 @@ def _derive_html_toc_verification_command(
     task_statement: str,
 ) -> str | None:
     task_hints = " ".join([task_statement, *dod.acceptance_criteria]).lower()
-    if not any(
-        hint in task_hints
-        for hint in ("href", "link", "links", "table of contents", "chapter title")
-    ):
+    if not html_toc_rule.task_targets_html_toc(task_hints):
         return None
 
     for path_str in dod.touched_files:
         path = Path(path_str)
         effective_path = path if path.is_absolute() else (project_root / path)
-        if effective_path.name != "index.html" or effective_path.suffix != ".html":
-            continue
-        if not (effective_path.parent / "chapters").is_dir():
-            continue
-        return _build_html_toc_verification_command(effective_path)
+        command = html_toc_rule.build_html_toc_verification_command(effective_path)
+        if command:
+            return command
     return None
 
 
 def _build_html_toc_verification_command(index_path: Path) -> str:
-    path_literal = repr(str(index_path))
-    return "\n".join(
-        [
-            "python3 - <<'PY'",
-            "from pathlib import Path",
-            "import re",
-            "import sys",
-            "",
-            f"index = Path({path_literal}).expanduser()",
-            "root = index.parent",
-            "text = index.read_text()",
-            "section_match = re.search(r'<ul class=\"chapter-list\">(.*?)</ul>', text, re.S)",
-            "if section_match is None:",
-            "    print('Missing chapter-list table of contents', file=sys.stderr)",
-            "    raise SystemExit(1)",
-            "links = re.findall(r'<a href=\"([^\"]+)\">([^<]+)</a>', section_match.group(1))",
-            "if not links:",
-            "    print('No chapter links found in table of contents', file=sys.stderr)",
-            "    raise SystemExit(1)",
-            "",
-            "missing = []",
-            "mismatched = []",
-            "for href, label in links:",
-            "    target = (root / href).resolve()",
-            "    if not target.exists():",
-            "        missing.append(f'{href} -> missing')",
-            "        continue",
-            "    body = target.read_text()",
-            "    match = re.search(r'<h1>(.*?)</h1>', body, re.S)",
-            "    title = match.group(1).strip() if match else ''",
-            "    if title and label.strip() != title:",
-            "        mismatched.append(f'{href} -> {label.strip()} != {title}')",
-            "",
-            "if missing or mismatched:",
-            "    if missing:",
-            "        print('Missing links:', file=sys.stderr)",
-            "        for item in missing:",
-            "            print(item, file=sys.stderr)",
-            "    if mismatched:",
-            "        print('Title mismatches:', file=sys.stderr)",
-            "        for item in mismatched:",
-            "            print(item, file=sys.stderr)",
-            "    raise SystemExit(1)",
-            "",
-            "print(f'validated {len(links)} toc links in {index.name}')",
-            "PY",
-        ]
-    )
+    command = html_toc_rule.build_html_toc_verification_command(index_path)
+    if command is None:
+        raise ValueError(f"{index_path} is not a valid HTML TOC target")
+    return command
 
 
 def _first_non_empty_line(text: str) -> str:

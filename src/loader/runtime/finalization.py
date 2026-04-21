@@ -28,6 +28,7 @@ from .executor import ToolExecutor
 from .logging import get_runtime_logger
 from .memory import MemoryStore
 from .policy_timeline import append_verification_timeline_entry
+from .semantic_rules import html_toc as html_toc_rule
 from .session import normalize_usage
 from .tracing import RuntimeTracer
 from .verification_observations import (
@@ -780,7 +781,6 @@ def _verification_observation_from_evidence(
     attempt_id: str | None,
     attempt_number: int | None,
 ) -> VerificationObservation:
-    command = evidence.command or "verification"
     return VerificationObservation(
         status=(
             VerificationObservationStatus.SKIPPED.value
@@ -960,43 +960,24 @@ def _extract_verification_repairs(
     fixes: list[str] = []
     for evidence in evidence_items:
         for candidate in (evidence.stderr, evidence.output, evidence.stdout):
-            missing, mismatches = _parse_verification_failures(str(candidate))
+            missing, mismatches = html_toc_rule.parse_html_toc_verification_failures(
+                str(candidate)
+            )
             for href in missing:
-                item = f"Fix the missing TOC href `{href}` in `index.html`."
+                item = (
+                    f"Fix the missing TOC href `{href}` in the target HTML "
+                    "table-of-contents page."
+                )
                 if item not in fixes:
                     fixes.append(item)
             for mismatch in mismatches:
-                item = f"Fix the TOC label mismatch `{mismatch}`."
+                item = (
+                    f"Fix the TOC label mismatch `{mismatch}` in the target HTML "
+                    "table-of-contents page."
+                )
                 if item not in fixes:
                     fixes.append(item)
     return fixes
-
-
-def _parse_verification_failures(text: str) -> tuple[list[str], list[str]]:
-    missing: list[str] = []
-    mismatches: list[str] = []
-    mode: str | None = None
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        lowered = line.lower()
-        if lowered == "missing links:":
-            mode = "missing"
-            continue
-        if lowered == "title mismatches:":
-            mode = "mismatch"
-            continue
-        if mode == "missing" and "->" in line:
-            href = line.split("->", 1)[0].strip()
-            if href and href not in missing:
-                missing.append(href)
-            continue
-        if mode == "mismatch" and "!=" in line and line not in mismatches:
-            mismatches.append(line)
-
-    return missing, mismatches
 
 
 def _classify_verification_kind(command: str) -> str:

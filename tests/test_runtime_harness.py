@@ -2022,9 +2022,10 @@ async def test_blocked_html_index_edit_queues_inventory_reuse_steering(
 
     assert any("TOC references chapter files that do not exist" in message for message in messages)
     assert any(
-        "Use the current target contents plus the verified sibling inventory instead of guessing." in message
+        "Use the current TOC target contents plus the verified sibling inventory" in message
         for message in steering_messages
     )
+    assert any(str(index_file) in message for message in steering_messages)
     assert any(
         "chapters/05-input-output.html = Chapter 5: Input and Output" in message
         for message in steering_messages
@@ -2141,7 +2142,7 @@ async def test_verified_html_inventory_blocks_redundant_chapter_reread(
         for message in messages
     )
     assert any(
-        "The verified chapter inventory already lists the exact href/title pairs for this directory"
+        "verified sibling chapter inventory"
         in message
         for message in messages
     )
@@ -2240,15 +2241,15 @@ async def test_successful_html_toc_edit_blocks_post_success_reread_and_steers_to
         for message in messages
     )
     assert any(
-        "already passes the validated chapter-link check" in message
+        "already passed semantic link validation" in message
         for message in messages
     )
     assert any(
-        "already satisfies the verified chapter-link constraints" in message
+        "already satisfies the verified link/title constraints" in message
         for message in steering_messages
     )
     assert any(
-        "Do not reread `index.html` or files in `chapters/`" in message
+        "Do not reread" in message and "chapters" in message
         for message in steering_messages
     )
     assert "validated 2 toc links in index.html" in run.response
@@ -2334,6 +2335,7 @@ async def test_exact_prompt_finishes_when_index_toc_is_already_correct(
         in message
         for message in steering_messages
     )
+    assert any(str(index_file) in message for message in steering_messages)
     assert (
         sum(
             1

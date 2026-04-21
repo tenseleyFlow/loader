@@ -28,6 +28,7 @@ from loader.runtime.reasoning_types import (
 )
 from loader.runtime.recovery import RecoveryContext
 from loader.runtime.tool_batches import ToolBatchRunner
+from loader.runtime.workflow import sync_todos_to_definition_of_done
 from loader.tools.base import ToolResult as RegistryToolResult
 from loader.tools.base import create_default_registry
 from tests.helpers.runtime_harness import ScriptedBackend
@@ -802,6 +803,9 @@ async def test_tool_batch_runner_marks_validated_html_toc_completion_after_succe
         verify_action=verify_action,
         auto_recover=False,
     )
+    context.session.current_task = (
+        "Update index.html so every chapter link and title matches the real HTML files in chapters/."
+    )
     queued_messages: list[str] = []
     context.queue_steering_message_callback = queued_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
@@ -831,7 +835,9 @@ async def test_tool_batch_runner_marks_validated_html_toc_completion_after_succe
         pending_tool_calls_seen=set(),
         emit=_noop_emit,
         summary=summary,
-        dod=create_definition_of_done("Fix the chapter links"),
+        dod=create_definition_of_done(
+            "Update index.html so every chapter link and title matches the real HTML files in chapters/."
+        ),
         executor=executor,  # type: ignore[arg-type]
         on_confirmation=None,
         on_user_question=None,
@@ -845,8 +851,314 @@ async def test_tool_batch_runner_marks_validated_html_toc_completion_after_succe
         for message in summary.tool_result_messages
     )
     assert len(queued_messages) == 1
-    assert "already satisfies the verified chapter-link constraints" in queued_messages[0]
-    assert "Do not reread `index.html` or files in `chapters/`" in queued_messages[0]
+    assert "already satisfies the verified link/title constraints" in queued_messages[0]
+    assert f"`{index_path}`" in queued_messages[0]
+    assert f"`{chapters}`" in queued_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_does_not_apply_html_toc_handoff_to_reference_read(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    chapters = temp_dir / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    (chapters / "02-setup.html").write_text(
+        "<h1>Chapter 2: Setting Up Your Environment</h1>\n"
+    )
+    index_path = temp_dir / "index.html"
+    index_path.write_text(
+        "<h2>Table of Contents</h2>\n"
+        '<ul class="chapter-list">\n'
+        '    <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>\n'
+        '    <li><a href="chapters/02-setup.html">Chapter 2: Setting Up Your Environment</a></li>\n'
+        "</ul>\n"
+    )
+
+    prompt = (
+        "Have a look at ~/Loader/guides/fortran and chapters/ within. Get a feel "
+        "for the structure and cadence of the guide. We are going to make an all "
+        "new equally thorough guide on how to use the nginx tool."
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.session.current_task = prompt  # type: ignore[attr-defined]
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="read-index",
+        name="read",
+        arguments={"file_path": str(index_path)},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output=index_path.read_text(),
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=create_definition_of_done(prompt),
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages == []
+    assert all(
+        "Semantic verification preview:" not in message.content
+        for message in summary.tool_result_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progress(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    reference = temp_dir / "fortran" / "index.html"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("<h1>Fortran Beginner's Guide</h1>\n")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create an equally thorough nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Examine the existing Fortran guide structure to understand the cadence and format",
+                "active_form": "Working on: Examine the existing Fortran guide structure to understand the cadence and format",
+                "status": "pending",
+            },
+            {
+                "content": "Create the nginx directory structure",
+                "active_form": "Working on: Create the nginx directory structure",
+                "status": "pending",
+            },
+            {
+                "content": "Create the nginx index.html file",
+                "active_form": "Working on: Create the nginx index.html file",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="read-reference",
+        name="read",
+        arguments={"file_path": str(reference)},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="<h1>Fortran Beginner's Guide</h1>\n",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert (
+        "Examine the existing Fortran guide structure to understand the cadence and format"
+        in dod.completed_items
+    )
+    assert any(
+        "Continue with the next pending item: `Create the nginx directory structure`"
+        in message
+        for message in queued_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_duplicate_reference_read_prefers_next_pending_todo(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    reference = temp_dir / "fortran" / "index.html"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("<h1>Fortran Beginner's Guide</h1>\n")
+
+    messages = [
+        Message(
+            role=Role.TOOL,
+            content=(
+                "Observation [read]: Result: "
+                "<h1>Fortran Beginner's Guide</h1>\n"
+            ),
+        )
+    ]
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=messages,
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    prompt = (
+        "Have a look at ~/Loader/guides/fortran and chapters/ within. Get a feel "
+        "for the structure and cadence of the guide. We are going to make an all "
+        "new equally thorough guide on how to use the nginx tool."
+    )
+    context.session.current_task = prompt
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done(prompt)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Examine the existing Fortran guide structure to understand the cadence and format",
+                "active_form": "Working on: Examine the existing Fortran guide structure to understand the cadence and format",
+                "status": "completed",
+            },
+            {
+                "content": "Create the nginx directory structure",
+                "active_form": "Working on: Create the nginx directory structure",
+                "status": "pending",
+            },
+            {
+                "content": "Create the nginx index.html file",
+                "active_form": "Working on: Create the nginx index.html file",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="read-dup",
+        name="read",
+        arguments={"file_path": str(reference)},
+    )
+    duplicate_message = (
+        "[Skipped - duplicate action: Already read "
+        f"{reference} recently without any intervening changes; "
+        "reuse the earlier read result instead of rereading]"
+    )
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.DUPLICATE,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=duplicate_message,
+                    result_content=duplicate_message,
+                ),
+                event_content=duplicate_message,
+                is_error=False,
+                result_output=duplicate_message,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(queued_messages) == 1
+    assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
+    assert "Continue with the next pending item: `Create the nginx directory structure`" in queued_messages[0]
+    assert "Update `" not in queued_messages[0]
 
 
 @pytest.mark.asyncio
@@ -943,7 +1255,8 @@ async def test_tool_batch_runner_hands_off_noop_toc_edit_when_file_is_already_va
 
     assert len(queued_messages) == 1
     assert "already matches the validated replacement block" in queued_messages[0]
-    assert "validated 2 toc links in `index.html`" in queued_messages[0]
+    assert "validated 2 linked entries" in queued_messages[0]
+    assert f"`{index_path}`" in queued_messages[0]
     assert "Do not call `edit`, `patch`, or reread the same TOC again" in queued_messages[0]
 
 

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import html
 import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..llm.base import Message, Role, ToolCall
+from .semantic_rules import html_toc as html_toc_rule
 
 DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 100_000
 MIN_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 12_000
@@ -300,10 +300,16 @@ def extract_key_files(messages: list[Message], *, limit: int | None = 6) -> list
     return files
 
 
-def summarize_confirmed_facts(messages: list[Message], *, max_items: int = 2) -> str | None:
+def summarize_confirmed_facts(
+    messages: list[Message],
+    *,
+    max_items: int = 2,
+    focus_path: str | None = None,
+) -> str | None:
     """Summarize recent confirmed discoveries from successful tool results."""
 
-    facts = _collect_confirmed_facts(messages)
+    relevant_messages = _messages_for_focus_path(messages, focus_path=focus_path)
+    facts = _collect_confirmed_facts(relevant_messages)
 
     if not facts:
         return None
@@ -314,15 +320,25 @@ def infer_preferred_next_step(
     messages: list[Message],
     *,
     current_task: str | None = None,
+    focus_path: str | None = None,
 ) -> str | None:
     """Infer one concrete next step from the task and recent transcript."""
 
-    if summarize_confirmed_facts(messages, max_items=1) is None:
+    relevant_messages = _messages_for_focus_path(messages, focus_path=focus_path)
+    if summarize_confirmed_facts(
+        relevant_messages,
+        max_items=1,
+        focus_path=focus_path,
+    ) is None:
         return None
 
-    target_path = _choose_target_path(messages, current_task=current_task)
-    has_confirmed_titles = _summarize_html_title_discovery(messages) is not None
-    verification_gap = _summarize_latest_html_verification_gap(messages)
+    target_path = _choose_target_path(
+        relevant_messages,
+        current_task=current_task,
+        focus_path=focus_path,
+    )
+    has_confirmed_titles = _summarize_html_title_discovery(relevant_messages) is not None
+    verification_gap = _summarize_latest_html_verification_gap(relevant_messages)
     if target_path:
         if verification_gap:
             return (
@@ -548,7 +564,7 @@ def _summarize_html_title_discovery(
         if not isinstance(raw_path, str):
             continue
         normalized_path = _normalize_path_candidate(raw_path) or raw_path
-        if Path(normalized_path).name == "index.html" or "/chapters/" not in normalized_path:
+        if html_toc_rule.is_html_toc_index_path(normalized_path) or "/chapters/" not in normalized_path:
             continue
 
         payload = "\n".join(
@@ -556,7 +572,7 @@ def _summarize_html_title_discovery(
             for result in message.tool_results
             if result.content.strip()
         ) or message.content
-        title = _extract_html_title(payload)
+        title = html_toc_rule.extract_html_title_from_text(payload)
         if not title:
             continue
 
@@ -571,21 +587,6 @@ def _summarize_html_title_discovery(
     if len(confirmed_pairs) > max_pairs:
         preview += ", ..."
     return f"Chapter titles confirmed: {preview}"
-
-
-def _extract_html_title(payload: str) -> str | None:
-    for pattern in (
-        r"<h1[^>]*>(.*?)</h1>",
-        r"<title[^>]*>(.*?)</title>",
-    ):
-        match = re.search(pattern, payload, re.IGNORECASE | re.DOTALL)
-        if not match:
-            continue
-        title = re.sub(r"<[^>]+>", " ", match.group(1))
-        title = _collapse_inline_whitespace(html.unescape(title))
-        if title:
-            return title
-    return None
 
 
 def _collect_html_file_discovery_fact(
@@ -670,64 +671,18 @@ def _summarize_latest_html_verification_gap(
             for result in message.tool_results
             if result.content.strip()
         ) or message.content
-        gap = _extract_html_verification_gap(payload, max_items=max_items)
+        gap = html_toc_rule.summarize_html_toc_verification_gap(
+            payload,
+            max_items=max_items,
+        )
         if gap:
             return gap
 
     return None
 
 
-def _extract_html_verification_gap(payload: str, *, max_items: int = 2) -> str | None:
-    missing: list[str] = []
-    mismatches: list[str] = []
-    mode: str | None = None
-
-    for raw_line in payload.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        lowered = line.lower()
-        if lowered == "missing links:":
-            mode = "missing"
-            continue
-        if lowered == "title mismatches:":
-            mode = "mismatch"
-            continue
-        if mode == "missing" and "->" in line:
-            href = line.split("->", 1)[0].strip()
-            if href and href not in missing:
-                missing.append(href)
-            continue
-        if mode == "mismatch" and "!=" in line:
-            if line not in mismatches:
-                mismatches.append(line)
-
-    parts: list[str] = []
-    if missing:
-        preview = ", ".join(missing[:max_items])
-        if len(missing) > max_items:
-            preview += ", ..."
-        parts.append(f"missing TOC links {preview}")
-    if mismatches:
-        preview = ", ".join(mismatches[:max_items])
-        if len(mismatches) > max_items:
-            preview += ", ..."
-        parts.append(f"title mismatches {preview}")
-    return "; ".join(parts) if parts else None
-
-
 def _summarize_html_file_discovery(payload: str) -> str | None:
-    filenames = re.findall(r"([A-Za-z0-9_.-]+\.html)", payload)
-    unique_names: list[str] = []
-    for name in filenames:
-        if name not in unique_names:
-            unique_names.append(name)
-    if len(unique_names) < 3:
-        return None
-    preview = ", ".join(unique_names[:6])
-    if len(unique_names) > 6:
-        preview += ", ..."
-    return f"Existing files include {preview}"
+    return html_toc_rule.summarize_html_file_discovery(payload)
 
 
 def _resolve_tool_name(
@@ -750,7 +705,16 @@ def _choose_target_path(
     messages: list[Message],
     *,
     current_task: str | None = None,
+    focus_path: str | None = None,
 ) -> str | None:
+    if focus_path:
+        normalized_focus = _normalize_path_candidate(focus_path)
+        if normalized_focus:
+            resolved_focus = html_toc_rule.resolve_html_toc_index_path(normalized_focus)
+            if resolved_focus is not None:
+                return str(resolved_focus)
+            return normalized_focus
+
     candidates: Counter[str] = Counter()
     for message in messages:
         for tool_call in message.tool_calls:
@@ -763,7 +727,7 @@ def _choose_target_path(
             if not normalized:
                 continue
             path_name = Path(normalized).name
-            if path_name == "index.html":
+            if html_toc_rule.is_html_toc_index_path(normalized):
                 candidates[normalized] += 10
             elif path_name.endswith(".html") and "/chapters/" not in normalized:
                 candidates[normalized] += 4
@@ -775,6 +739,56 @@ def _choose_target_path(
         return None
     current_task_paths = extract_key_files([Message(role=Role.USER, content=current_task)], limit=3)
     for path in current_task_paths:
-        if Path(path).name == "index.html":
+        if html_toc_rule.is_html_toc_index_path(path):
             return path
     return current_task_paths[0] if current_task_paths else None
+
+
+def _messages_for_focus_path(
+    messages: list[Message],
+    *,
+    focus_path: str | None = None,
+) -> list[Message]:
+    if not focus_path:
+        return messages
+
+    anchors = _focus_path_anchors(focus_path)
+    if not anchors:
+        return messages
+
+    filtered = [
+        message
+        for message in messages
+        if _message_matches_focus_path(message, anchors)
+    ]
+    return filtered or messages
+
+
+def _focus_path_anchors(focus_path: str) -> tuple[str, ...]:
+    normalized_focus = _normalize_path_candidate(focus_path) or str(
+        Path(focus_path).expanduser()
+    )
+    focus = Path(normalized_focus).expanduser()
+    anchors = {str(focus)}
+
+    resolved_index = html_toc_rule.resolve_html_toc_index_path(focus)
+    if resolved_index is not None:
+        anchors.add(str(resolved_index))
+        anchors.add(str(resolved_index.parent))
+        anchors.add(str(resolved_index.parent / "chapters"))
+    else:
+        anchors.add(str(focus.parent))
+
+    return tuple(anchor for anchor in anchors if anchor)
+
+
+def _message_matches_focus_path(message: Message, anchors: tuple[str, ...]) -> bool:
+    if any(anchor in str(message.content or "") for anchor in anchors):
+        return True
+
+    for tool_call in message.tool_calls:
+        for key in ("file_path", "path", "cwd"):
+            value = tool_call.arguments.get(key)
+            if isinstance(value, str) and any(anchor in value for anchor in anchors):
+                return True
+    return False

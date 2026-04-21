@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from difflib import SequenceMatcher
 from pathlib import Path
-import re
 
-from ..llm.base import Message, ToolCall
-from .compaction import infer_preferred_next_step, summarize_confirmed_facts
+from ..llm.base import Message, Role, ToolCall
+from .compaction import (
+    extract_key_files,
+    infer_preferred_next_step,
+    summarize_confirmed_facts,
+)
 from .context import RuntimeContext
 from .events import AgentEvent
 from .executor import ToolExecutionOutcome
 from .recovery import RecoveryContext, format_failure_message, format_recovery_prompt
-from .safeguard_services import (
-    build_html_toc_edit_call_template,
-    build_html_toc_replacement_block,
-    extract_html_toc_excerpt,
-    read_html_title,
-    summarize_html_inventory,
-)
+from .semantic_rules import html_toc as html_toc_rule
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -131,10 +129,15 @@ class ToolBatchRecoveryController:
 
         session = self.context.session
         current_task = getattr(session, "current_task", None)
+        focus_path = self._preferred_focus_path(
+            tool_call=tool_call,
+            current_task=current_task,
+        )
         confirmed_facts = summarize_confirmed_facts(session.messages)
         preferred_next_step = infer_preferred_next_step(
             session.messages,
             current_task=current_task,
+            focus_path=focus_path or None,
         )
         actionable_known_state = bool(confirmed_facts and preferred_next_step)
         lines = [prompt]
@@ -168,6 +171,59 @@ class ToolBatchRecoveryController:
         if target_excerpt_lines:
             lines.extend(["", "## CURRENT TARGET EXCERPT", *target_excerpt_lines])
         return "\n".join(lines)
+
+    def _preferred_focus_path(
+        self,
+        *,
+        tool_call: ToolCall,
+        current_task: str | None,
+    ) -> str:
+        raw_path = str(
+            tool_call.arguments.get("file_path")
+            or tool_call.arguments.get("path")
+            or ""
+        ).strip()
+        if not raw_path:
+            return ""
+        if tool_call.name in {"write", "edit", "patch"} or not current_task:
+            return raw_path
+
+        primary_target = self._primary_task_target_path(current_task)
+        if not primary_target:
+            return raw_path
+
+        candidate = self._canonicalize_path(raw_path)
+        target = self._canonicalize_path(primary_target)
+        if not candidate or not target or candidate == target:
+            return raw_path
+
+        candidate_path = Path(candidate)
+        target_path = Path(target)
+        if (
+            tool_call.name == "read"
+            and candidate_path.suffix == ".html"
+            and candidate_path.parent == target_path.parent / "chapters"
+        ):
+            return target
+
+        return raw_path
+
+    def _primary_task_target_path(self, current_task: str) -> str | None:
+        paths = extract_key_files(
+            [Message(role=Role.USER, content=current_task)],
+            limit=6,
+        )
+        for path in paths:
+            normalized = self._canonicalize_path(path)
+            if not normalized:
+                continue
+            if normalized.endswith(".html") and "/chapters/" not in normalized:
+                return normalized
+        for path in paths:
+            normalized = self._canonicalize_path(path)
+            if normalized:
+                return normalized
+        return None
 
     def _file_not_found_candidate_lines(
         self,
@@ -262,7 +318,7 @@ class ToolBatchRecoveryController:
         path = Path(candidate)
         label = f"`{path.name}`"
         if path.suffix == ".html":
-            title = read_html_title(path)
+            title = html_toc_rule.read_html_title(path)
             if title:
                 return f"{label} = {title}"
         return label
@@ -275,9 +331,12 @@ class ToolBatchRecoveryController:
         ).strip()
         if not file_path:
             return []
+        current_task = getattr(self.context.session, "current_task", None)
+        if not html_toc_rule.task_targets_html_toc(current_task):
+            return []
 
-        inventory = summarize_html_inventory(file_path, limit=12)
-        excerpt = extract_html_toc_excerpt(file_path)
+        inventory = html_toc_rule.summarize_html_inventory(file_path, limit=12)
+        excerpt = html_toc_rule.extract_html_toc_excerpt(file_path)
         if not inventory and not excerpt:
             return []
 
@@ -287,7 +346,7 @@ class ToolBatchRecoveryController:
         if excerpt:
             lines.append("- Current TOC block:")
             lines.extend(f"  {line}" for line in excerpt.splitlines())
-        replacement = build_html_toc_replacement_block(file_path)
+        replacement = html_toc_rule.build_html_toc_replacement_block(file_path)
         if replacement:
             lines.append("- Suggested replacement block:")
             lines.extend(f"  {line}" for line in replacement.splitlines())
@@ -297,7 +356,7 @@ class ToolBatchRecoveryController:
             lines.append("  old_string: use the Current TOC block above exactly")
             lines.append("  new_string: use the Suggested replacement block above exactly")
             lines.append("  Do not rewrite the whole file.")
-        edit_template = build_html_toc_edit_call_template(file_path)
+        edit_template = html_toc_rule.build_html_toc_edit_call_template(file_path)
         if edit_template:
             lines.append("- Suggested edit call:")
             lines.extend(f"  {line}" for line in edit_template.splitlines())

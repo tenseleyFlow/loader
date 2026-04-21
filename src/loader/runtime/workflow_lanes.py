@@ -37,6 +37,8 @@ from .workflow import (
     WorkflowPolicy,
     WorkflowTimelineEntryKind,
     enrich_clarify_brief_with_grounding,
+    merge_refreshed_todos_with_existing_scope,
+    preserve_task_grounded_acceptance_criteria,
     sync_todos_to_definition_of_done,
 )
 from .workflow_ledger import (
@@ -199,6 +201,13 @@ class WorkflowLaneRunner:
             if response.content.strip()
             else PlanningArtifacts.fallback(task_statement=task)
         )
+        if refresh_reasons:
+            preserved_acceptance = preserve_task_grounded_acceptance_criteria(
+                task,
+                existing_acceptance_criteria=list(dod.acceptance_criteria),
+                refreshed_acceptance_criteria=list(artifacts.acceptance_criteria),
+            )
+            artifacts = artifacts.with_acceptance_criteria(preserved_acceptance)
         implementation_path, verification_path = self.artifact_store.write_plan(
             task,
             artifacts,
@@ -206,7 +215,7 @@ class WorkflowLaneRunner:
         dod.implementation_plan = str(implementation_path)
         dod.verification_plan = str(verification_path)
         if refresh_reasons:
-            dod.acceptance_criteria = list(dict.fromkeys(artifacts.acceptance_criteria))
+            dod.acceptance_criteria = list(artifacts.acceptance_criteria)
         else:
             dod.acceptance_criteria = list(
                 dict.fromkeys(dod.acceptance_criteria + artifacts.acceptance_criteria)
@@ -244,6 +253,8 @@ class WorkflowLaneRunner:
             dod=dod,
             emit=emit,
             executor=executor,
+            task_statement=task,
+            preserve_existing_scope=bool(refresh_reasons),
         )
 
     async def _emit_artifact(
@@ -286,19 +297,32 @@ class WorkflowLaneRunner:
         dod: DefinitionOfDone,
         emit: EventSink,
         executor: ToolExecutor | None,
+        task_statement: str,
+        preserve_existing_scope: bool = False,
     ) -> None:
         if not artifacts.implementation_steps:
             return
         assert executor is not None
 
-        todos = [
-            {
-                "content": step,
-                "active_form": f"Working on: {step}",
-                "status": "pending",
-            }
-            for step in artifacts.implementation_steps[:8]
-        ]
+        if preserve_existing_scope:
+            todos = merge_refreshed_todos_with_existing_scope(
+                task_statement,
+                existing_pending_items=list(dod.pending_items),
+                existing_completed_items=list(dod.completed_items),
+                refreshed_steps=list(artifacts.implementation_steps[:8]),
+            )
+        else:
+            todos = [
+                {
+                    "content": step,
+                    "active_form": f"Working on: {step}",
+                    "status": "pending",
+                }
+                for step in artifacts.implementation_steps[:8]
+            ]
+        if not todos:
+            return
+
         tool_call = ToolCall(
             id="plan-todos-1",
             name="TodoWrite",
@@ -589,6 +613,10 @@ class WorkflowLaneRunner:
             refresh_block = (
                 "Refresh the existing planning artifacts instead of creating a fresh plan "
                 "from scratch.\n"
+                "Preserve the original task outcome and acceptance scope unless the user "
+                "explicitly changed the task.\n"
+                "Do not redefine success around partially completed work or a sample "
+                "artifact.\n"
                 "Use the current task state and these recovery reasons:\n"
                 + "\n".join(f"- {item}" for item in refresh_reasons)
                 + "\n\n"
