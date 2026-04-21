@@ -15,6 +15,7 @@ from loader.runtime.hooks import (
     HookContext,
     HookManager,
     HookResult,
+    SearchPathAliasHook,
 )
 from loader.runtime.permissions import (
     PermissionMode,
@@ -341,4 +342,42 @@ async def test_file_path_alias_hook_canonicalizes_common_aliases(
     assert result.updated_arguments is not None
     assert result.updated_arguments["file_path"] == expected_path
     for alias in ("file", "filepath", "filePath", "filename", "path"):
+        assert alias not in result.updated_arguments
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected_path"),
+    [
+        ("glob", {"pattern": "*.html", "directory": "chapters"}, "chapters"),
+        ("grep", {"pattern": "alpha", "dir": "src"}, "src"),
+    ],
+)
+async def test_search_path_alias_hook_canonicalizes_common_aliases(
+    temp_dir: Path,
+    tool_name: str,
+    arguments: dict[str, object],
+    expected_path: str,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    hook = SearchPathAliasHook()
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(id=f"{tool_name}-1", name=tool_name, arguments=arguments),
+            tool=registry.get(tool_name),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.updated_arguments is not None
+    assert result.updated_arguments["path"] == expected_path
+    for alias in ("directory", "dir", "folder"):
         assert alias not in result.updated_arguments

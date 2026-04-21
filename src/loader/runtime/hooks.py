@@ -131,6 +131,35 @@ class FilePathAliasHook(BaseToolHook):
         return HookResult()
 
 
+class SearchPathAliasHook(BaseToolHook):
+    """Normalize common search-path aliases before validation and execution."""
+
+    _SEARCH_TOOLS = frozenset({"glob", "grep"})
+    _ALIASES = ("directory", "dir", "folder")
+
+    async def pre_tool_use(self, context: HookContext) -> HookResult:
+        if context.tool_call.name not in self._SEARCH_TOOLS:
+            return HookResult()
+
+        arguments = context.tool_call.arguments
+        path = str(arguments.get("path", "")).strip()
+        if path:
+            return HookResult()
+
+        for alias in self._ALIASES:
+            candidate = arguments.get(alias)
+            if not str(candidate or "").strip():
+                continue
+
+            updated_arguments = dict(arguments)
+            updated_arguments["path"] = candidate
+            for cleanup_key in self._ALIASES:
+                updated_arguments.pop(cleanup_key, None)
+            return HookResult(updated_arguments=updated_arguments)
+
+        return HookResult()
+
+
 class HookManager:
     """Runs tool hooks across Loader's three lifecycle events."""
 
@@ -327,6 +356,7 @@ def build_default_tool_hooks(
     return HookManager(
         [
             FilePathAliasHook(),
+            SearchPathAliasHook(),
             DuplicateActionHook(action_tracker),
             ActionValidationHook(validator),
             RollbackTrackingHook(registry, rollback_plan),

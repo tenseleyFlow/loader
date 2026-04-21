@@ -88,6 +88,49 @@ def test_action_tracker_blocks_repeated_read_without_changes(tmp_path) -> None:
     assert str(file_path) in reason
 
 
+def test_action_tracker_allows_one_interleaved_reread_without_changes(tmp_path) -> None:
+    tracker = ActionTracker()
+    index_path = tmp_path / "index.html"
+    chapter_path = tmp_path / "chapter-1.html"
+
+    tracker.record_tool_call("read", {"file_path": str(index_path)})
+    tracker.record_tool_call("read", {"file_path": str(chapter_path)})
+
+    assert tracker.check_tool_call("read", {"file_path": str(index_path)}) == (False, "")
+
+
+def test_action_tracker_allows_reading_a_different_slice_of_the_same_file(tmp_path) -> None:
+    tracker = ActionTracker()
+    index_path = tmp_path / "index.html"
+
+    tracker.record_tool_call("read", {"file_path": str(index_path)})
+
+    assert tracker.check_tool_call(
+        "read",
+        {"file_path": str(index_path), "offset": 1, "limit": 50},
+    ) == (False, "")
+
+
+def test_action_tracker_blocks_fourth_interleaved_reread_without_changes(tmp_path) -> None:
+    tracker = ActionTracker()
+    index_path = tmp_path / "index.html"
+    chapter_a = tmp_path / "chapter-1.html"
+    chapter_b = tmp_path / "chapter-2.html"
+    chapter_c = tmp_path / "chapter-3.html"
+
+    tracker.record_tool_call("read", {"file_path": str(index_path)})
+    tracker.record_tool_call("read", {"file_path": str(chapter_a)})
+    tracker.record_tool_call("read", {"file_path": str(index_path)})
+    tracker.record_tool_call("read", {"file_path": str(chapter_b)})
+    tracker.record_tool_call("read", {"file_path": str(index_path)})
+    tracker.record_tool_call("read", {"file_path": str(chapter_c)})
+
+    is_duplicate, reason = tracker.check_tool_call("read", {"file_path": str(index_path)})
+
+    assert is_duplicate is True
+    assert str(index_path) in reason
+
+
 def test_action_tracker_allows_repeated_read_after_mutation(tmp_path) -> None:
     tracker = ActionTracker()
     file_path = tmp_path / "index.html"

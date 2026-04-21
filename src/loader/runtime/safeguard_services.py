@@ -16,6 +16,9 @@ class ActionTracker:
     LOOP_REPEAT_THRESHOLD = 2
     MAX_RESPONSE_HISTORY = 5
     OBSERVATION_REPEAT_WINDOW = 8
+    READ_REPEAT_THRESHOLD = 3
+    SEARCH_REPEAT_THRESHOLD = 2
+    BASH_OBSERVATION_REPEAT_THRESHOLD = 2
 
     def __init__(self) -> None:
         self._file_writes: dict[str, list[str]] = {}
@@ -26,9 +29,9 @@ class ActionTracker:
         self._response_history: list[str] = []
         self._action_index = 0
         self._mutation_epoch = 0
-        self._recent_reads: dict[str, tuple[int, int]] = {}
-        self._recent_searches: dict[str, tuple[int, int]] = {}
-        self._recent_bash_observations: dict[str, tuple[int, int]] = {}
+        self._recent_reads: dict[str, tuple[int, int, int]] = {}
+        self._recent_searches: dict[str, tuple[int, int, int]] = {}
+        self._recent_bash_observations: dict[str, tuple[int, int, int]] = {}
 
     def reset(self) -> None:
         self._file_writes.clear()
@@ -124,12 +127,17 @@ class ActionTracker:
                 return True, f"Same patch already applied to: {file_path}"
 
         elif tool_name == "read":
-            file_path = str(arguments.get("file_path", "")).strip()
-            if file_path:
+            read_key = self._make_read_key(arguments)
+            if read_key:
                 duplicate, reason = self._check_recent_observation(
                     self._recent_reads,
-                    self._normalize_path(file_path),
-                    f"Already read {file_path} recently without any intervening changes",
+                    read_key,
+                    (
+                        "Already read "
+                        f"{str(arguments.get('file_path', '')).strip()} "
+                        "recently without any intervening changes"
+                    ),
+                    repeat_threshold=self.READ_REPEAT_THRESHOLD,
                 )
                 if duplicate:
                     return True, reason
@@ -141,6 +149,7 @@ class ActionTracker:
                     self._recent_searches,
                     observation_key,
                     "Already ran the same search recently without any intervening changes",
+                    repeat_threshold=self.SEARCH_REPEAT_THRESHOLD,
                 )
                 if duplicate:
                     return True, reason
@@ -152,6 +161,7 @@ class ActionTracker:
                     self._recent_bash_observations,
                     self._normalize_command(command),
                     "Already ran the same read-only shell probe recently without any intervening changes",
+                    repeat_threshold=self.BASH_OBSERVATION_REPEAT_THRESHOLD,
                 )
                 if duplicate:
                     return True, reason
@@ -190,19 +200,19 @@ class ActionTracker:
                 self._note_mutation()
 
         elif tool_name == "read":
-            file_path = str(arguments.get("file_path", "")).strip()
-            if file_path:
-                self._recent_reads[self._normalize_path(file_path)] = (
-                    self._mutation_epoch,
-                    self._action_index,
+            read_key = self._make_read_key(arguments)
+            if read_key:
+                self._record_observation(
+                    self._recent_reads,
+                    read_key,
                 )
 
         elif tool_name in {"glob", "grep"}:
             observation_key = self._make_search_key(tool_name, arguments)
             if observation_key:
-                self._recent_searches[observation_key] = (
-                    self._mutation_epoch,
-                    self._action_index,
+                self._record_observation(
+                    self._recent_searches,
+                    observation_key,
                 )
 
         elif tool_name == "bash":
@@ -212,9 +222,9 @@ class ActionTracker:
                 if self._is_mutating_bash(command):
                     self._note_mutation()
                 elif self._is_observational_bash(command):
-                    self._recent_bash_observations[self._normalize_command(command)] = (
-                        self._mutation_epoch,
-                        self._action_index,
+                    self._record_observation(
+                        self._recent_bash_observations,
+                        self._normalize_command(command),
                     )
 
     def detect_loop(self) -> tuple[bool, str]:
@@ -299,20 +309,49 @@ class ActionTracker:
 
     def _check_recent_observation(
         self,
-        cache: dict[str, tuple[int, int]],
+        cache: dict[str, tuple[int, int, int]],
         key: str,
         reason: str,
+        *,
+        repeat_threshold: int,
     ) -> tuple[bool, str]:
         last_seen = cache.get(key)
         if last_seen is None:
             return False, ""
 
-        last_epoch, last_index = last_seen
+        last_epoch, last_index, repeat_count = last_seen
         if last_epoch != self._mutation_epoch:
             return False, ""
-        if (self._action_index - last_index) > self.OBSERVATION_REPEAT_WINDOW:
+        gap = self._action_index - last_index
+        if gap > self.OBSERVATION_REPEAT_WINDOW:
             return False, ""
-        return True, reason
+        if gap <= 0:
+            return True, reason
+        if repeat_count >= repeat_threshold:
+            return True, reason
+        return False, ""
+
+    def _record_observation(
+        self,
+        cache: dict[str, tuple[int, int, int]],
+        key: str,
+    ) -> None:
+        last_seen = cache.get(key)
+        if last_seen is None:
+            cache[key] = (self._mutation_epoch, self._action_index, 1)
+            return
+
+        last_epoch, last_index, repeat_count = last_seen
+        gap = self._action_index - last_index
+        if last_epoch != self._mutation_epoch or gap > self.OBSERVATION_REPEAT_WINDOW:
+            cache[key] = (self._mutation_epoch, self._action_index, 1)
+            return
+
+        cache[key] = (
+            self._mutation_epoch,
+            self._action_index,
+            repeat_count + 1,
+        )
 
     def _make_search_key(self, tool_name: str, arguments: dict) -> str | None:
         pattern = str(arguments.get("pattern", "")).strip()
@@ -321,6 +360,18 @@ class ActionTracker:
         path = str(arguments.get("path", "")).strip()
         normalized_path = self._normalize_path(path) if path else ""
         return f"{tool_name}:{normalized_path}:{pattern}"
+
+    def _make_read_key(self, arguments: dict) -> str | None:
+        file_path = str(arguments.get("file_path", "")).strip()
+        if not file_path:
+            return None
+        offset = str(arguments.get("offset", "")).strip()
+        limit = str(arguments.get("limit", "")).strip()
+        return (
+            f"{self._normalize_path(file_path)}"
+            f":offset={offset or 'full'}"
+            f":limit={limit or 'all'}"
+        )
 
     def _is_observational_bash(self, command: str) -> bool:
         norm_cmd = self._normalize_command(command)

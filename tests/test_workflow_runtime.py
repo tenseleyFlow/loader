@@ -72,6 +72,16 @@ def artifact_kinds(run) -> list[str]:
     ]
 
 
+def verification_commands(run) -> list[str]:
+    """Return verification-phase bash commands."""
+
+    return [
+        str((event.tool_args or {}).get("command", ""))
+        for event in run.events
+        if event.type == "tool_call" and event.phase == "verification"
+    ]
+
+
 def workflow_timeline_kinds(run) -> list[str]:
     assert run.agent.last_turn_summary is not None
     return [entry.kind for entry in run.agent.last_turn_summary.workflow_timeline]
@@ -1245,6 +1255,75 @@ async def test_verify_failure_returns_to_execute_without_retriggering_plan(
     assert modes.count("execute") >= 2
     assert modes.count("verify") >= 2
     assert "fixed output" in target.read_text()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_recovers_verification_commands_from_legacy_separator(
+    temp_dir: Path,
+) -> None:
+    target = temp_dir / "planned.txt"
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="\n".join(
+                    [
+                        "# Implementation Plan",
+                        "",
+                        "## File Changes",
+                        f"- Create {target.name} in the workspace root.",
+                        "",
+                        "## Execution Order",
+                        f"1. Write {target.name}.",
+                        "2. Verify the file exists.",
+                        "",
+                        "## Risks",
+                        "- Losing the verification commands during parsing.",
+                        "",
+                        "# Verification Plan",
+                        "",
+                        "## Acceptance Criteria",
+                        f"- {target.name} exists in the workspace root.",
+                        "",
+                        "## Verification Commands",
+                        f"- `test -f {target}`",
+                        "",
+                        "## Notes",
+                        "- This simulates a legacy separator emitted after the plan body.",
+                        "",
+                        "<<VERIFICATION>>",
+                    ]
+                )
+            ),
+            CompletionResponse(
+                content="I'll create the planned artifact.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(target),
+                            "content": "planned output\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(content="The planned artifact is in place."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Implement a persistent workflow mode router with clarify artifacts, "
+        "planning artifacts, and verification-plan wiring in the runtime.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    dod = run.agent.last_turn_summary.definition_of_done
+    assert dod is not None
+    assert dod.verification_commands == [f"test -f {target}"]
+    assert verification_commands(run) == [f"test -f {target}"]
+    assert Path(dod.verification_plan).read_text().count("## Verification Commands") == 1
 
 
 @pytest.mark.asyncio

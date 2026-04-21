@@ -150,6 +150,39 @@ def test_planning_artifacts_round_trip_and_extract_commands() -> None:
     ]
 
 
+def test_planning_artifacts_recover_embedded_verification_from_legacy_separator() -> None:
+    artifacts = PlanningArtifacts.from_model_output(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## Execution Order",
+                "1. Inspect index.html.",
+                "2. Fix the chapter links.",
+                "",
+                "# Verification Plan",
+                "",
+                "## Acceptance Criteria",
+                "- All chapter links point to real files.",
+                "",
+                "## Verification Commands",
+                "- `grep -o 'href=\"[^\"]*\"' index.html`",
+                "- `ls chapters`",
+                "",
+                "<<VERIFICATION>>",
+            ]
+        ),
+        task_statement="Fix the broken chapter links in index.html.",
+    )
+
+    assert "## Verification Commands" not in artifacts.implementation_markdown
+    assert "## Verification Commands" in artifacts.verification_markdown
+    assert artifacts.verification_commands == [
+        "grep -o 'href=\"[^\"]*\"' index.html",
+        "ls chapters",
+    ]
+
+
 def test_workflow_artifact_store_and_bridge_round_trip(tmp_path: Path) -> None:
     store = WorkflowArtifactStore(tmp_path)
     brief = ClarifyBrief.fallback(

@@ -216,6 +216,15 @@ class TurnFinalizer:
                 Path(dod.verification_plan).read_text()
             )
 
+        if (
+            not dod.verification_commands
+            and dod.implementation_plan
+            and Path(dod.implementation_plan).exists()
+        ):
+            dod.verification_commands = extract_verification_commands_from_markdown(
+                Path(dod.implementation_plan).read_text()
+            )
+
         if not dod.verification_commands:
             dod.verification_commands = derive_verification_commands(
                 dod,

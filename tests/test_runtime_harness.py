@@ -1767,6 +1767,59 @@ async def test_duplicate_read_is_skipped_without_intervening_mutation(
 
 
 @pytest.mark.asyncio
+async def test_interleaved_reread_is_allowed_once_without_intervening_mutation(
+    temp_dir: Path,
+) -> None:
+    index_file = temp_dir / "index.html"
+    chapter_file = temp_dir / "chapter-1.html"
+    index_file.write_text("table of contents\n")
+    chapter_file.write_text("chapter body\n")
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"file_path": str(index_file)},
+                ),
+                content="I'll inspect the index first.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-2",
+                    name="read",
+                    arguments={"file_path": str(chapter_file)},
+                ),
+                content="I'll inspect the chapter next.",
+            ),
+            native_tool_response(
+                ToolCall(
+                    id="read-3",
+                    name="read",
+                    arguments={"file_path": str(index_file)},
+                ),
+                content="I'll reopen the index to reconcile the findings.",
+            ),
+            final_response("I re-opened the index after checking the chapter."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Inspect the index, inspect a chapter, then return to the index.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert tool_event_names(run) == ["read", "read", "read"]
+    messages = tool_result_messages(run)
+    assert not any("Skipped - duplicate action" in message for message in messages)
+    assert sum("table of contents" in message for message in messages) == 2
+    assert any("chapter body" in message for message in messages)
+
+
+@pytest.mark.asyncio
 async def test_repeated_bash_probe_is_allowed_after_mutation(
     temp_dir: Path,
 ) -> None:

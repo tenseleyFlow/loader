@@ -52,6 +52,10 @@ __all__ = [
 ]
 
 VERIFICATION_SEPARATOR = "<<<VERIFICATION>>>"
+_VERIFICATION_SEPARATORS = (
+    VERIFICATION_SEPARATOR,
+    "<<VERIFICATION>>",
+)
 _GENERIC_TOUCHPOINTS = {
     "Determine the concrete files during execution.",
     "Identify exact files during planning or execution.",
@@ -518,10 +522,45 @@ def build_execute_bridge(
 
 
 def _split_plan_output(model_output: str) -> tuple[str, str]:
-    if VERIFICATION_SEPARATOR in model_output:
-        implementation, verification = model_output.split(VERIFICATION_SEPARATOR, maxsplit=1)
+    for separator in _VERIFICATION_SEPARATORS:
+        if separator not in model_output:
+            continue
+        implementation, verification = model_output.split(separator, maxsplit=1)
+        split = _split_embedded_verification_heading(
+            implementation.strip(),
+            fallback_verification=verification.strip(),
+        )
+        if split is not None:
+            return split
         return implementation.strip(), verification.strip()
+
+    split = _split_embedded_verification_heading(model_output.strip())
+    if split is not None:
+        return split
     return model_output.strip(), ""
+
+
+def _split_embedded_verification_heading(
+    implementation_markdown: str,
+    *,
+    fallback_verification: str = "",
+) -> tuple[str, str] | None:
+    match = re.search(r"(?m)^#\s+Verification Plan\s*$", implementation_markdown)
+    if match is None:
+        if fallback_verification.strip():
+            return implementation_markdown, fallback_verification.strip()
+        return None
+
+    implementation = implementation_markdown[:match.start()].rstrip()
+    verification = implementation_markdown[match.start():].strip()
+    if not implementation:
+        implementation = implementation_markdown.strip()
+        verification = fallback_verification.strip()
+    if not verification:
+        verification = fallback_verification.strip()
+    if not implementation or not verification:
+        return None
+    return implementation, verification
 
 
 def _ensure_heading(markdown: str, heading: str) -> str:

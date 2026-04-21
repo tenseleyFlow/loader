@@ -103,3 +103,39 @@ def test_record_successful_tool_call_preserves_absolute_path_string(tmp_path: Pa
     )
 
     assert dod.touched_files == [str(absolute_path)]
+
+
+def test_derive_verification_commands_adds_semantic_html_toc_check(tmp_path: Path) -> None:
+    chapters = tmp_path / "chapters"
+    chapters.mkdir()
+    (chapters / "01-introduction.html").write_text(
+        "<h1>Chapter 1: Introduction to Fortran</h1>\n"
+    )
+    index = tmp_path / "index.html"
+    index.write_text(
+        "\n".join(
+            [
+                '<ul class="chapter-list">',
+                '  <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>',
+                "</ul>",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done(
+        "Update index.html so the table of contents links and hrefs are correct."
+    )
+    dod.acceptance_criteria = [
+        "All table of contents links in index.html point to existing chapter files.",
+        "All link texts match the actual chapter titles.",
+    ]
+    dod.touched_files = [str(index)]
+
+    commands = derive_verification_commands(
+        dod,
+        project_root=tmp_path,
+        task_statement=dod.task_statement,
+    )
+
+    assert any(command.startswith("/usr/bin/python3 - <<'PY'") for command in commands)
+    assert not any(command == f"test -f {index}" for command in commands)
