@@ -58,6 +58,7 @@ __all__ = [
     "load_planning_artifacts",
     "merge_refreshed_todos_with_existing_scope",
     "preserve_task_grounded_acceptance_criteria",
+    "preferred_pending_todo_item",
     "reconcile_aggregate_completion_steps",
     "sync_todos_to_definition_of_done",
 ]
@@ -176,6 +177,14 @@ _ARTIFACT_SET_COMPLETION_HINTS = (
     "formatted",
     "formatting",
     "review",
+)
+_BROAD_SETUP_HINTS = (
+    "directory structure",
+    "directories",
+    "folders",
+    "folder structure",
+    "scaffold",
+    "scaffolding",
 )
 _TODO_FILE_CANDIDATE_PATTERN = re.compile(
     r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+"
@@ -831,6 +840,31 @@ def effective_pending_todo_items(
     ]
 
 
+def preferred_pending_todo_item(
+    dod,
+    *,
+    project_root: Path | None = None,
+    missing_artifact: tuple[Path, bool] | None = None,
+) -> str | None:
+    """Return the most helpful pending todo for user-facing recovery nudges."""
+
+    pending_items = [
+        item
+        for item in effective_pending_todo_items(dod, project_root=project_root)
+        if item not in _SPECIAL_TODO_ITEMS
+    ]
+    if not pending_items:
+        return None
+    if missing_artifact is None:
+        return pending_items[0]
+
+    for item in pending_items:
+        if _todo_is_subsumed_by_concrete_missing_artifact(item, missing_artifact):
+            continue
+        return item
+    return pending_items[0]
+
+
 def preserve_task_grounded_acceptance_criteria(
     task_statement: str,
     *,
@@ -1120,6 +1154,26 @@ def _todo_describes_stale_creation_after_artifacts_exist(
     if not candidates:
         return False
     return not candidates.isdisjoint(planned_files)
+
+
+def _todo_is_subsumed_by_concrete_missing_artifact(
+    item: str,
+    missing_artifact: tuple[Path, bool],
+) -> bool:
+    text = item.strip().lower()
+    if not text or item in _SPECIAL_TODO_ITEMS:
+        return False
+    if not _contains_any(text, _CREATION_STEP_HINTS):
+        return False
+    if _TODO_FILE_CANDIDATE_PATTERN.search(text):
+        return False
+
+    target, expect_directory = missing_artifact
+    if _contains_any(text, _BROAD_SETUP_HINTS):
+        if not expect_directory:
+            return True
+        return target.is_dir()
+    return False
 
 
 def _todo_describes_directory_content_creation(

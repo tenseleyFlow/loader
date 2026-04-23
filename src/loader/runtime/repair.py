@@ -15,7 +15,7 @@ from .dod import (
     planned_artifact_target_satisfied,
 )
 from .parsing import parse_tool_calls
-from .workflow import effective_pending_todo_items, reconcile_aggregate_completion_steps
+from .workflow import preferred_pending_todo_item, reconcile_aggregate_completion_steps
 
 _SPECIAL_DOD_ITEMS = {
     "Complete the requested work",
@@ -307,13 +307,26 @@ class ResponseRepairer:
                     "Confirmed completed work: " + "; ".join(completed[-2:])
                 )
 
-            next_pending = next(
-                (
-                    item
-                    for item in dod.pending_items
-                    if item not in _SPECIAL_DOD_ITEMS
+            next_pending = preferred_pending_todo_item(
+                dod,
+                project_root=self.context.project_root,
+                missing_artifact=next(
+                    (
+                        artifact
+                        for artifact in collect_planned_artifact_targets(
+                            dod,
+                            project_root=self.context.project_root,
+                            max_paths=12,
+                        )
+                        if not planned_artifact_target_satisfied(
+                            dod,
+                            target=artifact[0],
+                            expect_directory=artifact[1],
+                            project_root=self.context.project_root,
+                        )
+                    ),
+                    None,
                 ),
-                None,
             )
             if next_pending:
                 progress_lines.append(f"Next pending item: {next_pending}")
@@ -460,16 +473,27 @@ class ResponseRepairer:
         retry_number: int,
     ) -> list[str]:
         completed_artifacts, _ = self._planned_artifact_counts(dod)
-        next_pending = next(
+        next_missing_artifact = next(
             (
-                item
-                for item in effective_pending_todo_items(
+                artifact
+                for artifact in collect_planned_artifact_targets(
                     dod,
                     project_root=self.context.project_root,
+                    max_paths=12,
                 )
-                if item not in _SPECIAL_DOD_ITEMS
+                if not planned_artifact_target_satisfied(
+                    dod,
+                    target=artifact[0],
+                    expect_directory=artifact[1],
+                    project_root=self.context.project_root,
+                )
             ),
             None,
+        )
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=next_missing_artifact,
         )
         if (
             completed_artifacts == 0

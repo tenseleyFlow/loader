@@ -40,6 +40,7 @@ from .verification_observations import (
 from .workflow import (
     advance_todos_from_tool_call,
     effective_pending_todo_items,
+    preferred_pending_todo_item,
     reconcile_aggregate_completion_steps,
     sync_todos_to_definition_of_done,
 )
@@ -337,16 +338,10 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
-        next_pending = next(
-            (
-                item
-                for item in effective_pending_todo_items(
-                    dod,
-                    project_root=self.context.project_root,
-                )
-                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
-            ),
-            None,
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=missing_artifact,
         )
         confirmed_facts = summarize_confirmed_facts(
             self.context.session.messages,
@@ -626,16 +621,9 @@ class ToolBatchRunner:
             seen_roots.add(root)
             planned_roots.append(root)
 
-        next_pending = next(
-            (
-                item
-                for item in effective_pending_todo_items(
-                    dod,
-                    project_root=self.context.project_root,
-                )
-                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
-            ),
-            None,
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
         )
         roots_preview = ", ".join(f"`{root}`" for root in planned_roots[:2])
         if len(planned_roots) > 2:
@@ -794,24 +782,17 @@ class ToolBatchRunner:
             ),
             None,
         )
-        next_pending = next(
-            (
-                item
-                for item in effective_pending_todo_items(
-                    dod,
-                    project_root=self.context.project_root,
-                )
-                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
-            ),
-            None,
-        )
-        if not completed_label or not next_pending or next_pending == completed_label:
-            return
-
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
         )
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=missing_artifact,
+        )
+        if not completed_label or not next_pending or next_pending == completed_label:
+            return
         if _should_prioritize_missing_artifact(
             next_pending=next_pending,
             missing_artifact=missing_artifact,
@@ -858,16 +839,9 @@ class ToolBatchRunner:
         if not all_planned_artifacts_exist(dod, project_root=self.context.project_root):
             return
 
-        next_pending = next(
-            (
-                item
-                for item in effective_pending_todo_items(
-                    dod,
-                    project_root=self.context.project_root,
-                )
-                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
-            ),
-            None,
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
         )
         verification_commands = dod.verification_commands or derive_verification_commands(
             dod,
@@ -956,16 +930,10 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
-        next_pending = next(
-            (
-                item
-                for item in effective_pending_todo_items(
-                    dod,
-                    project_root=self.context.project_root,
-                )
-                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
-            ),
-            None,
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=missing_artifact,
         )
         if missing_artifact is None:
             if next_pending and _todo_is_mutation_step(next_pending):
@@ -1070,16 +1038,10 @@ class ToolBatchRunner:
         if missing_artifact is None:
             return
 
-        next_pending = next(
-            (
-                item
-                for item in effective_pending_todo_items(
-                    dod,
-                    project_root=self.context.project_root,
-                )
-                if item not in _TODO_NUDGE_EXCLUDED_ITEMS
-            ),
-            None,
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=missing_artifact,
         )
         todo_refresh = _todo_refresh_guidance(
             dod,
