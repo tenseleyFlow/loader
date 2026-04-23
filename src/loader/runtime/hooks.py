@@ -479,8 +479,17 @@ def _repair_declared_output_paths(repair: Any, *, project_root: Path) -> set[str
     return declared_outputs
 
 
+def _repair_uses_artifact_set_as_source_of_truth(repair: Any) -> bool:
+    return any(
+        "source of truth" in str(line).lower()
+        for line in getattr(repair, "repair_lines", ())
+    )
+
+
 class ActiveRepairScopeHook(BaseToolHook):
     """Keep fix-mode observations anchored to the active artifact set."""
+
+    _MAX_SOURCE_OF_TRUTH_OBSERVATIONS = 4
 
     def __init__(
         self,
@@ -492,6 +501,8 @@ class ActiveRepairScopeHook(BaseToolHook):
         self.dod_store = dod_store
         self.project_root = project_root
         self.session = session
+        self._source_of_truth_scope_key: tuple[str, ...] | None = None
+        self._source_of_truth_observation_count = 0
 
     async def pre_tool_use(self, context: HookContext) -> HookResult:
         if context.tool_call.name not in _OBSERVATION_TOOLS:
@@ -510,6 +521,29 @@ class ActiveRepairScopeHook(BaseToolHook):
             repair,
             project_root=self.project_root,
         )
+        in_allowed_roots = bool(repair.allowed_roots) and all(
+            path_within_allowed_roots(path, repair.allowed_roots) for path in observed_paths
+        )
+        source_of_truth_scope = (
+            _repair_uses_artifact_set_as_source_of_truth(repair) and in_allowed_roots
+        )
+        if source_of_truth_scope:
+            self._sync_source_of_truth_scope(repair.allowed_roots)
+            if (
+                self._source_of_truth_observation_count
+                >= self._MAX_SOURCE_OF_TRUTH_OBSERVATIONS
+            ):
+                return HookResult(
+                    decision=HookDecision.DENY,
+                    message=(
+                        "[Blocked - repair audit loop: the active repair artifact set has "
+                        "already been inspected several times without a concrete mutation.] "
+                        f"Suggestion: make one concrete edit, patch, or write to "
+                        f"`{repair.artifact_path}` or create the next missing repair target "
+                        "instead of more rereads."
+                    ),
+                    terminal_state="blocked",
+                )
         if repair.allowed_paths:
             if all(path_matches_allowed_paths(path, repair.allowed_paths) for path in observed_paths):
                 return HookResult()
@@ -517,6 +551,8 @@ class ActiveRepairScopeHook(BaseToolHook):
                 normalize_repair_path(path) in declared_output_paths
                 for path in observed_paths
             ):
+                return HookResult()
+            if source_of_truth_scope:
                 return HookResult()
             if context.tool_call.name in {"glob", "grep", "bash"} and repair.allowed_roots:
                 if all(path_within_allowed_roots(path, repair.allowed_roots) for path in observed_paths):
@@ -569,6 +605,32 @@ class ActiveRepairScopeHook(BaseToolHook):
             terminal_state="blocked",
         )
 
+    async def post_tool_use(self, context: HookContext) -> HookResult:
+        if context.source == "verification":
+            return HookResult()
+        if context.tool_call.name in _MUTATION_TOOLS:
+            self._reset_source_of_truth_scope()
+            return HookResult()
+        if context.tool_call.name not in _OBSERVATION_TOOLS:
+            return HookResult()
+
+        repair = self._active_repair_context()
+        if repair is None or not _repair_uses_artifact_set_as_source_of_truth(repair):
+            self._reset_source_of_truth_scope()
+            return HookResult()
+
+        observed_paths = _extract_observation_paths(context.tool_call)
+        if not observed_paths:
+            return HookResult()
+        if not repair.allowed_roots or not all(
+            path_within_allowed_roots(path, repair.allowed_roots) for path in observed_paths
+        ):
+            return HookResult()
+
+        self._sync_source_of_truth_scope(repair.allowed_roots)
+        self._source_of_truth_observation_count += 1
+        return HookResult()
+
     def _active_repair_context(self):
         dod_path = getattr(self.session, "active_dod_path", None)
         if not dod_path:
@@ -580,6 +642,17 @@ class ActiveRepairScopeHook(BaseToolHook):
         if dod.status == "done":
             return None
         return extract_active_repair_context(getattr(self.session, "messages", []))
+
+    def _sync_source_of_truth_scope(self, allowed_roots: tuple[str, ...]) -> None:
+        normalized = tuple(sorted(normalize_repair_path(root) for root in allowed_roots))
+        if self._source_of_truth_scope_key == normalized:
+            return
+        self._source_of_truth_scope_key = normalized
+        self._source_of_truth_observation_count = 0
+
+    def _reset_source_of_truth_scope(self) -> None:
+        self._source_of_truth_scope_key = None
+        self._source_of_truth_observation_count = 0
 
 
 class ActiveRepairMutationScopeHook(BaseToolHook):

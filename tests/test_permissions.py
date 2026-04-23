@@ -587,6 +587,65 @@ async def test_active_repair_scope_hook_allows_reads_inside_active_artifact_set(
 
 
 @pytest.mark.asyncio
+async def test_active_repair_scope_hook_allows_existing_sibling_reads_with_source_of_truth_hint(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    dod_store = DefinitionOfDoneStore(temp_dir)
+    dod = create_definition_of_done("Repair the active artifact set")
+    dod.status = "fixing"
+    dod_path = dod_store.save(dod)
+    repair_target = temp_dir / "guide" / "index.html"
+    chapter_dir = temp_dir / "guide" / "chapters"
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    sibling = chapter_dir / "03-basic-usage.html"
+    sibling.write_text("<h1>Basic Usage</h1>\n")
+    session = FakeSession(
+        active_dod_path=str(dod_path),
+        messages=[
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    "Repair focus:\n"
+                    f"- Fix the broken local reference `chapters/02-installation.html` in `{repair_target}`.\n"
+                    f"- Immediate next step: edit `{repair_target}`.\n"
+                    f"- If the broken reference should remain, create `{chapter_dir / '02-installation.html'}`; otherwise remove or replace `chapters/02-installation.html`.\n"
+                    "- Use the existing artifact files as the source of truth while repairing this file: "
+                    f"`{repair_target}`.\n"
+                    "- Do not reread unrelated reference materials or restart discovery while this concrete repair target is unresolved.\n"
+                ),
+            )
+        ],
+    )
+    hook = ActiveRepairScopeHook(
+        dod_store=dod_store,
+        project_root=temp_dir,
+        session=session,
+    )
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="read-1",
+                name="read",
+                arguments={"file_path": str(sibling)},
+            ),
+            tool=registry.get("read"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.decision == HookDecision.CONTINUE
+
+
+@pytest.mark.asyncio
 async def test_active_repair_scope_hook_allows_verification_source_outside_repair_target(
     temp_dir: Path,
 ) -> None:
@@ -697,6 +756,80 @@ async def test_active_repair_scope_hook_blocks_local_rereads_outside_concrete_re
     assert "active repair scope" in result.message
     assert str(repair_target) in result.message
     assert str(stylesheet) in result.message
+
+
+@pytest.mark.asyncio
+async def test_active_repair_scope_hook_blocks_repair_audit_loop_after_repeated_source_reads(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    dod_store = DefinitionOfDoneStore(temp_dir)
+    dod = create_definition_of_done("Repair the active artifact set")
+    dod.status = "fixing"
+    dod_path = dod_store.save(dod)
+    guide_root = temp_dir / "guide"
+    chapter_dir = guide_root / "chapters"
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    repair_target = guide_root / "index.html"
+    repair_target.write_text("<h1>Guide</h1>\n")
+    intro = chapter_dir / "01-introduction.html"
+    install = chapter_dir / "02-installation.html"
+    intro.write_text("<h1>Intro</h1>\n")
+    install.write_text("<h1>Install</h1>\n")
+    session = FakeSession(
+        active_dod_path=str(dod_path),
+        messages=[
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    "Repair focus:\n"
+                    f"- Fix the broken local reference `chapters/02-installation.html` in `{repair_target}`.\n"
+                    f"- Immediate next step: edit `{repair_target}`.\n"
+                    f"- If the broken reference should remain, create `{install}`; otherwise remove or replace `chapters/02-installation.html`.\n"
+                    "- Use the existing artifact files as the source of truth while repairing this file: "
+                    f"`{repair_target}`, `{intro}`, `{install}`.\n"
+                    "- Do not reread unrelated reference materials or restart discovery while this concrete repair target is unresolved.\n"
+                ),
+            )
+        ],
+    )
+    hook = ActiveRepairScopeHook(
+        dod_store=dod_store,
+        project_root=temp_dir,
+        session=session,
+    )
+
+    def make_context(index: int) -> HookContext:
+        target = repair_target if index % 2 else intro
+        return HookContext(
+            tool_call=ToolCall(
+                id=f"read-{index}",
+                name="read",
+                arguments={"file_path": str(target)},
+            ),
+            tool=registry.get("read"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+
+    for index in range(1, 5):
+        context = make_context(index)
+        result = await hook.pre_tool_use(context)
+        assert result.decision == HookDecision.CONTINUE
+        await hook.post_tool_use(context)
+
+    blocked = await hook.pre_tool_use(make_context(5))
+
+    assert blocked.decision == HookDecision.DENY
+    assert blocked.terminal_state == "blocked"
+    assert blocked.message is not None
+    assert "repair audit loop" in blocked.message
 
 
 @pytest.mark.asyncio
