@@ -188,12 +188,20 @@ class SearchPathAliasHook(BaseToolHook):
         arguments: dict[str, Any],
     ) -> dict[str, Any] | None:
         pattern = str(arguments.get("pattern", "")).strip()
-        if not pattern or not pattern.startswith(("/", "~", "./", "../")):
+        if not pattern:
             return None
 
-        pattern_path = Path(pattern)
-        parent = str(pattern_path.parent).strip()
-        basename = pattern_path.name.strip()
+        parent = ""
+        basename = ""
+        if pattern.startswith(("/", "~", "./", "../")):
+            pattern_path = Path(pattern)
+            parent = str(pattern_path.parent).strip()
+            basename = pattern_path.name.strip()
+        else:
+            implicit = self._split_implicit_glob_parent(pattern)
+            if implicit is None:
+                return None
+            parent, basename = implicit
         if not parent or not basename:
             return None
         if any(token in parent for token in ("*", "?", "[")):
@@ -203,6 +211,30 @@ class SearchPathAliasHook(BaseToolHook):
         updated_arguments["path"] = parent
         updated_arguments["pattern"] = basename
         return updated_arguments
+
+    def _split_implicit_glob_parent(self, pattern: str) -> tuple[str, str] | None:
+        if "/" not in pattern:
+            return None
+
+        parts = [segment for segment in pattern.split("/") if segment]
+        while parts and self._is_wildcard_segment(parts[0]):
+            parts.pop(0)
+        if len(parts) < 2:
+            return None
+
+        parent_parts = parts[:-1]
+        basename = parts[-1].strip()
+        if not basename or not parent_parts:
+            return None
+        if any(self._segment_contains_glob(segment) for segment in parent_parts):
+            return None
+        return "/".join(parent_parts), basename
+
+    def _is_wildcard_segment(self, segment: str) -> bool:
+        return bool(segment) and all(char in "*?[]" for char in segment)
+
+    def _segment_contains_glob(self, segment: str) -> bool:
+        return any(token in segment for token in ("*", "?", "["))
 
 
 class RelativePathContextHook(BaseToolHook):

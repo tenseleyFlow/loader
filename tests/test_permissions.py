@@ -422,6 +422,66 @@ async def test_search_path_alias_hook_splits_full_glob_pattern(
 
 
 @pytest.mark.asyncio
+async def test_search_path_alias_hook_splits_implicit_recursive_glob_parent(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    hook = SearchPathAliasHook()
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="glob-implicit-1",
+                name="glob",
+                arguments={"pattern": "**/Loader/guides/nginx/chapters/*.html"},
+            ),
+            tool=registry.get("glob"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.updated_arguments is not None
+    assert result.updated_arguments["path"] == "Loader/guides/nginx/chapters"
+    assert result.updated_arguments["pattern"] == "*.html"
+
+
+@pytest.mark.asyncio
+async def test_search_path_alias_hook_leaves_fully_generic_recursive_glob_unchanged(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    hook = SearchPathAliasHook()
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="glob-generic-1",
+                name="glob",
+                arguments={"pattern": "**/*.html"},
+            ),
+            tool=registry.get("glob"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.updated_arguments is None
+
+
+@pytest.mark.asyncio
 async def test_relative_path_context_hook_remaps_workspace_mirror_of_external_root(
     temp_dir: Path,
 ) -> None:
