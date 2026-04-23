@@ -27,7 +27,12 @@ from loader.runtime.reasoning_types import (
     ConfidenceLevel,
 )
 from loader.runtime.recovery import RecoveryContext
-from loader.runtime.tool_batches import ToolBatchRunner
+from loader.runtime.tool_batches import (
+    ToolBatchRunner,
+)
+from loader.runtime.tool_batches import (
+    _should_prioritize_missing_artifact as tool_batches_should_prioritize_missing_artifact,
+)
 from loader.runtime.workflow import sync_todos_to_definition_of_done
 from loader.tools.base import ToolResult as RegistryToolResult
 from loader.tools.base import create_default_registry
@@ -610,6 +615,26 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
         verify_action=verify_action,
         auto_recover=False,
     )
+    (temp_dir / "chapters").mkdir()
+    (temp_dir / "index.html").write_text("<ul></ul>\n")
+    (temp_dir / "chapters" / "01-introduction.html").write_text("<h1>Intro</h1>\n")
+    (temp_dir / "chapters" / "02-setup.html").write_text("<h1>Setup</h1>\n")
+    (temp_dir / "chapters" / "03-basics.html").write_text("<h1>Basics</h1>\n")
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{temp_dir / 'index.html'}`",
+                f"- `{temp_dir / 'chapters' / '01-introduction.html'}`",
+                f"- `{temp_dir / 'chapters' / '02-setup.html'}`",
+                f"- `{temp_dir / 'chapters' / '03-basics.html'}`",
+                f"- `{temp_dir / 'chapters' / '04-variables.html'}`",
+            ]
+        )
+    )
     context.session.current_task = (
         f"Update {temp_dir / 'index.html'} with the right chapter links."
     )
@@ -644,13 +669,16 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
     )
 
     summary = TurnSummary(final_response="")
+    dod = create_definition_of_done("Fix the chapter links")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.append("Create the remaining chapter files")
     await runner.execute_batch(
         tool_calls=[tool_call],
         tool_source="assistant",
         pending_tool_calls_seen=set(),
         emit=_noop_emit,
         summary=summary,
-        dod=create_definition_of_done("Fix the chapter links"),
+        dod=dod,
         executor=executor,  # type: ignore[arg-type]
         on_confirmation=None,
         on_user_question=None,
@@ -660,8 +688,128 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
 
     assert len(queued_messages) == 1
     assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
-    assert "01-introduction.html = Chapter 1: Introduction to Fortran" in queued_messages[0]
-    assert "index.html" in queued_messages[0]
+    assert "Continue with the next pending item: `Create the remaining chapter files`." in queued_messages[0]
+    assert "Resume by creating `04-variables.html` now." in queued_messages[0]
+    assert f"Prefer one `write` call for `{temp_dir / 'chapters' / '04-variables.html'}` instead of more rereads." in queued_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_todo_write_does_not_regress_completed_file_todo(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run for this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 03-first-website.html",
+                "active_form": "Creating 03-first-website.html",
+                "status": "pending",
+            },
+            {
+                "content": "Create 04-configuration-basics.html",
+                "active_form": "Creating 04-configuration-basics.html",
+                "status": "pending",
+            },
+        ],
+    )
+
+    chapter_path = temp_dir / "guides" / "nginx" / "chapters" / "03-first-website.html"
+    chapter_path.parent.mkdir(parents=True)
+    write_call = ToolCall(
+        id="write-ch3",
+        name="write",
+        arguments={"file_path": str(chapter_path), "content": "<html></html>\n"},
+    )
+    stale_todo_call = ToolCall(
+        id="todo-stale",
+        name="TodoWrite",
+        arguments={
+            "todos": [
+                {
+                    "content": "Create 03-first-website.html",
+                    "active_form": "Creating 03-first-website.html",
+                    "status": "pending",
+                },
+                {
+                    "content": "Create 04-configuration-basics.html",
+                    "active_form": "Creating 04-configuration-basics.html",
+                    "status": "pending",
+                },
+            ]
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=write_call,
+                output=f"Successfully wrote {chapter_path}",
+                is_error=False,
+            ),
+            tool_outcome(
+                tool_call=stale_todo_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={
+                    "new_todos": [
+                        {
+                            "content": "Create 03-first-website.html",
+                            "active_form": "Creating 03-first-website.html",
+                            "status": "pending",
+                        },
+                        {
+                            "content": "Create 04-configuration-basics.html",
+                            "active_form": "Creating 04-configuration-basics.html",
+                            "status": "pending",
+                        },
+                    ]
+                },
+            ),
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[write_call, stale_todo_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert "Create 03-first-website.html" in dod.completed_items
+    assert "Create 03-first-website.html" not in dod.pending_items
+    assert "Create 04-configuration-basics.html" in dod.pending_items
 
 
 @pytest.mark.asyncio
@@ -742,15 +890,9 @@ async def test_tool_batch_runner_proactively_queues_verified_html_inventory(
         consecutive_errors=0,
     )
 
-    assert len(queued_messages) == 1
-    assert "verified sibling inventory" in queued_messages[0]
-    assert "chapters/01-introduction.html = Chapter 1: Introduction to Fortran" in queued_messages[0]
-    assert str(temp_dir / "index.html") in queued_messages[0]
+    assert queued_messages == []
     assert len(summary.tool_result_messages) == 1
-    assert (
-        "Verified chapter inventory: chapters/01-introduction.html = Chapter 1: Introduction to Fortran"
-        in summary.tool_result_messages[0].content
-    )
+    assert "Verified chapter inventory:" not in summary.tool_result_messages[0].content
 
 
 @pytest.mark.asyncio
@@ -845,15 +987,11 @@ async def test_tool_batch_runner_marks_validated_html_toc_completion_after_succe
         consecutive_errors=0,
     )
 
-    assert any(
-        "Semantic verification preview: validated 2 toc links in index.html"
-        in message.content
+    assert all(
+        "Semantic verification preview:" not in message.content
         for message in summary.tool_result_messages
     )
-    assert len(queued_messages) == 1
-    assert "already satisfies the verified link/title constraints" in queued_messages[0]
-    assert f"`{index_path}`" in queued_messages[0]
-    assert f"`{chapters}`" in queued_messages[0]
+    assert queued_messages == []
 
 
 @pytest.mark.asyncio
@@ -1166,6 +1304,349 @@ async def test_tool_batch_runner_duplicate_reference_read_prefers_next_pending_t
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_duplicate_read_ignores_unplanned_expansion_after_plan_complete(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run for this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Create 07-performance-tuning.html",
+        "Verify all guide files are linked and complete",
+        "Complete the requested work",
+    ]
+
+    tool_call = ToolCall(
+        id="read-dup",
+        name="read",
+        arguments={"file_path": str(chapter_one)},
+    )
+    duplicate_message = (
+        "[Skipped - duplicate action: Already read "
+        f"{chapter_one} recently without any intervening changes; "
+        "reuse the earlier read result instead of rereading]"
+    )
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.DUPLICATE,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=duplicate_message,
+                    result_content=duplicate_message,
+                ),
+                event_content=duplicate_message,
+                is_error=False,
+                result_output=duplicate_message,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(queued_messages) == 1
+    assert "Verify all guide files are linked and complete" in queued_messages[0]
+    assert "Create 07-performance-tuning.html" not in queued_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_duplicate_read_after_plan_complete_pushes_verification_handoff(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run for this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = [f"ls -la {guide_root}"]
+    dod.pending_items = [
+        "Create 07-performance-tuning.html",
+        "Complete the requested work",
+    ]
+
+    tool_call = ToolCall(
+        id="read-dup",
+        name="read",
+        arguments={"file_path": str(chapter_one)},
+    )
+    duplicate_message = (
+        "[Skipped - duplicate action: Already read "
+        f"{chapter_one} recently without any intervening changes; "
+        "reuse the earlier read result instead of rereading]"
+    )
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.DUPLICATE,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=duplicate_message,
+                    result_content=duplicate_message,
+                ),
+                event_content=duplicate_message,
+                is_error=False,
+                result_output=duplicate_message,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(queued_messages) == 1
+    assert "All explicitly planned artifacts already exist." in queued_messages[0]
+    assert "Move to verification or final confirmation using the files already on disk." in queued_messages[0]
+    assert "Create 07-performance-tuning.html" not in queued_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_duplicate_read_after_plan_complete_ignores_stale_creation_todos(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run for this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = [f"ls -la {guide_root}"]
+    dod.pending_items = [
+        "Create 01-getting-started.html",
+        "Creating 02-installation.html",
+        "Complete the requested work",
+    ]
+
+    tool_call = ToolCall(
+        id="read-dup-built-stale",
+        name="read",
+        arguments={"file_path": str(chapter_one)},
+    )
+    duplicate_message = (
+        "[Skipped - duplicate action: Already read "
+        f"{chapter_one} recently without any intervening changes; "
+        "reuse the earlier read result instead of rereading]"
+    )
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.DUPLICATE,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=duplicate_message,
+                    result_content=duplicate_message,
+                ),
+                event_content=duplicate_message,
+                is_error=False,
+                result_output=duplicate_message,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(queued_messages) == 1
+    assert "All explicitly planned artifacts already exist." in queued_messages[0]
+    assert "Move to verification or final confirmation using the files already on disk." in queued_messages[0]
+    assert "Create 01-getting-started.html" not in queued_messages[0]
+    assert "Creating 02-installation.html" not in queued_messages[0]
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
     temp_dir: Path,
 ) -> None:
@@ -1254,6 +1735,1243 @@ async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
         "stop gathering more reference material and perform the change now" in message
         for message in queued_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_observation_nudge_prioritizes_missing_artifact_over_review(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_one.write_text("<h1>One</h1>\n")
+    index_path.write_text("<a href=\"chapters/01-getting-started.html\">One</a>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapters / '06-ssl-configuration.html'}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Ensure all files are properly linked and formatted consistently",
+                "active_form": "Working on: Ensure all files are properly linked and formatted consistently",
+                "status": "pending",
+            },
+            {
+                "content": "Create the final chapter (06-ssl-configuration.html)",
+                "active_form": "Working on: Create the final chapter (06-ssl-configuration.html)",
+                "status": "pending",
+            },
+        ],
+    )
+    assert tool_batches_should_prioritize_missing_artifact(
+        next_pending=dod.pending_items[0],
+        missing_artifact=(chapters / "06-ssl-configuration.html", False),
+    )
+
+    tool_call = ToolCall(
+        id="dup-read",
+        name="read",
+        arguments={"file_path": str(index_path)},
+    )
+    runner._queue_duplicate_observation_nudge(tool_call, dod=dod)  # type: ignore[attr-defined]
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "06-ssl-configuration.html" in message
+    assert "Do not switch into review or consistency-check mode" in message
+    assert (
+        "Continue with the next pending item: `Ensure all files are properly linked and formatted consistently`"
+        not in message
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_hands_off_to_verification_once_planned_artifacts_exist(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<a href=\"chapters/01-getting-started.html\">One</a>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create the guide files",
+                "active_form": "Working on: Create the guide files",
+                "status": "completed",
+            },
+            {
+                "content": "Ensure all files are properly linked and formatted consistently",
+                "active_form": "Working on: Ensure all files are properly linked and formatted consistently",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="write-final",
+        name="write",
+        arguments={
+            "file_path": str(chapter_two),
+            "content": "<h1>Two</h1>\n",
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output=f"Successfully wrote {chapter_two}",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert any(
+        "All explicitly planned artifacts now exist." in message
+        for message in queued_messages
+    )
+    assert any(
+        "Ensure all files are properly linked and formatted consistently" in message
+        for message in queued_messages
+    )
+    assert any(
+        "Move to verification once no specific mismatch remains." in message
+        for message in queued_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_mutation_handoff_points_at_next_missing_artifact(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create the main index.html file with proper structure",
+                "active_form": "Working on: Create the main index.html file with proper structure",
+                "status": "pending",
+            },
+            {
+                "content": "Create each chapter file in sequence, following the established pattern",
+                "active_form": "Working on: Create each chapter file in sequence, following the established pattern",
+                "status": "pending",
+            },
+            {
+                "content": "Ensure all files are properly linked and formatted consistently",
+                "active_form": "Working on: Ensure all files are properly linked and formatted consistently",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="write-index",
+        name="write",
+        arguments={"file_path": str(index_path), "content": "<html></html>\n"},
+    )
+    executor = FakeExecutor(
+        [tool_outcome(tool_call=tool_call, output=f"Successfully wrote {index_path}", is_error=False)]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Resume by creating `01-getting-started.html` now." in message
+    assert "refresh `TodoWrite`" in message
+    assert "Do not move to verification, final confirmation, or TodoWrite-only bookkeeping" in message
+    assert "Do not spend another turn on working notes or rediscovery alone." in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_large_plan_does_not_claim_completion_early(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    index_path.write_text("<html></html>\n")
+
+    chapter_paths = [
+        chapters / "01-getting-started.html",
+        chapters / "02-installation.html",
+        chapters / "03-first-website.html",
+        chapters / "04-configuration-basics.html",
+        chapters / "05-advanced-configurations.html",
+        chapters / "06-performance-tuning.html",
+        chapters / "07-security-best-practices.html",
+    ]
+    for chapter in chapter_paths[:4]:
+        chapter.write_text(f"<h1>{chapter.stem}</h1>\n")
+    chapter_paths[4].write_text("<h1>Advanced configurations</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                *[f"- `{path}`" for path in chapter_paths],
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a thorough nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create the nginx guide artifacts",
+                "active_form": "Creating nginx guide artifacts",
+                "status": "pending",
+            },
+            {
+                "content": "Verify all guide files are linked and complete",
+                "active_form": "Verifying guide linkage and completeness",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="write-chapter-05",
+        name="write",
+        arguments={
+            "file_path": str(chapter_paths[4]),
+            "content": "<h1>Advanced configurations</h1>\n",
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output=f"Successfully wrote {chapter_paths[4]}",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert any(
+        "Resume by creating `06-performance-tuning.html` now." in message
+        for message in queued_messages
+    )
+    assert not any(
+        "All explicitly planned artifacts now exist." in message
+        for message in queued_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_with_missing_artifact_requeues_exact_resume_step(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_one.write_text("<h1>One</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 01-getting-started.html",
+                "active_form": "Creating 01-getting-started.html",
+                "status": "completed",
+            },
+            {
+                "content": "Create 02-installation.html",
+                "active_form": "Creating 02-installation.html",
+                "status": "pending",
+            },
+        ],
+    )
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+
+    tool_call = ToolCall(
+        id="todo-only",
+        name="TodoWrite",
+        arguments={
+            "todos": [
+                {
+                    "content": "Create 01-getting-started.html",
+                    "active_form": "Creating 01-getting-started.html",
+                    "status": "completed",
+                },
+                {
+                    "content": "Create 02-installation.html",
+                    "active_form": "Creating 02-installation.html",
+                    "status": "pending",
+                },
+            ]
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={
+                    "new_todos": [
+                        {
+                            "content": "Create 01-getting-started.html",
+                            "active_form": "Creating 01-getting-started.html",
+                            "status": "completed",
+                        },
+                        {
+                            "content": "Create 02-installation.html",
+                            "active_form": "Creating 02-installation.html",
+                            "status": "pending",
+                        },
+                    ]
+                },
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Resume by creating `02-installation.html` now." in message
+    assert "refresh `TodoWrite`" in message
+    assert "Do not spend the next turn on TodoWrite alone" in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_after_artifacts_exist_pushes_verification_handoff(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = [f"ls -la {guide_root}"]
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the existing Fortran guide structure to understand the format and content organization",
+                "active_form": "Working on: First, examine the existing Fortran guide structure to understand the format and content organization",
+                "status": "pending",
+            },
+            {
+                "content": "Verify all guide files are linked and complete",
+                "active_form": "Working on: Verify all guide files are linked and complete",
+                "status": "pending",
+            },
+        ],
+        project_root=temp_dir,
+    )
+
+    tool_call = ToolCall(
+        id="todo-only",
+        name="TodoWrite",
+        arguments={
+            "todos": [
+                {
+                    "content": "First, examine the existing Fortran guide structure to understand the format and content organization",
+                    "active_form": "Working on: First, examine the existing Fortran guide structure to understand the format and content organization",
+                    "status": "pending",
+                },
+                {
+                    "content": "Verify all guide files are linked and complete",
+                    "active_form": "Working on: Verify all guide files are linked and complete",
+                    "status": "pending",
+                },
+            ]
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={
+                    "new_todos": [
+                        {
+                            "content": "First, examine the existing Fortran guide structure to understand the format and content organization",
+                            "active_form": "Working on: First, examine the existing Fortran guide structure to understand the format and content organization",
+                            "status": "pending",
+                        },
+                        {
+                            "content": "Verify all guide files are linked and complete",
+                            "active_form": "Working on: Verify all guide files are linked and complete",
+                            "status": "pending",
+                        },
+                    ]
+                },
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Todo tracking is updated. All explicitly planned artifacts now exist." in message
+    assert "Verify all guide files are linked and complete" in message
+    assert "Move to verification once no specific mismatch remains." in message
+    assert "reopen reference materials" in message
+    assert "Fortran guide structure" not in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_with_existing_output_roots_requeues_next_mutation(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<!DOCTYPE html>",
+                "<html>",
+                "<body>",
+                '<a href="chapters/01-introduction.html">Introduction</a>',
+                "</body>",
+                "</html>",
+                "",
+            ]
+        )
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Examine the existing Fortran guide structure",
+                "active_form": "Examining the existing Fortran guide structure",
+                "status": "completed",
+            },
+            {
+                "content": "Create the nginx directory structure",
+                "active_form": "Creating the nginx directory structure",
+                "status": "completed",
+            },
+            {
+                "content": "Write the introduction chapter",
+                "active_form": "Writing the introduction chapter",
+                "status": "pending",
+            },
+        ],
+        project_root=temp_dir,
+    )
+
+    tool_call = ToolCall(
+        id="todo-next-mutation",
+        name="TodoWrite",
+        arguments={
+            "todos": [
+                {
+                    "content": "Examine the existing Fortran guide structure",
+                    "active_form": "Examining the existing Fortran guide structure",
+                    "status": "completed",
+                },
+                {
+                    "content": "Create the nginx directory structure",
+                    "active_form": "Creating the nginx directory structure",
+                    "status": "completed",
+                },
+                {
+                    "content": "Write the introduction chapter",
+                    "active_form": "Writing the introduction chapter",
+                    "status": "pending",
+                },
+            ]
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={
+                    "new_todos": [
+                        {
+                            "content": "Examine the existing Fortran guide structure",
+                            "active_form": "Examining the existing Fortran guide structure",
+                            "status": "completed",
+                        },
+                        {
+                            "content": "Create the nginx directory structure",
+                            "active_form": "Creating the nginx directory structure",
+                            "status": "completed",
+                        },
+                        {
+                            "content": "Write the introduction chapter",
+                            "active_form": "Writing the introduction chapter",
+                            "status": "pending",
+                        },
+                    ]
+                },
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Continue with the next pending item: `Write the introduction chapter`." in message
+    assert "Resume by creating `01-introduction.html` now." in message
+    assert "It is the next missing declared output under `chapters/`." in message
+    assert "Prefer one `write` call for `" in message
+    assert "01-introduction.html` instead of more rereads." in message
+    assert "Do not spend the next turn on TodoWrite alone" in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_with_declared_child_targets_names_next_missing_file(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/introduction.html">Introduction</a>',
+                '<a href="chapters/installation.html">Installation</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Write the introduction chapter",
+        "Complete the requested work",
+    ]
+    dod.touched_files.append(str(index_path))
+
+    queued_messages: list[str] = []
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    tool_call = ToolCall(
+        id="todo-1",
+        name="TodoWrite",
+        arguments={
+            "todos": [
+                {
+                    "content": "Write the introduction chapter",
+                    "activeForm": "Writing the introduction chapter",
+                    "status": "pending",
+                }
+            ]
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={
+                    "new_todos": [
+                        {
+                            "content": "Write the introduction chapter",
+                            "active_form": "Writing the introduction chapter",
+                            "status": "pending",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Continue with the next pending item: `Write the introduction chapter`." in message
+    assert "Resume by creating `introduction.html` now." in message
+    assert "It is the next missing declared output under `chapters/`." in message
+    assert "Prefer one `write` call for `" in message
+    assert "introduction.html` instead of more rereads." in message
+    assert "Do not spend the next turn on TodoWrite alone" in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_bookkeeping_note_with_missing_artifact_requeues_resume_step(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 01-getting-started.html",
+                "active_form": "Creating 01-getting-started.html",
+                "status": "completed",
+            },
+            {
+                "content": "Create 02-installation.html",
+                "active_form": "Creating 02-installation.html",
+                "status": "pending",
+            },
+        ],
+        project_root=temp_dir,
+    )
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+
+    tool_call = ToolCall(
+        id="working-note",
+        name="notepad_write_working",
+        arguments={"content": "Creating the second chapter file: Installation"},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Working note recorded",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Bookkeeping note is recorded. An explicitly planned artifact is still missing." in message
+    assert "Resume by creating `02-installation.html` now." in message
+    assert "Make your next response the concrete mutation tool call itself" in message
+    assert "refresh `TodoWrite`" in message
+    assert "Do not spend the next turn on additional notes, rediscovery, verification, or final confirmation" in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_working_note_respects_discovery_first_pending_step(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'index.html'}`",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters'}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.extend(
+        [
+            "First, examine the existing fortran guide structure and content to understand the format",
+            "Create the nginx directory structure",
+            "Develop the main index.html file for the nginx guide",
+        ]
+    )
+
+    tool_call = ToolCall(
+        id="working-note",
+        name="notepad_write_working",
+        arguments={"content": "Analyzing the fortran guide structure before creating nginx guide"},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Working note recorded",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert (
+        "Continue with the next pending item: `First, examine the existing fortran guide structure and content to understand the format`."
+        in message
+    )
+    assert "one concrete evidence-gathering tool call" in message
+    assert "Resume by creating `index.html` now." not in message
 
 
 @pytest.mark.asyncio
@@ -1348,11 +3066,7 @@ async def test_tool_batch_runner_hands_off_noop_toc_edit_when_file_is_already_va
         consecutive_errors=0,
     )
 
-    assert len(queued_messages) == 1
-    assert "already matches the validated replacement block" in queued_messages[0]
-    assert "validated 2 linked entries" in queued_messages[0]
-    assert f"`{index_path}`" in queued_messages[0]
-    assert "Do not call `edit`, `patch`, or reread the same TOC again" in queued_messages[0]
+    assert queued_messages == []
 
 
 async def _noop_emit(event: AgentEvent) -> None:
@@ -1526,3 +3240,238 @@ async def test_tool_batch_runner_marks_passed_verification_stale_after_new_mutat
         summary.workflow_timeline[-1].verification_observations[0].command
         == "uv run pytest -q"
     )
+
+
+def test_tool_batch_runner_blocked_active_repair_nudge_uses_repair_scope(temp_dir: Path) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    repair_target = temp_dir / "guide" / "index.html"
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    "Repair focus:\n"
+                    f"- Fix the broken local reference `chapters/01-getting-started.html` in `{repair_target}`.\n"
+                    f"- Immediate next step: edit `{repair_target}`.\n"
+                    f"- If the broken reference should remain, create `{temp_dir / 'guide' / 'chapters' / '01-getting-started.html'}`; otherwise remove or replace `chapters/01-getting-started.html`.\n"
+                ),
+            )
+        ],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    runner._queue_blocked_active_repair_nudge(
+        "[Blocked - active repair scope: verification already identified the repair target.]"
+    )
+
+    assert queued
+    assert str(repair_target) in queued[0]
+    assert str(temp_dir / "guide" / "chapters" / "01-getting-started.html") in queued[0]
+    assert "Do not reopen unrelated reference materials" in queued[0]
+
+
+def test_tool_batch_runner_blocked_active_repair_mutation_nudge_uses_allowed_paths(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    repair_target = temp_dir / "guide" / "chapters" / "05-advanced-configurations.html"
+    stylesheet = temp_dir / "guide" / "styles.css"
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    "Repair focus:\n"
+                    f"- Fix the broken local reference `../styles.css` in `{repair_target}`.\n"
+                    f"- Immediate next step: edit `{repair_target}`.\n"
+                    f"- If the broken reference should remain, create `{stylesheet}`; otherwise remove or replace `../styles.css`.\n"
+                ),
+            )
+        ],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    runner._queue_blocked_active_repair_mutation_nudge(
+        "[Blocked - active repair mutation scope: verification already identified the repair target.]"
+    )
+
+    assert queued
+    assert str(repair_target) in queued[0]
+    assert str(stylesheet) in queued[0]
+    assert "before widening the change set" in queued[0]
+
+
+def test_tool_batch_runner_blocked_late_reference_drift_nudge_points_to_missing_artifact(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    store = DefinitionOfDoneStore(temp_dir)
+    dod = create_definition_of_done("Create a multi-file guide from a reference")
+    plan_path = temp_dir / "implementation.md"
+    plan_path.write_text(
+        "# File Changes\n"
+        "- `guide/index.html`\n"
+        "- `guide/chapters/01-getting-started.html`\n"
+        "- `guide/chapters/02-installation.html`\n"
+        "- `guide/chapters/03-first-website.html`\n"
+    )
+    dod.implementation_plan = str(plan_path)
+    (temp_dir / "guide" / "chapters").mkdir(parents=True, exist_ok=True)
+    (temp_dir / "guide" / "index.html").write_text("index")
+    (temp_dir / "guide" / "chapters" / "01-getting-started.html").write_text("one")
+    (temp_dir / "guide" / "chapters" / "02-installation.html").write_text("two")
+    runner = ToolBatchRunner(context, store)
+
+    runner._queue_blocked_late_reference_drift_nudge(
+        "[Blocked - late reference drift: several planned artifacts already exist.]",
+        dod=dod,
+    )
+
+    assert queued
+    assert "03-first-website.html" in queued[0]
+    assert "older reference materials" in queued[0]
+
+
+def test_tool_batch_runner_blocked_completed_artifact_scope_nudge_prefers_verification(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guide"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("index")
+    chapter_one.write_text("one")
+    chapter_two.write_text("two")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}`",
+                f"- `{chapters}`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file guide from a reference")
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = [f"ls -la {guide_root}"]
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Verify all guide files are linked and complete",
+                "active_form": "Working on: Verify all guide files are linked and complete",
+                "status": "pending",
+            }
+        ],
+        project_root=temp_dir,
+    )
+
+    runner._queue_blocked_completed_artifact_scope_nudge(
+        "[Blocked - completed artifact set scope: all explicitly planned artifacts already exist.]",
+        dod=dod,
+    )
+
+    assert queued
+    assert "All explicitly planned artifacts already exist." in queued[0]
+    assert "Verify all guide files are linked and complete" in queued[0]
+    assert "Do not reopen earlier reference materials." in queued[0]

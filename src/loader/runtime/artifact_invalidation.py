@@ -34,6 +34,8 @@ class ArtifactInvalidationAssessor:
         acceptance_criteria: list[str],
         touched_files: list[str],
         last_verification_result: str | None,
+        retry_count: int = 0,
+        planned_artifacts_complete: bool = False,
     ) -> ArtifactFreshness:
         """Return stale-artifact state and the recommended recovery strategy."""
 
@@ -46,10 +48,12 @@ class ArtifactInvalidationAssessor:
         reason_codes: list[str] = []
         evidence: list[ArtifactEvidence] = []
 
+        allow_repair_local_touchpoints = planned_artifacts_complete and retry_count > 0
         unexpected_paths = [
             name
             for path in touched_files
-            if (name := _path_name(path)) and not _text_covers_path_reference(plan_text, path)
+            if (name := _path_name(path))
+            and not _text_covers_path_reference(plan_text, path)
         ]
         confirmed_touchpoints = [
             name
@@ -86,13 +90,21 @@ class ArtifactInvalidationAssessor:
                 f"Persisted artifacts still point at `{item}`.",
             )
 
-        if unexpected_paths:
+        if unexpected_paths and not allow_repair_local_touchpoints:
             stale_plan = True
             reason_codes.append("touched_files_outside_plan")
             reasons.append(
                 "Touched files outside the current plan: "
                 + ", ".join(dict.fromkeys(unexpected_paths))
             )
+        elif unexpected_paths:
+            for item in dict.fromkeys(unexpected_paths):
+                _append_evidence(
+                    evidence,
+                    ArtifactEvidenceKind.CONFIRMED_TOUCHPOINT,
+                    "Verification repair touched supplemental file "
+                    f"`{item}` after the originally planned artifacts were complete.",
+                )
 
         acceptance_anchors = [
             item

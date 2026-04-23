@@ -22,7 +22,7 @@ from .clarify_strategy import (
     describe_clarify_stage,
 )
 from .context import RuntimeContext
-from .dod import DefinitionOfDone, DefinitionOfDoneStore
+from .dod import DefinitionOfDone, DefinitionOfDoneStore, collect_planned_artifact_targets
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .workflow import (
@@ -208,6 +208,12 @@ class WorkflowLaneRunner:
                 refreshed_acceptance_criteria=list(artifacts.acceptance_criteria),
             )
             artifacts = artifacts.with_acceptance_criteria(preserved_acceptance)
+            preserved_file_changes = _preserved_file_change_items(
+                dod,
+                project_root=self.context.project_root,
+            )
+            if preserved_file_changes:
+                artifacts = artifacts.with_file_changes(preserved_file_changes)
             artifacts = artifacts.with_progress_context(
                 touched_files=list(dod.touched_files),
                 completed_items=list(dod.completed_items),
@@ -309,11 +315,16 @@ class WorkflowLaneRunner:
         assert executor is not None
 
         if preserve_existing_scope:
+            planned_files = _planned_file_names_for_refresh(
+                dod,
+                project_root=self.context.project_root,
+            )
             todos = merge_refreshed_todos_with_existing_scope(
                 task_statement,
                 existing_pending_items=list(dod.pending_items),
                 existing_completed_items=list(dod.completed_items),
                 refreshed_steps=list(artifacts.implementation_steps[:8]),
+                planned_files=planned_files,
             )
         else:
             todos = [
@@ -369,7 +380,11 @@ class WorkflowLaneRunner:
         if outcome.registry_result is not None:
             new_todos = outcome.registry_result.metadata.get("new_todos", [])
             if isinstance(new_todos, list):
-                sync_todos_to_definition_of_done(dod, new_todos)
+                sync_todos_to_definition_of_done(
+                    dod,
+                    new_todos,
+                    project_root=self.context.project_root,
+                )
                 self.dod_store.save(dod)
 
     async def _run_clarify_round(
@@ -720,3 +735,37 @@ class WorkflowLaneRunner:
             decision_boundaries=list(brief.decision_boundaries),
             likely_touchpoints=list(brief.likely_touchpoints),
         )
+
+
+def _preserved_file_change_items(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> list[str]:
+    items: list[str] = []
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=24,
+    ):
+        path_text = str(target)
+        if expect_directory and not path_text.endswith("/"):
+            path_text += "/"
+        items.append(f"`{path_text}`")
+    return items
+
+
+def _planned_file_names_for_refresh(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> set[str]:
+    return {
+        target.name.lower()
+        for target, expect_directory in collect_planned_artifact_targets(
+            dod,
+            project_root=project_root,
+            max_paths=24,
+        )
+        if not expect_directory
+    }

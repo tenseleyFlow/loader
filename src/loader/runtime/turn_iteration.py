@@ -135,9 +135,11 @@ class TurnIterationController:
                 extracted_iterations=extracted_iterations,
                 continuation_count=continuation_count,
                 consecutive_errors=consecutive_errors,
+                dod=dod,
                 emit=emit,
                 summary=summary,
             )
+        reset_empty_retry_count = 0
 
         analysis = self.repairer.analyze_response(
             content=assistant_turn.content,
@@ -196,7 +198,7 @@ class TurnIterationController:
             return TurnIterationDecision(
                 action=TurnIterationAction.CONTINUE,
                 continuation_count=route_decision.continuation_count,
-                empty_retry_count=empty_retry_count,
+                empty_retry_count=reset_empty_retry_count,
                 extracted_iterations=extracted_iterations,
                 consecutive_errors=route_decision.consecutive_errors,
                 new_actions_taken=route_decision.new_actions_taken,
@@ -205,7 +207,7 @@ class TurnIterationController:
             return TurnIterationDecision(
                 action=TurnIterationAction.FINALIZE,
                 continuation_count=route_decision.continuation_count,
-                empty_retry_count=empty_retry_count,
+                empty_retry_count=reset_empty_retry_count,
                 extracted_iterations=extracted_iterations,
                 consecutive_errors=route_decision.consecutive_errors,
                 new_actions_taken=route_decision.new_actions_taken,
@@ -215,7 +217,7 @@ class TurnIterationController:
         return TurnIterationDecision(
             action=TurnIterationAction.COMPLETE,
             continuation_count=route_decision.continuation_count,
-            empty_retry_count=empty_retry_count,
+            empty_retry_count=reset_empty_retry_count,
             extracted_iterations=extracted_iterations,
             consecutive_errors=route_decision.consecutive_errors,
             new_actions_taken=route_decision.new_actions_taken,
@@ -231,6 +233,7 @@ class TurnIterationController:
         extracted_iterations: int,
         continuation_count: int,
         consecutive_errors: int,
+        dod: DefinitionOfDone,
         emit: EventSink,
         summary: TurnSummary,
     ) -> TurnIterationDecision:
@@ -247,6 +250,7 @@ class TurnIterationController:
             original_task=original_task,
             empty_retry_count=next_empty_retry_count,
             max_empty_retries=max_empty_retries,
+            dod=dod,
         )
         if empty_decision.should_continue and empty_decision.retry_message:
             if empty_decision.reason_code and empty_decision.reason_summary:
@@ -289,9 +293,11 @@ class TurnIterationController:
             )
         await emit(AgentEvent(type="response", content=final_response))
         return TurnIterationDecision(
-            action=TurnIterationAction.COMPLETE,
+            action=TurnIterationAction.FINALIZE,
             continuation_count=continuation_count,
             empty_retry_count=next_empty_retry_count,
             extracted_iterations=extracted_iterations,
             consecutive_errors=consecutive_errors,
+            finalize_reason_code=empty_decision.reason_code,
+            finalize_reason_summary=empty_decision.reason_summary,
         )

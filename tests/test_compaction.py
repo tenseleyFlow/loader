@@ -149,12 +149,12 @@ def test_build_session_summary_preserves_confirmed_facts_and_next_step() -> None
 
     assert "Confirmed facts:" in summary
     assert "02-basic-syntax.html -> 02-setup.html" in summary
-    assert "02-setup.html = Chapter 2: Setting Up Fortran" in summary
+    assert "02-setup.html = Chapter 2: Setting Up Fortran" not in summary
     assert "Preferred next step:" in summary
     assert "`~/Loader/guides/fortran/index.html`" in summary
 
 
-def test_summarize_confirmed_facts_extracts_chapter_titles_from_read_results() -> None:
+def test_summarize_confirmed_facts_ignores_reference_chapter_title_reads() -> None:
     messages = [
         Message(
             role=Role.ASSISTANT,
@@ -186,10 +186,7 @@ def test_summarize_confirmed_facts_extracts_chapter_titles_from_read_results() -
 
     confirmed_facts = summarize_confirmed_facts(messages, max_items=2)
 
-    assert confirmed_facts is not None
-    assert "Chapter titles confirmed:" in confirmed_facts
-    assert "01-introduction.html = Chapter 1: Introduction to Fortran" in confirmed_facts
-    assert "02-setup.html = Chapter 2: Setting Up Fortran" in confirmed_facts
+    assert confirmed_facts is None
 
 
 def test_infer_preferred_next_step_uses_confirmed_chapter_pairs() -> None:
@@ -222,10 +219,7 @@ def test_infer_preferred_next_step_uses_confirmed_chapter_pairs() -> None:
         current_task="Update /tmp/fortran/index.html so the chapter list matches the real files.",
     )
 
-    assert next_step == (
-        "Update `/tmp/fortran/index.html` using the confirmed chapter file/title pairs "
-        "instead of rereading files."
-    )
+    assert next_step is None
 
 
 def test_infer_preferred_next_step_uses_latest_verification_gap() -> None:
@@ -278,13 +272,8 @@ def test_infer_preferred_next_step_uses_latest_verification_gap() -> None:
         current_task="Update /tmp/fortran/index.html so the chapter list matches the real files.",
     )
 
-    assert confirmed_facts is not None
-    assert "Verification gaps: missing TOC links chapters/05-control-structures.html" in confirmed_facts
-    assert next_step == (
-        "Update `/tmp/fortran/index.html` to fix the specific verification failures "
-        "(missing TOC links chapters/05-control-structures.html, "
-        "chapters/06-input-output.html) instead of restarting discovery."
-    )
+    assert confirmed_facts is None
+    assert next_step is None
 
 
 def test_compact_session_messages_uses_single_continuation_instruction_block() -> None:

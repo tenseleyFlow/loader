@@ -6,8 +6,10 @@ from loader.llm.base import ToolCall
 from loader.runtime.dod import (
     DefinitionOfDoneStore,
     VerificationEvidence,
+    all_planned_artifacts_exist,
     begin_new_verification_attempt,
     build_verification_summary,
+    collect_planned_artifact_targets,
     create_definition_of_done,
     derive_verification_commands,
     determine_task_size,
@@ -164,6 +166,172 @@ def test_derive_verification_commands_avoids_repo_defaults_for_external_artifact
     )
 
     assert commands == [f"test -f {external_index}"]
+
+
+def test_derive_verification_commands_adds_generic_local_html_link_check(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    index = docs / "index.html"
+    index.write_text('<a href="chapters/01-intro.html">Intro</a>\n')
+
+    dod = create_definition_of_done("Create a small multi-page HTML guide.")
+    dod.touched_files = [str(index)]
+
+    commands = derive_verification_commands(
+        dod,
+        project_root=tmp_path,
+        task_statement=dod.task_statement,
+        supplement_existing=True,
+    )
+
+    assert any("Missing local HTML links:" in command for command in commands)
+
+
+def test_derive_verification_commands_adds_planned_artifact_existence_checks(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                "- `docs/index.html`",
+                "- `docs/chapters/01-intro.html`",
+                "- `docs/chapters/02-installation.html`",
+                "- `docs/chapters/`",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-page HTML guide.")
+    dod.implementation_plan = str(implementation_plan)
+
+    commands = derive_verification_commands(
+        dod,
+        project_root=tmp_path,
+        task_statement=dod.task_statement,
+        supplement_existing=True,
+    )
+
+    assert f"test -f {tmp_path / 'docs/index.html'}" in commands
+    assert f"test -f {tmp_path / 'docs/chapters/01-intro.html'}" in commands
+    assert f"test -f {tmp_path / 'docs/chapters/02-installation.html'}" in commands
+    assert f"test -d {tmp_path / 'docs/chapters'}" in commands
+
+
+def test_collect_planned_artifact_targets_ignores_prose_path_fragments_in_refreshed_plan(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    touched_index = tmp_path / "external" / "guides" / "nginx" / "index.html"
+    touched_index.parent.mkdir(parents=True)
+    touched_index.write_text("<html></html>\n")
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                "- Created main index.html file with proper structure and navigation",
+                "- Created the nginx guide directory structure (chapters/)",
+                "- Created the first chapter file (01-introduction.html) with appropriate content",
+                "",
+                "## Confirmed Progress",
+                f"- Already touched during execution: `{touched_index}`.",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create an external nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+
+    targets = collect_planned_artifact_targets(dod, project_root=tmp_path)
+
+    assert (tmp_path / "chapters", True) not in targets
+    assert (tmp_path / "01-introduction.html", False) not in targets
+    assert targets == [(touched_index, False)]
+
+
+def test_all_planned_artifacts_exist_requires_file_contents_for_planned_output_directory(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{tmp_path / 'guide' / 'index.html'}`",
+                f"- `{tmp_path / 'guide' / 'chapters'}/` (directory for chapter files)",
+                "",
+                "## Execution Order",
+                "- Create chapter files with appropriate content",
+            ]
+        )
+    )
+
+    guide_root = tmp_path / "guide"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir()
+    chapters.mkdir()
+    (guide_root / "index.html").write_text("<html></html>\n")
+
+    dod = create_definition_of_done("Create a multi-file guide with chapters.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.completed_items = ["Create chapter files with appropriate content"]
+
+    assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
+
+    (chapters / "01-getting-started.html").write_text("<h1>Intro</h1>\n")
+
+    assert all_planned_artifacts_exist(dod, project_root=tmp_path) is True
+
+
+def test_all_planned_artifacts_exist_stays_false_while_touched_html_links_missing(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{tmp_path / 'guide' / 'index.html'}`",
+                f"- `{tmp_path / 'guide' / 'chapters'}/` (directory for chapter files)",
+                "",
+                "## Execution Order",
+                "- Create chapter files with appropriate content",
+            ]
+        )
+    )
+
+    guide_root = tmp_path / "guide"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir()
+    chapters.mkdir()
+    index = guide_root / "index.html"
+    index.write_text(
+        '<a href="chapters/01-introduction.html">Intro</a>\n'
+        '<a href="chapters/02-setup.html">Setup</a>\n'
+    )
+    (chapters / "01-introduction.html").write_text("<h1>Intro</h1>\n")
+
+    dod = create_definition_of_done("Create a multi-file guide with chapters.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files = [str(index), str(chapters / "01-introduction.html")]
+    dod.completed_items = ["Create chapter files with appropriate content"]
+
+    assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
+
+    (chapters / "02-setup.html").write_text("<h1>Setup</h1>\n")
+
+    assert all_planned_artifacts_exist(dod, project_root=tmp_path) is True
 
 
 def test_build_verification_summary_keeps_concrete_missing_link_details() -> None:

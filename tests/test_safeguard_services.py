@@ -16,8 +16,6 @@ from loader.runtime.safeguards import RuntimeSafeguards
 from loader.runtime.semantic_rules.html_toc import (
     build_html_toc_edit_call_template,
     build_html_toc_replacement_block,
-    build_validated_html_toc_observation_reason,
-    build_verified_html_inventory_observation_reason,
     format_html_inventory_entry,
     task_targets_html_toc,
     validate_html_toc,
@@ -214,88 +212,6 @@ def test_action_tracker_blocks_repeated_read_without_changes(tmp_path) -> None:
     assert str(file_path) in reason
 
 
-def test_action_tracker_blocks_post_validation_html_rereads_until_new_mutation(tmp_path) -> None:
-    tracker = ActionTracker()
-    chapters = tmp_path / "chapters"
-    chapters.mkdir()
-    chapter_path = chapters / "01-introduction.html"
-    chapter_path.write_text("<h1>Chapter 1: Introduction to Fortran</h1>\n")
-    index_path = tmp_path / "index.html"
-    index_path.write_text(
-        '<ul class="chapter-list">\n'
-        '    <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>\n'
-        "</ul>\n"
-    )
-
-    tracker.note_validated_html_toc(str(index_path))
-
-    assert tracker.check_tool_call("read", {"file_path": str(index_path)}) == (
-        True,
-        build_validated_html_toc_observation_reason(index_path),
-    )
-    assert tracker.check_tool_call("read", {"file_path": str(chapter_path)}) == (
-        True,
-        build_validated_html_toc_observation_reason(chapter_path),
-    )
-    assert tracker.check_tool_call(
-        "glob",
-        {"path": str(chapters), "pattern": "*.html"},
-    ) == (
-        True,
-        build_validated_html_toc_observation_reason(chapters),
-    )
-    assert tracker.check_tool_call(
-        "bash",
-        {"command": f"cat {index_path}"},
-    ) == (
-        True,
-        build_validated_html_toc_observation_reason(index_path),
-    )
-
-    tracker.record_tool_call(
-        "edit",
-        {
-            "file_path": str(index_path),
-            "old_string": "Chapter 1",
-            "new_string": "Chapter One",
-        },
-    )
-
-    assert tracker.check_tool_call("read", {"file_path": str(index_path)}) == (False, "")
-
-
-def test_action_tracker_blocks_chapter_rereads_after_verified_inventory(tmp_path) -> None:
-    tracker = ActionTracker()
-    chapters = tmp_path / "chapters"
-    chapters.mkdir()
-    chapter_path = chapters / "01-introduction.html"
-    chapter_path.write_text("<h1>Chapter 1: Introduction to Fortran</h1>\n")
-    index_path = tmp_path / "index.html"
-    index_path.write_text("<ul></ul>\n")
-
-    tracker.note_verified_html_inventory(str(index_path))
-
-    assert tracker.check_tool_call("read", {"file_path": str(index_path)}) == (False, "")
-    assert tracker.check_tool_call("read", {"file_path": str(chapter_path)}) == (
-        True,
-        build_verified_html_inventory_observation_reason(chapter_path),
-    )
-    assert tracker.check_tool_call(
-        "glob",
-        {"path": str(chapters), "pattern": "*.html"},
-    ) == (
-        True,
-        build_verified_html_inventory_observation_reason(chapters),
-    )
-    assert tracker.check_tool_call(
-        "bash",
-        {"command": f"head -20 {chapter_path}"},
-    ) == (
-        True,
-        build_verified_html_inventory_observation_reason(chapter_path),
-    )
-
-
 def test_action_tracker_allows_one_interleaved_reread_without_changes(tmp_path) -> None:
     tracker = ActionTracker()
     index_path = tmp_path / "index.html"
@@ -372,7 +288,7 @@ def test_action_tracker_blocks_second_target_index_reread_after_chapter_discover
     is_duplicate, reason = tracker.check_tool_call("read", {"file_path": str(index_path)})
 
     assert is_duplicate is True
-    assert "reuse that file/title evidence" in reason
+    assert "reuse the earlier read result instead of rereading" in reason
 
 
 def test_action_tracker_blocks_repeated_chapter_directory_search_once_titles_are_known(
@@ -383,14 +299,12 @@ def test_action_tracker_blocks_repeated_chapter_directory_search_once_titles_are
     search_args = {"pattern": "*.html", "path": str(chapters)}
 
     tracker.record_tool_call("glob", search_args)
-    tracker.record_tool_call("read", {"file_path": str(chapters / "01-introduction.html")})
-    tracker.record_tool_call("read", {"file_path": str(chapters / "02-setup.html")})
-    tracker.record_tool_call("read", {"file_path": str(chapters / "03-basics.html")})
+    tracker.record_tool_call("glob", search_args)
 
     is_duplicate, reason = tracker.check_tool_call("glob", search_args)
 
     assert is_duplicate is True
-    assert "reuse that filename/title evidence" in reason
+    assert "reuse the earlier search result instead of rerunning it" in reason
 
 
 def test_action_tracker_allows_repeated_read_after_mutation(tmp_path) -> None:
@@ -490,8 +404,8 @@ def test_pre_action_validator_blocks_index_edit_with_missing_chapter_href(tmp_pa
     )
 
     assert result.valid is False
-    assert result.reason == "Edited TOC references chapter files that do not exist"
-    assert "chapters/05-input-output.html = Chapter 5: Input and Output" in result.suggestion
+    assert result.reason == "Edited HTML links point to files that do not exist"
+    assert "chapters/05-control-structures.html" in result.suggestion
 
 
 def test_pre_action_validator_blocks_index_edit_with_title_mismatch(tmp_path) -> None:
@@ -512,12 +426,111 @@ def test_pre_action_validator_blocks_index_edit_with_title_mismatch(tmp_path) ->
         },
     )
 
-    assert result.valid is False
-    assert result.reason == "Edited TOC labels do not match the linked chapter titles"
-    assert (
-        "chapters/12-troubleshooting-tips.html = Chapter 12: Troubleshooting and Tips"
-        in result.suggestion
+    assert result.valid is True
+
+
+def test_pre_action_validator_allows_chapter_write_with_future_target_declared_by_index(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text(
+        "\n".join(
+            [
+                '<a href="chapters/introduction.html">Introduction</a>',
+                '<a href="chapters/installation.html">Installation</a>',
+                "",
+            ]
+        )
     )
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "introduction.html"),
+            "content": '<a href="installation.html">Next</a>\n',
+        },
+    )
+
+    assert result.valid is True
+
+
+def test_pre_action_validator_blocks_chapter_write_with_undeclared_missing_sibling(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text(
+        "\n".join(
+            [
+                '<a href="chapters/introduction.html">Introduction</a>',
+                '<a href="chapters/installation.html">Installation</a>',
+                '<a href="chapters/configuration.html">Configuration</a>',
+                '<a href="chapters/usage.html">Usage</a>',
+                '<a href="chapters/troubleshooting.html">Troubleshooting</a>',
+                "",
+            ]
+        )
+    )
+    (chapters / "introduction.html").write_text('<a href="installation.html">Next</a>\n')
+    (chapters / "installation.html").write_text('<a href="configuration.html">Next</a>\n')
+    (chapters / "configuration.html").write_text('<a href="usage.html">Next</a>\n')
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "usage.html"),
+            "content": '<a href="advanced.html">Next</a>\n',
+        },
+    )
+
+    assert result.valid is False
+    assert (
+        result.reason
+        == "HTML page introduces new local targets outside the current declared artifact set"
+    )
+    assert "advanced.html" in result.suggestion
+
+
+def test_pre_action_validator_blocks_missing_numbered_read_with_existing_sibling(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    chapters = tmp_path / "chapters"
+    chapters.mkdir()
+    (chapters / "01-getting-started.html").write_text("<h1>Getting Started</h1>\n")
+
+    result = validator.validate(
+        "read",
+        {"file_path": str(chapters / "01-introduction.html")},
+    )
+
+    assert result.valid is False
+    assert result.reason == "Read target conflicts with an existing numbered sibling"
+    assert "01-getting-started.html" in result.suggestion
+
+
+def test_pre_action_validator_blocks_new_numbered_sibling_drift(tmp_path) -> None:
+    validator = PreActionValidator()
+    chapters = tmp_path / "chapters"
+    chapters.mkdir()
+    (chapters / "01-getting-started.html").write_text("<h1>Getting Started</h1>\n")
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "01-intro.html"),
+            "content": "<h1>Intro</h1>\n",
+        },
+    )
+
+    assert result.valid is False
+    assert result.reason == "New file conflicts with an existing numbered sibling"
+    assert "01-getting-started.html" in result.suggestion
 
 
 def test_format_html_inventory_entry_handles_tmp_alias_paths() -> None:

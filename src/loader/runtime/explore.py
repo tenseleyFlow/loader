@@ -109,6 +109,7 @@ class ExploreRuntime:
                 registry=self.registry,
                 rollback_plan=None,
                 workspace_root=self.context.project_root,
+                session=self.context.session,
             ),
         )
 

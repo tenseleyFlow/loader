@@ -230,10 +230,6 @@ class TurnCompletionController:
             actions_taken=actions_taken,
         )
 
-        final_message = Message(role=Role.ASSISTANT, content=response_content)
-        self.context.session.append(final_message)
-        summary.assistant_messages.append(final_message)
-
         gate_result = await self.finalizer.run_definition_of_done_gate(
             dod=dod,
             candidate_response=final_response,
@@ -261,6 +257,9 @@ class TurnCompletionController:
                 continuation_count=continuation_count,
             )
         final_response = gate_result.final_response
+        final_message = Message(role=Role.ASSISTANT, content=response_content)
+        self.context.session.append(final_message)
+        summary.assistant_messages.append(final_message)
         self._record_completion_decision(
             summary=summary,
             decision_code=gate_result.reason_code,

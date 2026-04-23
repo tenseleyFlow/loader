@@ -10,10 +10,17 @@ import pytest
 from loader.llm.base import Message, Role, ToolCall
 from loader.runtime.completion_trace import CompletionTraceEntry
 from loader.runtime.context import RuntimeContext
-from loader.runtime.dod import DefinitionOfDoneStore, create_definition_of_done
+from loader.runtime.dod import (
+    DefinitionOfDoneStore,
+    VerificationEvidence,
+    create_definition_of_done,
+)
 from loader.runtime.events import TurnSummary
 from loader.runtime.executor import ToolExecutionOutcome, ToolExecutionState
-from loader.runtime.finalization import TurnFinalizer
+from loader.runtime.finalization import (
+    TurnFinalizer,
+    _build_verification_repair_guidance,
+)
 from loader.runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -126,6 +133,25 @@ class RecordingExecutor:
             is_error=False,
             exit_code=0,
             stdout="ok",
+        )
+
+
+class SelectiveRecordingExecutor:
+    def __init__(self, failing_match: str) -> None:
+        self.commands: list[str] = []
+        self.failing_match = failing_match
+
+    async def execute_tool_call(self, tool_call: ToolCall, **_: object) -> ToolExecutionOutcome:
+        command = str(tool_call.arguments.get("command", ""))
+        self.commands.append(command)
+        failed = self.failing_match in command
+        return tool_outcome(
+            tool_call=tool_call,
+            output="failed" if failed else "ok",
+            is_error=failed,
+            exit_code=1 if failed else 0,
+            stdout="" if failed else "ok",
+            stderr="failed" if failed else "",
         )
 
 
@@ -260,6 +286,65 @@ def test_turn_finalizer_finalize_summary_uses_runtime_context(
     ]
 
 
+def test_verification_repair_guidance_uses_existing_artifacts_as_source_of_truth(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_three = chapters / "03-first-website.html"
+    chapter_four = chapters / "04-configuration-basics.html"
+
+    for path in (index_path, chapter_one, chapter_two, chapter_three, chapter_four):
+        path.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                f"- `{chapter_three}`",
+                f"- `{chapter_four}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Repair the nginx guide index.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.evidence = [
+        VerificationEvidence(
+            command="verify-links",
+            passed=False,
+            output=(
+                "Missing local HTML links:\n"
+                f"{index_path}:chapters/01-introduction.html -> {chapters / '01-introduction.html'}\n"
+                f"{index_path}:chapters/04-server-blocks.html -> {chapters / '04-server-blocks.html'}\n"
+            ),
+        )
+    ]
+
+    guidance = _build_verification_repair_guidance(
+        dod,
+        project_root=temp_dir,
+    )
+
+    assert "Use the existing artifact files as the source of truth" in guidance
+    assert str(chapter_one) in guidance
+    assert str(chapter_two) in guidance
+    assert str(chapter_four) in guidance
+
+
 @pytest.mark.asyncio
 async def test_turn_finalizer_records_skipped_verification_observation(
     temp_dir: Path,
@@ -296,6 +381,8 @@ async def test_turn_finalizer_records_skipped_verification_observation(
         "verification was skipped because no mutating work required checks"
     ]
     assert summary.verification_status == "skipped"
+    assert "Complete the requested work" not in dod.pending_items
+    assert "Complete the requested work" in dod.completed_items
     assert session.workflow_timeline[-1].kind == "verify_skip"
     assert [item.status for item in session.workflow_timeline[-1].verification_observations] == [
         VerificationObservationStatus.SKIPPED.value
@@ -482,6 +569,76 @@ async def test_turn_finalizer_does_not_append_repo_defaults_to_external_verifica
 
 
 @pytest.mark.asyncio
+async def test_turn_finalizer_blocks_completion_when_planned_artifacts_are_missing(
+    temp_dir: Path,
+) -> None:
+    docs = temp_dir / "docs"
+    chapters = docs / "chapters"
+    chapters.mkdir(parents=True)
+    index = docs / "index.html"
+    first = chapters / "01-intro.html"
+    second = chapters / "02-installation.html"
+    index.write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-intro.html">Intro</a>',
+                '<a href="chapters/02-installation.html">Installation</a>',
+            ]
+        )
+    )
+    first.write_text("<h1>Intro</h1>\n")
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index}`",
+                f"- `{first}`",
+                f"- `{second}`",
+            ]
+        )
+    )
+
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    dod = create_definition_of_done("Create a small multi-page HTML guide.")
+    dod.mutating_actions.append("write")
+    dod.touched_files.extend([str(index), str(first)])
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = [f"ls -la {docs}"]
+    summary = TurnSummary(final_response="")
+    executor = RecordingExecutor()
+
+    async def capture(event) -> None:
+        return None
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="Finished the guide.",
+        emit=capture,
+        summary=summary,
+        executor=executor,  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is True
+    assert result.reason_code == "planned_artifacts_missing_continue"
+    assert executor.commands == []
+    assert dod.status == "draft"
+    assert "Complete the requested work" in dod.pending_items
+    assert "Complete the requested work" not in dod.completed_items
+    assert session.messages[-1].content.startswith("[PLANNED ARTIFACTS STILL MISSING]")
+    assert "`02-installation.html`" in session.messages[-1].content
+
+
+@pytest.mark.asyncio
 async def test_turn_finalizer_records_missing_verification_observation(
     temp_dir: Path,
 ) -> None:
@@ -530,6 +687,146 @@ async def test_turn_finalizer_records_missing_verification_observation(
     )
     assert session.messages[-1].role == Role.USER
     assert session.messages[-1].content.startswith("[DEFINITION OF DONE CHECK FAILED]")
+
+
+@pytest.mark.asyncio
+async def test_turn_finalizer_ignores_unplanned_expansion_pending_items_once_plan_exists(
+    temp_dir: Path,
+) -> None:
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+
+    docs = temp_dir / "guides" / "nginx"
+    chapters = docs / "chapters"
+    docs.mkdir(parents=True)
+    chapters.mkdir()
+    index = docs / "index.html"
+    first = chapters / "01-getting-started.html"
+    second = chapters / "02-installation.html"
+    index.write_text("<html></html>\n")
+    first.write_text("<h1>One</h1>\n")
+    second.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{docs}/`",
+                f"- `{chapters}/`",
+                f"- `{index}`",
+                f"- `{first}`",
+                f"- `{second}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a small multi-page HTML guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Create 07-performance-tuning.html",
+        "Complete the requested work",
+    ]
+    summary = TurnSummary(final_response="")
+
+    async def capture(event) -> None:
+        return None
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="Finished the guide.",
+        emit=capture,
+        summary=summary,
+        executor=FakeExecutor([]),  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is False
+    assert result.reason_code == "non_mutating_response_accepted"
+
+
+@pytest.mark.asyncio
+async def test_turn_finalizer_verification_failure_reentry_points_at_concrete_repair(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    broken_file = temp_dir / "guides" / "nginx" / "chapters" / "05-advanced-configurations.html"
+    broken_file.parent.mkdir(parents=True, exist_ok=True)
+    broken_file.write_text('<link rel="stylesheet" href="../styles.css">\n')
+    missing_target = temp_dir / "guides" / "nginx" / "styles.css"
+    dod = create_definition_of_done("Create the nginx guide.")
+    dod.mutating_actions.append("write")
+    dod.touched_files.append(str(broken_file))
+    dod.verification_commands = ["python3 verify_links.py"]
+    summary = TurnSummary(final_response="")
+    verify_call = ToolCall(
+        id="verify-1-1",
+        name="bash",
+        arguments={"command": dod.verification_commands[0], "cwd": str(temp_dir)},
+    )
+    failure_output = (
+        "Missing local HTML links:\n"
+        f"{broken_file}:../styles.css -> {missing_target}\n"
+    )
+
+    async def capture(event) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "loader.runtime.finalization.derive_verification_commands",
+        lambda *args, **kwargs: [],
+    )
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="The guide is complete.",
+        emit=capture,
+        summary=summary,
+        executor=FakeExecutor(
+            [
+                tool_outcome(
+                    tool_call=verify_call,
+                    output=failure_output,
+                    is_error=True,
+                    exit_code=1,
+                    stdout=failure_output,
+                )
+            ]
+        ),  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is True
+    assert result.reason_code == "verification_failed_reentry"
+    assert queued_messages
+    assert str(broken_file) in queued_messages[-1]
+    assert "../styles.css" in queued_messages[-1]
+    assert str(missing_target) in queued_messages[-1]
+    assert "Do not restart discovery or reread unrelated references." in queued_messages[-1]
+    assert session.messages[-1].content.startswith("[DEFINITION OF DONE CHECK FAILED]")
+    assert f"Immediate next step: edit `{broken_file}`." in session.messages[-1].content
+    assert f"create `{missing_target}`" in session.messages[-1].content
+    assert (
+        "Do not reread unrelated reference materials or restart discovery"
+        in session.messages[-1].content
+    )
 
 
 @pytest.mark.asyncio

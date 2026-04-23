@@ -14,6 +14,7 @@ from .dod import (
     DefinitionOfDoneStore,
     VerificationEvidence,
     build_verification_summary,
+    collect_planned_artifact_targets,
     derive_verification_commands,
     ensure_active_verification_attempt,
     synthesize_todo_items,
@@ -28,7 +29,6 @@ from .executor import ToolExecutor
 from .logging import get_runtime_logger
 from .memory import MemoryStore
 from .policy_timeline import append_verification_timeline_entry
-from .semantic_rules import html_toc as html_toc_rule
 from .session import normalize_usage
 from .tracing import RuntimeTracer
 from .verification_observations import (
@@ -41,6 +41,7 @@ from .workflow import (
     WorkflowMode,
     WorkflowTimelineEntry,
     WorkflowTimelineEntryKind,
+    effective_pending_todo_items,
     extract_verification_commands_from_markdown,
 )
 
@@ -98,13 +99,20 @@ class TurnFinalizer:
         """Gate completion on DoD state and verification evidence."""
 
         implementation_item = "Complete the requested work"
-        if implementation_item in dod.pending_items:
-            dod.pending_items.remove(implementation_item)
-            dod.completed_items.append(implementation_item)
+        verification_item = "Collect verification evidence"
 
         tracked_pending_items = [
-            item for item in dod.pending_items if item != "Collect verification evidence"
+            item
+            for item in effective_pending_todo_items(
+                dod,
+                project_root=self.context.project_root,
+            )
+            if item not in {implementation_item, verification_item}
         ]
+        missing_planned_artifacts = _missing_planned_artifact_labels(
+            dod,
+            project_root=self.context.project_root,
+        )
 
         mutating_paths = [path for path in dod.touched_files if path]
         requires_verification = bool(mutating_paths or dod.mutating_actions)
@@ -115,6 +123,60 @@ class TurnFinalizer:
             reason=f"files={mutating_paths[:3]}, actions={len(dod.mutating_actions)}"
             if requires_verification else None,
         )
+        if missing_planned_artifacts:
+            recovery_nudge = _build_missing_artifact_recovery_nudge(
+                _first_missing_planned_artifact(
+                    dod,
+                    project_root=self.context.project_root,
+                )
+            )
+            if recovery_nudge:
+                self.context.queue_steering_message(recovery_nudge)
+            missing_provenance = [
+                EvidenceProvenance(
+                    category="tracked_work",
+                    source="dod.implementation_plan",
+                    summary=f"planned artifact still missing: {label}",
+                    status=EvidenceProvenanceStatus.MISSING.value,
+                    subject=label,
+                )
+                for label in missing_planned_artifacts
+            ]
+            missing_text = "\n".join(
+                f"- {label}" for label in missing_planned_artifacts[:8]
+            )
+            pending_text = ""
+            if tracked_pending_items:
+                pending_text = (
+                    "\nRemaining tracked work:\n"
+                    + "\n".join(f"- {item}" for item in tracked_pending_items[:6])
+                )
+            self.dod_store.save(dod)
+            await self.emit_dod_status(emit, dod)
+            self.context.session.append(
+                Message(
+                    role=Role.USER,
+                    content=(
+                        "[PLANNED ARTIFACTS STILL MISSING]\n"
+                        "The explicit implementation plan is not complete yet. "
+                        "Do not move to verification or final confirmation.\n\n"
+                        "Missing planned artifacts:\n"
+                        f"{missing_text}"
+                        f"{pending_text}\n\n"
+                        "Continue by creating or updating the missing planned artifacts."
+                    ),
+                )
+            )
+            return CompletionGateResult(
+                should_continue=True,
+                reason_code="planned_artifacts_missing_continue",
+                reason_summary=(
+                    "continued because explicitly planned artifacts were still missing "
+                    "before verification"
+                ),
+                final_response="",
+                evidence_provenance=missing_provenance,
+            )
         if tracked_pending_items and not requires_verification:
             pending_provenance = [
                 EvidenceProvenance(
@@ -149,6 +211,10 @@ class TurnFinalizer:
             )
 
         if not requires_verification:
+            if implementation_item in dod.pending_items:
+                dod.pending_items.remove(implementation_item)
+            if implementation_item not in dod.completed_items:
+                dod.completed_items.append(implementation_item)
             skip_provenance = [
                 EvidenceProvenance(
                     category="verification",
@@ -240,9 +306,15 @@ class TurnFinalizer:
                 f"Task: {dod.task_statement}\n"
                 "No new file changes were made since the last failed verification.\n\n"
                 f"{build_verification_summary(dod.evidence)}\n\n"
-                f"{_build_verification_repair_guidance(dod)}\n\n"
+                f"{_build_verification_repair_guidance(dod, project_root=self.context.project_root)}\n\n"
                 "Apply a concrete edit or patch before trying to finish again."
             )
+            recovery_nudge = _build_verification_failure_recovery_nudge(
+                dod,
+                project_root=self.context.project_root,
+            )
+            if recovery_nudge:
+                self.context.queue_steering_message(recovery_nudge)
             self.context.session.append(Message(role=Role.USER, content=repair_prompt))
             return CompletionGateResult(
                 should_continue=True,
@@ -407,6 +479,12 @@ class TurnFinalizer:
         dod.confidence = "medium"
         self.dod_store.save(dod)
         await self.emit_dod_status(emit, dod)
+        recovery_nudge = _build_verification_failure_recovery_nudge(
+            dod,
+            project_root=self.context.project_root,
+        )
+        if recovery_nudge:
+            self.context.queue_steering_message(recovery_nudge)
         await self.set_workflow_mode(
             ModeDecision.transition(
                 WorkflowMode.EXECUTE,
@@ -424,7 +502,7 @@ class TurnFinalizer:
             f"Attempt: {dod.retry_count}/{dod.retry_budget}\n"
             f"Pending items: {', '.join(dod.pending_items)}\n\n"
             f"{build_verification_summary(dod.evidence)}\n\n"
-            f"{_build_verification_repair_guidance(dod)}\n\n"
+            f"{_build_verification_repair_guidance(dod, project_root=self.context.project_root)}\n\n"
             "Fix the failures above, then finish the task again."
         )
         self.context.session.append(Message(role=Role.USER, content=failure_prompt))
@@ -710,6 +788,72 @@ def _verification_result_provenance(
     return entries
 
 
+def _missing_planned_artifact_labels(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> list[str]:
+    labels: list[str] = []
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        exists = target.is_dir() if expect_directory else target.is_file()
+        if exists:
+            continue
+        label = target.name or str(target)
+        if expect_directory and not label.endswith("/"):
+            label += "/"
+        labels.append(f"`{label}`")
+    return labels
+
+
+def _first_missing_planned_artifact(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> tuple[Path, bool] | None:
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        exists = target.is_dir() if expect_directory else target.is_file()
+        if not exists:
+            return target, expect_directory
+    return None
+
+
+def _build_missing_artifact_recovery_nudge(
+    missing_artifact: tuple[Path, bool] | None,
+) -> str | None:
+    if missing_artifact is None:
+        return None
+
+    target, expect_directory = missing_artifact
+    label = target.name or str(target)
+    if expect_directory and not label.endswith("/"):
+        label += "/"
+
+    if expect_directory:
+        return (
+            "Your prior completion claim was incorrect because "
+            f"`{label}` does not exist yet. Do not summarize, mark completion, or "
+            "write bookkeeping notes yet. Your next response should be one concrete "
+            f"tool call that creates `{target}`. If a specific missing fact blocks "
+            "that step, ask one precise question."
+        )
+
+    return (
+        "Your prior completion claim was incorrect because "
+        f"`{label}` does not exist yet. Do not summarize, mark completion, or "
+        "write bookkeeping notes yet. Your next response should be one concrete "
+        f"`write` or `edit`-style tool call that creates or updates `{target}`. "
+        "If a specific missing fact blocks that step, ask one precise question."
+    )
+
+
 def _verification_result_observations(
     dod: DefinitionOfDone,
     *,
@@ -938,47 +1082,252 @@ def _verification_state_signature(dod: DefinitionOfDone) -> str:
     )
 
 
-def _build_verification_repair_guidance(dod: DefinitionOfDone) -> str:
-    fixes = _extract_verification_repairs(dod.evidence)
-    if not fixes:
+def _build_verification_repair_guidance(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> str:
+    repair_targets = _extract_verification_repair_targets(dod.evidence)
+    fixes = _extract_verification_repairs(
+        dod.evidence,
+        repair_targets=repair_targets,
+    )
+    repair_source_paths = _existing_repair_source_paths(
+        dod,
+        repair_targets=repair_targets,
+        project_root=project_root,
+    )
+    if not fixes and not repair_targets:
         return (
             "Use the failed verification evidence directly, avoid rereading unrelated "
             "files, and fix the target file before retrying."
         )
 
-    return "\n".join(
-        [
-            "Repair focus:",
-            *[f"- {item}" for item in fixes],
-            "- Reuse these exact failures instead of restarting discovery from earlier chapters.",
-        ]
-    )
+    lines = ["Repair focus:"]
+    lines.extend(f"- {item}" for item in fixes)
+    primary_target = repair_targets[0] if repair_targets else None
+    if primary_target is not None:
+        lines.extend(
+            [
+                f"- Immediate next step: edit `{primary_target.artifact_path}`.",
+                "- If the broken reference should remain, create "
+                f"`{primary_target.expected_path}`; otherwise remove or replace "
+                f"`{primary_target.failing_reference}`.",
+                *(
+                    [
+                        "- Use the existing artifact files as the source of truth while "
+                        "repairing this file: "
+                        + ", ".join(f"`{path}`" for path in repair_source_paths[:6])
+                        + (", ..." if len(repair_source_paths) > 6 else "")
+                    ]
+                    if repair_source_paths
+                    else []
+                ),
+                "- Do not reread unrelated reference materials or restart discovery "
+                "while this concrete repair target is unresolved.",
+            ]
+        )
+    else:
+        lines.append(
+            "- Reuse these exact failures instead of restarting discovery from earlier "
+            "chapters."
+        )
+    return "\n".join(lines)
 
 
 def _extract_verification_repairs(
     evidence_items: list[VerificationEvidence],
+    *,
+    repair_targets: list[VerificationRepairTarget] | None = None,
 ) -> list[str]:
     fixes: list[str] = []
+    target_map = {
+        (target.artifact_path, target.failing_reference, target.expected_path): target
+        for target in (repair_targets or _extract_verification_repair_targets(evidence_items))
+    }
+    for target in target_map.values():
+        item = (
+            f"Fix the broken local reference `{target.failing_reference}` in "
+            f"`{target.artifact_path}`."
+        )
+        if item not in fixes:
+            fixes.append(item)
     for evidence in evidence_items:
         for candidate in (evidence.stderr, evidence.output, evidence.stdout):
-            missing, mismatches = html_toc_rule.parse_html_toc_verification_failures(
-                str(candidate)
-            )
-            for href in missing:
+            for problem in _extract_missing_local_html_links(str(candidate)):
+                parsed = _parse_missing_local_html_link(problem)
+                if parsed is not None:
+                    key = (
+                        parsed.artifact_path,
+                        parsed.failing_reference,
+                        parsed.expected_path,
+                    )
+                    if key in target_map:
+                        continue
                 item = (
-                    f"Fix the missing TOC href `{href}` in the target HTML "
-                    "table-of-contents page."
-                )
-                if item not in fixes:
-                    fixes.append(item)
-            for mismatch in mismatches:
-                item = (
-                    f"Fix the TOC label mismatch `{mismatch}` in the target HTML "
-                    "table-of-contents page."
+                    "Fix the missing local HTML link "
+                    f"`{problem}` in the edited artifact set."
                 )
                 if item not in fixes:
                     fixes.append(item)
     return fixes
+
+
+@dataclass(frozen=True)
+class VerificationRepairTarget:
+    """Structured repair target extracted from failed verification evidence."""
+
+    artifact_path: str
+    failing_reference: str
+    expected_path: str
+
+
+def _build_verification_failure_recovery_nudge(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> str | None:
+    repair_targets = _extract_verification_repair_targets(dod.evidence)
+    repair_source_paths = _existing_repair_source_paths(
+        dod,
+        repair_targets=repair_targets,
+        project_root=project_root,
+    )
+    if repair_targets:
+        primary_target = repair_targets[0]
+        source_hint = ""
+        if repair_source_paths:
+            preview = ", ".join(f"`{path}`" for path in repair_source_paths[:4])
+            if len(repair_source_paths) > 4:
+                preview += ", ..."
+            source_hint = (
+                " Use the existing artifact files already on disk as the source of truth: "
+                f"{preview}."
+            )
+        return (
+            "Verification already identified the concrete repair target. "
+            "Do not restart discovery or reread unrelated references. "
+            "Your next response should be one concrete `edit` or `write`-style tool "
+            f"call that updates `{primary_target.artifact_path}` to repair "
+            f"`{primary_target.failing_reference}`. "
+            f"If that reference should stay, create `{primary_target.expected_path}`; "
+            "otherwise remove or replace the broken local reference."
+            f"{source_hint}"
+        )
+
+    fixes = _extract_verification_repairs(dod.evidence, repair_targets=repair_targets)
+    if not fixes:
+        return None
+    return (
+        "Verification already identified a concrete failure in the active artifact set. "
+        "Reuse that evidence directly, apply one concrete edit or patch, and do not "
+        "restart discovery unless a specific missing fact blocks the repair."
+    )
+
+
+def _existing_repair_source_paths(
+    dod: DefinitionOfDone,
+    *,
+    repair_targets: list[VerificationRepairTarget],
+    project_root: Path,
+) -> list[str]:
+    if not repair_targets:
+        return []
+
+    candidate_dirs = {
+        Path(target.expected_path).parent.resolve(strict=False)
+        for target in repair_targets
+        if str(target.expected_path).strip()
+    }
+    candidate_dirs.update(
+        Path(target.artifact_path).parent.resolve(strict=False)
+        for target in repair_targets
+        if str(target.artifact_path).strip()
+    )
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=24,
+    ):
+        if expect_directory or not target.is_file():
+            continue
+        resolved = target.resolve(strict=False)
+        if resolved.parent not in candidate_dirs:
+            continue
+        normalized = str(resolved)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        paths.append(normalized)
+    return paths
+
+
+def _extract_verification_repair_targets(
+    evidence_items: list[VerificationEvidence],
+) -> list[VerificationRepairTarget]:
+    targets: list[VerificationRepairTarget] = []
+    seen: set[tuple[str, str, str]] = set()
+    for evidence in evidence_items:
+        for candidate in (evidence.stderr, evidence.output, evidence.stdout):
+            for problem in _extract_missing_local_html_links(str(candidate)):
+                parsed = _parse_missing_local_html_link(problem)
+                if parsed is None:
+                    continue
+                key = (
+                    parsed.artifact_path,
+                    parsed.failing_reference,
+                    parsed.expected_path,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                targets.append(parsed)
+    return targets
+
+
+def _parse_missing_local_html_link(problem: str) -> VerificationRepairTarget | None:
+    if " -> " not in problem:
+        return None
+    broken_target, expected_path = problem.split(" -> ", 1)
+    broken_target = broken_target.strip()
+    expected_path = expected_path.strip()
+    if not broken_target or not expected_path or ":" not in broken_target:
+        return None
+    artifact_path, failing_reference = broken_target.rsplit(":", 1)
+    artifact_path = artifact_path.strip()
+    failing_reference = failing_reference.strip()
+    if not artifact_path or not failing_reference:
+        return None
+    return VerificationRepairTarget(
+        artifact_path=artifact_path,
+        failing_reference=failing_reference,
+        expected_path=expected_path,
+    )
+
+
+def _extract_missing_local_html_links(text: str) -> list[str]:
+    if "Missing local HTML links:" not in text:
+        return []
+
+    problems: list[str] = []
+    capture = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line == "Missing local HTML links:":
+            capture = True
+            continue
+        if not capture:
+            continue
+        if " -> " not in line:
+            continue
+        if line not in problems:
+            problems.append(line)
+    return problems
 
 
 def _classify_verification_kind(command: str) -> str:

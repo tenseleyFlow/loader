@@ -92,3 +92,49 @@ def test_artifact_invalidation_treats_path_separator_variants_as_same_touchpoint
     assert freshness.stale_plan is False
     assert freshness.stale_brief is False
     assert "touched_files_outside_plan" not in freshness.reason_codes
+
+
+def test_artifact_invalidation_allows_supplemental_repair_files_after_failed_verification() -> None:
+    assessor = ArtifactInvalidationAssessor()
+
+    freshness = assessor.assess(
+        task_statement="Build a multi-file nginx guide.",
+        clarify_text=None,
+        implementation_text=(
+            "# Implementation Plan\n"
+            "- Create index.html.\n"
+            "- Create 01-getting-started.html.\n"
+            "- Create 02-installation.html.\n"
+        ),
+        verification_text=(
+            "# Verification Plan\n"
+            "## Acceptance Criteria\n"
+            "- index.html exists.\n"
+            "- 01-getting-started.html exists.\n"
+            "- 02-installation.html exists.\n"
+        ),
+        acceptance_criteria=[
+            "index.html exists.",
+            "01-getting-started.html exists.",
+            "02-installation.html exists.",
+        ],
+        touched_files=[
+            "/tmp/guides/nginx/index.html",
+            "/tmp/guides/nginx/chapters/01-getting-started.html",
+            "/tmp/guides/nginx/chapters/02-installation.html",
+            "/tmp/guides/nginx/styles.css",
+        ],
+        last_verification_result="planned",
+        retry_count=1,
+        planned_artifacts_complete=True,
+    )
+
+    assert freshness.stale_plan is False
+    assert freshness.stale_brief is False
+    assert freshness.recovery_strategy == WorkflowRecoveryStrategy.NONE.value
+    assert "touched_files_outside_plan" not in freshness.reason_codes
+    assert any(
+        item.kind == ArtifactEvidenceKind.CONFIRMED_TOUCHPOINT.value
+        and "styles.css" in item.summary
+        for item in freshness.evidence
+    )

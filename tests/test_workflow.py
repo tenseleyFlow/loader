@@ -15,10 +15,12 @@ from loader.runtime.workflow import (
     WorkflowMode,
     advance_todos_from_tool_call,
     build_execute_bridge,
+    effective_pending_todo_items,
     enrich_clarify_brief_with_grounding,
     extract_verification_commands_from_markdown,
     merge_refreshed_todos_with_existing_scope,
     preserve_task_grounded_acceptance_criteria,
+    reconcile_aggregate_completion_steps,
     sync_todos_to_definition_of_done,
 )
 
@@ -454,6 +456,167 @@ def test_merge_refreshed_todos_with_existing_scope_filters_retro_refresh_noise()
     assert "04-configuring.html" not in labels
 
 
+def test_merge_refreshed_todos_with_existing_scope_drops_unplanned_filename_expansion() -> None:
+    task = (
+        "Create an equally thorough nginx guide with index.html plus chapter files "
+        "covering getting started, installation, configuration, usage, and troubleshooting."
+    )
+
+    todos = merge_refreshed_todos_with_existing_scope(
+        task,
+        existing_pending_items=[
+            "Create chapter files with appropriate content structure",
+        ],
+        existing_completed_items=[
+            "Create the nginx guide directory structure",
+            "Create introduction.html",
+        ],
+        refreshed_steps=[
+            "Create optimization.html",
+            "Create security.html",
+            "Ensure consistent chapter navigation",
+        ],
+        planned_files={
+            "index.html",
+            "introduction.html",
+            "installation.html",
+            "configuration.html",
+            "usage.html",
+            "troubleshooting.html",
+        },
+    )
+
+    labels = {item["content"]: item["status"] for item in todos}
+    assert "Create chapter files with appropriate content structure" in labels
+    assert "Ensure consistent chapter navigation" in labels
+    assert "Create optimization.html" not in labels
+    assert "Create security.html" not in labels
+
+
+def test_planning_artifacts_with_file_changes_replaces_file_change_section() -> None:
+    artifacts = PlanningArtifacts(
+        implementation_markdown="\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                "- `old.txt`",
+                "",
+                "## Execution Order",
+                "- Do the work",
+                "",
+            ]
+        )
+        + "\n",
+        verification_markdown="# Verification Plan\n",
+        verification_commands=[],
+        acceptance_criteria=["task"],
+        implementation_steps=["Do the work"],
+    )
+
+    updated = artifacts.with_file_changes(
+        ["`guides/nginx/index.html`", "`guides/nginx/chapters/`"]
+    )
+
+    assert "`old.txt`" not in updated.implementation_markdown
+    assert "`guides/nginx/index.html`" in updated.implementation_markdown
+    assert "`guides/nginx/chapters/`" in updated.implementation_markdown
+
+
+def test_effective_pending_todo_items_filters_stale_discovery_after_artifacts_exist(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "First, examine the existing Fortran guide structure to understand the format and content organization",
+        "Verify all guide files are linked and complete",
+        "Complete the requested work",
+    ]
+
+    pending = effective_pending_todo_items(dod, project_root=temp_dir)
+
+    assert "Verify all guide files are linked and complete" in pending
+    assert "Complete the requested work" in pending
+    assert not any("Fortran guide structure" in item for item in pending)
+
+
+def test_effective_pending_todo_items_filters_stale_creation_steps_after_artifacts_exist(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Create 01-getting-started.html",
+        "Creating 02-installation.html",
+        "Verify all guide files are linked and complete",
+        "Complete the requested work",
+    ]
+
+    pending = effective_pending_todo_items(dod, project_root=temp_dir)
+
+    assert "Verify all guide files are linked and complete" in pending
+    assert "Complete the requested work" in pending
+    assert "Create 01-getting-started.html" not in pending
+    assert "Creating 02-installation.html" not in pending
+
+
 def test_workflow_artifact_store_and_bridge_round_trip(tmp_path: Path) -> None:
     store = WorkflowArtifactStore(tmp_path)
     brief = ClarifyBrief.fallback(
@@ -521,6 +684,58 @@ def test_sync_todos_to_definition_of_done_preserves_runtime_items() -> None:
     assert "Writing router" in dod.pending_items
     assert "Collect verification evidence" in dod.pending_items
     assert "Update tests" in dod.completed_items
+
+
+def test_sync_todos_to_definition_of_done_keeps_completed_items_monotonic() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 03-first-website.html",
+                "active_form": "Creating 03-first-website.html",
+                "status": "pending",
+            },
+            {
+                "content": "Create 04-configuration-basics.html",
+                "active_form": "Creating 04-configuration-basics.html",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="write-third-chapter",
+            name="write",
+            arguments={
+                "file_path": "/tmp/nginx/chapters/03-first-website.html",
+                "content": "<html></html>",
+            },
+        ),
+    )
+    assert "Create 03-first-website.html" in dod.completed_items
+
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 03-first-website.html",
+                "active_form": "Creating 03-first-website.html",
+                "status": "pending",
+            },
+            {
+                "content": "Create 04-configuration-basics.html",
+                "active_form": "Creating 04-configuration-basics.html",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert "Create 03-first-website.html" in dod.completed_items
+    assert "Create 03-first-website.html" not in dod.pending_items
+    assert "Create 04-configuration-basics.html" in dod.pending_items
 
 
 def test_advance_todos_from_tool_call_tracks_plan_progress() -> None:
@@ -651,6 +866,41 @@ def test_advance_todos_from_tool_call_keeps_aggregate_mutation_steps_pending() -
     )
 
 
+def test_advance_todos_from_tool_call_keeps_plural_chapter_creation_step_pending() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create chapter files following the established pattern",
+                "active_form": "Working on: Create chapter files following the established pattern",
+                "status": "pending",
+            },
+            {
+                "content": "Ensure consistency with existing guide formatting and content style",
+                "active_form": "Working on: Ensure consistency with existing guide formatting and content style",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert (
+        advance_todos_from_tool_call(
+            dod,
+            ToolCall(
+                id="write-one-chapter",
+                name="write",
+                arguments={
+                    "file_path": "/tmp/nginx/chapters/01-overview.html",
+                    "content": "<html></html>",
+                },
+            ),
+        )
+        is False
+    )
+    assert "Create chapter files following the established pattern" in dod.pending_items
+
+
 def test_advance_todos_from_tool_call_tracks_bash_directory_creation_progress() -> None:
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     sync_todos_to_definition_of_done(
@@ -679,3 +929,283 @@ def test_advance_todos_from_tool_call_tracks_bash_directory_creation_progress() 
     )
     assert "Create the nginx directory structure" in dod.completed_items
     assert "Create index.html for nginx guide" in dod.pending_items
+
+
+def test_advance_todos_from_tool_call_does_not_complete_linking_step_from_glob() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Link all chapters together properly in the index file",
+                "active_form": "Working on: Link all chapters together properly in the index file",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert (
+        advance_todos_from_tool_call(
+            dod,
+            ToolCall(
+                id="glob-reference-chapters",
+                name="glob",
+                arguments={"path": "~/Loader", "pattern": "**/fortran/chapters/*"},
+            ),
+        )
+        is False
+    )
+    assert "Link all chapters together properly in the index file" in dod.pending_items
+
+
+def test_sync_todos_to_definition_of_done_keeps_linking_step_pending_while_artifacts_missing(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 01-getting-started.html chapter file",
+                "active_form": "Creating 01-getting-started.html chapter file",
+                "status": "completed",
+            },
+            {
+                "content": "Link all chapters together properly in the index file",
+                "active_form": "Linking chapters in the index file",
+                "status": "completed",
+            },
+            {
+                "content": "Create 02-installation.html chapter file",
+                "active_form": "Creating 02-installation.html chapter file",
+                "status": "pending",
+            },
+        ],
+        project_root=temp_dir,
+    )
+
+    assert "Link all chapters together properly in the index file" in dod.pending_items
+    assert "Link all chapters together properly in the index file" not in dod.completed_items
+
+
+def test_sync_todos_to_definition_of_done_allows_linking_step_when_artifacts_exist(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Link all chapters together properly in the index file",
+                "active_form": "Linking chapters in the index file",
+                "status": "completed",
+            },
+        ],
+        project_root=temp_dir,
+    )
+
+    assert "Link all chapters together properly in the index file" in dod.completed_items
+
+
+def test_sync_todos_to_definition_of_done_reopens_directory_content_step_when_output_dir_is_empty(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    index_path.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root / 'index.html'}`",
+                f"- `{chapters}/` (directory for chapter files)",
+                "",
+                "## Execution Order",
+                "- Create chapter files with appropriate content",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create an equally thorough nginx guide with chapters.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create chapter files with appropriate content",
+                "active_form": "Creating chapter files with appropriate content",
+                "status": "completed",
+            },
+        ],
+        project_root=temp_dir,
+    )
+
+    assert "Create chapter files with appropriate content" in dod.pending_items
+    assert "Create chapter files with appropriate content" not in dod.completed_items
+
+
+def test_reconcile_aggregate_completion_steps_reopens_linking_step_when_artifacts_missing(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_three = chapters / "03-first-website.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                f"- `{chapter_three}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.completed_items.append("Link all chapters together properly")
+
+    reconcile_aggregate_completion_steps(dod, project_root=temp_dir)
+
+    assert "Link all chapters together properly" not in dod.completed_items
+    assert "Link all chapters together properly" in dod.pending_items
+
+
+def test_sync_todos_to_definition_of_done_drops_unplanned_artifact_expansion_after_plan_complete(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 01-getting-started.html",
+                "active_form": "Creating 01-getting-started.html",
+                "status": "completed",
+            },
+            {
+                "content": "Create 02-installation.html",
+                "active_form": "Creating 02-installation.html",
+                "status": "completed",
+            },
+            {
+                "content": "Create 07-performance-tuning.html",
+                "active_form": "Creating 07-performance-tuning.html",
+                "status": "in_progress",
+            },
+        ],
+        project_root=temp_dir,
+    )
+
+    assert "Creating 07-performance-tuning.html" not in dod.pending_items
+    assert "Create 01-getting-started.html" in dod.completed_items
+    assert "Create 02-installation.html" in dod.completed_items

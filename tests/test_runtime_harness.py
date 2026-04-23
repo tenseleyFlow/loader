@@ -2020,26 +2020,8 @@ async def test_blocked_html_index_edit_queues_inventory_reuse_steering(
         if event.type == "steering" and event.content
     ]
 
-    assert any("TOC references chapter files that do not exist" in message for message in messages)
-    assert any(
-        "Use the current TOC target contents plus the verified sibling inventory" in message
-        for message in steering_messages
-    )
-    assert any(str(index_file) in message for message in steering_messages)
-    assert any(
-        "chapters/05-input-output.html = Chapter 5: Input and Output" in message
-        for message in steering_messages
-    )
-    assert any("<ul class=\"chapter-list\">" in message for message in steering_messages)
-    assert any("Suggested replacement block:" in message for message in steering_messages)
-    assert any("Do not rewrite the whole document." in message for message in steering_messages)
-    assert any("set `old_string` to the current TOC block above exactly" in message for message in steering_messages)
-    assert any("Suggested edit call:" in message for message in steering_messages)
-    assert any('old_string="""' in message for message in steering_messages)
-    assert any(
-        '<li><a href="chapters/05-input-output.html">Chapter 5: Input and Output</a></li>' in message
-        for message in steering_messages
-    )
+    assert any("Edited HTML links point to files that do not exist" in message for message in messages)
+    assert steering_messages == []
 
 
 @pytest.mark.asyncio
@@ -2080,15 +2062,7 @@ async def test_full_path_glob_pattern_still_injects_verified_html_inventory(
 
     assert tool_event_names(run) == ["glob"]
     messages = tool_result_messages(run)
-    assert any(
-        "Verified chapter inventory: chapters/01-introduction.html = Chapter 1: Introduction to Fortran"
-        in message
-        for message in messages
-    )
-    assert any(
-        "chapters/02-setup.html = Chapter 2: Setting Up Fortran" in message
-        for message in messages
-    )
+    assert all("Verified chapter inventory:" not in message for message in messages)
 
 
 @pytest.mark.asyncio
@@ -2136,16 +2110,8 @@ async def test_verified_html_inventory_blocks_redundant_chapter_reread(
     )
 
     messages = tool_result_messages(run)
-    assert any(
-        "Verified chapter inventory: chapters/01-introduction.html = Chapter 1: Introduction to Fortran"
-        in message
-        for message in messages
-    )
-    assert any(
-        "verified sibling chapter inventory"
-        in message
-        for message in messages
-    )
+    assert all("Verified chapter inventory:" not in message for message in messages)
+    assert all("verified sibling chapter inventory" not in message for message in messages)
 
 
 @pytest.mark.asyncio
@@ -2235,24 +2201,12 @@ async def test_successful_html_toc_edit_blocks_post_success_reread_and_steers_to
         if event.type == "steering" and event.content
     ]
 
-    assert any(
-        "Semantic verification preview: validated 2 toc links in index.html"
-        in message
+    assert all(
+        "Semantic verification preview:" not in message
         for message in messages
     )
-    assert any(
-        "already passed semantic link validation" in message
-        for message in messages
-    )
-    assert any(
-        "already satisfies the verified link/title constraints" in message
-        for message in steering_messages
-    )
-    assert any(
-        "Do not reread" in message and "chapters" in message
-        for message in steering_messages
-    )
-    assert "validated 2 toc links in index.html" in run.response
+    assert steering_messages == []
+    assert "updated index.html" in run.response.lower()
 
 
 @pytest.mark.asyncio
@@ -2325,17 +2279,11 @@ async def test_exact_prompt_finishes_when_index_toc_is_already_correct(
         if event.type == "steering" and event.content
     ]
 
-    assert any(
-        "Semantic verification preview: validated 2 toc links in index.html"
-        in message
+    assert all(
+        "Semantic verification preview:" not in message
         for message in messages
     )
-    assert any(
-        "No TOC edit is required unless you can point to one specific incorrect href or title"
-        in message
-        for message in steering_messages
-    )
-    assert any(str(index_file) in message for message in steering_messages)
+    assert steering_messages == []
     assert (
         sum(
             1

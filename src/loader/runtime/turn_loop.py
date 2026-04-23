@@ -40,7 +40,7 @@ class TurnLoopState:
     empty_retry_count: int = 0
     extracted_iterations: int = 0
     consecutive_errors: int = 0
-    max_empty_retries: int = 5
+    max_empty_retries: int = 2
     max_extracted_iterations: int = 3
 
 

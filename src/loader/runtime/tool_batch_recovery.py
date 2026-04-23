@@ -6,6 +6,7 @@ import re
 from collections.abc import Awaitable, Callable
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Any
 
 from ..llm.base import Message, Role, ToolCall
 from .compaction import (
@@ -17,7 +18,7 @@ from .context import RuntimeContext
 from .events import AgentEvent
 from .executor import ToolExecutionOutcome
 from .recovery import RecoveryContext, format_failure_message, format_recovery_prompt
-from .semantic_rules import html_toc as html_toc_rule
+from .repair_focus import ActiveRepairContext, extract_active_repair_context
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -59,7 +60,9 @@ class ToolBatchRecoveryController:
                     type="error",
                     content=(
                         "Loop detected: already tried a similar command. "
-                        "Try a DIFFERENT approach (e.g., read a config file first)."
+                        "Try a different next step using the files and facts you already have "
+                        "(for example, make the specific edit, verify the current result, or "
+                        "inspect one concrete unresolved target)."
                     ),
                     tool_name=tool_call.name,
                 )
@@ -129,21 +132,71 @@ class ToolBatchRecoveryController:
 
         session = self.context.session
         current_task = getattr(session, "current_task", None)
-        focus_path = self._preferred_focus_path(
-            tool_call=tool_call,
-            current_task=current_task,
-        )
+        active_repair = self._active_repair_context()
+        effective_task = current_task
+        if active_repair is not None and active_repair.artifact_path:
+            effective_task = (
+                "Repair the current artifact using the failed verification evidence: "
+                f"{active_repair.artifact_path}"
+            )
+            focus_path = active_repair.artifact_path
+            preferred_next_step = (
+                f"Update `{active_repair.artifact_path}` to resolve the current "
+                "verification failures."
+            )
+        else:
+            focus_path = self._preferred_focus_path(
+                tool_call=tool_call,
+                current_task=current_task,
+            )
+            preferred_next_step = infer_preferred_next_step(
+                session.messages,
+                current_task=effective_task,
+                focus_path=focus_path or None,
+            )
         confirmed_facts = summarize_confirmed_facts(session.messages)
-        preferred_next_step = infer_preferred_next_step(
-            session.messages,
-            current_task=current_task,
-            focus_path=focus_path or None,
-        )
-        actionable_known_state = bool(confirmed_facts and preferred_next_step)
         lines = [prompt]
-        if confirmed_facts or preferred_next_step or current_task:
+        candidate_lines = self._file_not_found_candidate_lines(
+            tool_call,
+            outcome,
+            active_repair=active_repair,
+        )
+        actionable_known_state = bool(
+            active_repair or current_task or confirmed_facts or preferred_next_step or candidate_lines
+        )
+        if active_repair is not None:
+            lines.extend(["", "## ACTIVE REPAIR TARGET"])
+            lines.append(
+                "- Verification already failed on the current artifact set. "
+                "Stay on this repair until the broken local references are fixed."
+            )
+            lines.extend(active_repair.repair_lines)
+            drifted_path = self._canonicalize_path(
+                str(
+                    tool_call.arguments.get("file_path")
+                    or tool_call.arguments.get("path")
+                    or ""
+                ).strip()
+            )
+            if (
+                drifted_path
+                and active_repair.artifact_path
+                and drifted_path != active_repair.artifact_path
+            ):
+                lines.append(
+                    f"- The failed tool call drifted to `{drifted_path}`. "
+                    f"Return to `{active_repair.artifact_path}` instead of reopening "
+                    "the original discovery task."
+                )
+            lines.append(
+                "- Treat this repair as higher priority than the original discovery "
+                "prompt until verification passes."
+            )
+        if active_repair or confirmed_facts or preferred_next_step or current_task:
             lines.extend(["", "## CONTINUE FROM KNOWN STATE"])
-            if current_task:
+            if active_repair is not None and active_repair.artifact_path:
+                lines.append(f"- Active repair target: `{active_repair.artifact_path}`")
+            elif current_task:
                 lines.append(f"- Current task: {current_task}")
             if confirmed_facts:
                 lines.append(f"- Confirmed facts: {confirmed_facts}")
@@ -153,18 +206,28 @@ class ToolBatchRecoveryController:
                 "- Preserve progress: do not restart by rereading already-confirmed files "
                 "unless you need genuinely new evidence."
             )
+            if active_repair is not None:
+                lines.append(
+                    "- Do not go back to the original reference guide or invent alternate "
+                    "paths while this repair target is unresolved."
+                )
             if actionable_known_state:
+                target_line = (
+                    f"- Prefer edit/write/patch on `{active_repair.artifact_path}` over "
+                    "rereading the same files."
+                    if active_repair is not None and active_repair.artifact_path
+                    else "- Prefer edit/write/patch on the target file over rereading the same files."
+                )
                 lines.extend(
                     [
                         "",
                         "## ACTION BIAS FOR THIS RECOVERY",
                         "- The confirmed findings above are already enough to keep moving.",
-                        "- Prefer edit/write/patch on the target file over rereading the same files.",
+                        target_line,
                         "- Only inspect one more file if a specific filename, href, or title is still unknown.",
                         "- Treat the preferred next step as the default path forward.",
                     ]
                 )
-        candidate_lines = self._file_not_found_candidate_lines(tool_call, outcome)
         if candidate_lines:
             lines.extend(["", "## LIKELY FILE CANDIDATES", *candidate_lines])
         target_excerpt_lines = self._target_excerpt_lines(tool_call)
@@ -229,6 +292,8 @@ class ToolBatchRecoveryController:
         self,
         tool_call: ToolCall,
         outcome: ToolExecutionOutcome,
+        *,
+        active_repair: ActiveRepairContext | None = None,
     ) -> list[str]:
         if tool_call.name not in {"read", "write", "edit", "patch"}:
             return []
@@ -247,14 +312,26 @@ class ToolBatchRecoveryController:
 
         candidates = self._rank_known_file_candidates(missing_path)
         if not candidates:
+            if active_repair is not None and active_repair.artifact_path:
+                return [
+                    f"- Requested file does not exist: `{missing_path}`",
+                    f"- Active repair target is `{active_repair.artifact_path}`.",
+                    "- Repair the known target instead of inventing a new path.",
+                ]
             return []
 
         names = ", ".join(self._describe_candidate(candidate) for candidate in candidates[:3])
-        return [
+        lines = [
             f"- Requested file does not exist: `{missing_path}`",
             f"- Closest known files in the same directory: {names}",
             "- Prefer one of those exact filenames instead of retrying the missing path.",
         ]
+        if active_repair is not None and active_repair.artifact_path:
+            lines.append(
+                f"- Keep the repair centered on `{active_repair.artifact_path}` rather than "
+                "switching back to broad discovery."
+            )
+        return lines
 
     def _rank_known_file_candidates(self, missing_path: str) -> list[str]:
         missing_parent = str(Path(missing_path).parent)
@@ -316,51 +393,261 @@ class ToolBatchRecoveryController:
 
     def _describe_candidate(self, candidate: str) -> str:
         path = Path(candidate)
-        label = f"`{path.name}`"
-        if path.suffix == ".html":
-            title = html_toc_rule.read_html_title(path)
-            if title:
-                return f"{label} = {title}"
-        return label
+        return f"`{path.name}`"
 
     def _target_excerpt_lines(self, tool_call: ToolCall) -> list[str]:
-        file_path = str(
+        if tool_call.name not in {"edit", "patch"}:
+            return []
+
+        raw_path = str(
             tool_call.arguments.get("file_path")
             or tool_call.arguments.get("path")
             or ""
         ).strip()
-        if not file_path:
-            return []
-        current_task = getattr(self.context.session, "current_task", None)
-        if not html_toc_rule.task_targets_html_toc(current_task):
+        target_path = self._canonicalize_path(raw_path)
+        if not target_path:
             return []
 
-        inventory = html_toc_rule.summarize_html_inventory(file_path, limit=12)
-        excerpt = html_toc_rule.extract_html_toc_excerpt(file_path)
-        if not inventory and not excerpt:
+        path = Path(target_path)
+        if not path.is_file():
             return []
 
-        lines: list[str] = []
-        if inventory:
-            lines.append(f"- Verified chapter inventory: {inventory}")
-        if excerpt:
-            lines.append("- Current TOC block:")
-            lines.extend(f"  {line}" for line in excerpt.splitlines())
-        replacement = html_toc_rule.build_html_toc_replacement_block(file_path)
-        if replacement:
-            lines.append("- Suggested replacement block:")
-            lines.extend(f"  {line}" for line in replacement.splitlines())
-        if excerpt and replacement:
-            lines.append("- Exact edit guidance:")
-            lines.append(f"  file_path: {file_path}")
-            lines.append("  old_string: use the Current TOC block above exactly")
-            lines.append("  new_string: use the Suggested replacement block above exactly")
-            lines.append("  Do not rewrite the whole file.")
-        edit_template = html_toc_rule.build_html_toc_edit_call_template(file_path)
-        if edit_template:
-            lines.append("- Suggested edit call:")
-            lines.extend(f"  {line}" for line in edit_template.splitlines())
-        return lines
+        try:
+            content = path.read_text()
+        except Exception:
+            return []
+
+        file_lines = content.splitlines()
+        if not file_lines:
+            return [
+                f"- Target file: `{target_path}`",
+                "- The file is currently empty.",
+                "- Use the exact on-disk state above when preparing the next mutation.",
+            ]
+
+        start, end, label = self._excerpt_window_for_tool_call(
+            file_lines=file_lines,
+            content=content,
+            tool_call=tool_call,
+        )
+        excerpt = self._format_excerpt_lines(file_lines, start, end)
+        if not excerpt:
+            return []
+
+        return [
+            f"- Target file: `{target_path}`",
+            f"- {label}",
+            *excerpt,
+            "- Use the exact on-disk text above when preparing the next mutation.",
+            "- If several adjacent lines are wrong, replace the containing block in one edit instead of retrying a smaller substitution.",
+        ]
+
+    def _excerpt_window_for_tool_call(
+        self,
+        *,
+        file_lines: list[str],
+        content: str,
+        tool_call: ToolCall,
+    ) -> tuple[int, int, str]:
+        if tool_call.name == "edit":
+            window = self._edit_excerpt_window(
+                file_lines=file_lines,
+                content=content,
+                arguments=tool_call.arguments,
+            )
+            if window is not None:
+                return window
+        if tool_call.name == "patch":
+            window = self._patch_excerpt_window(
+                file_lines=file_lines,
+                arguments=tool_call.arguments,
+            )
+            if window is not None:
+                return window
+        return self._bounded_window(
+            file_lines=file_lines,
+            start=0,
+            length=min(10, len(file_lines)),
+            label="Current file contents:",
+        )
+
+    def _edit_excerpt_window(
+        self,
+        *,
+        file_lines: list[str],
+        content: str,
+        arguments: dict[str, Any],
+    ) -> tuple[int, int, str] | None:
+        old_string = str(arguments.get("old_string") or "")
+        new_string = str(arguments.get("new_string") or "")
+
+        if old_string:
+            exact_window = self._exact_string_window(
+                content=content,
+                file_lines=file_lines,
+                needle=old_string,
+                label="Current file contents for the requested edit:",
+            )
+            if exact_window is not None:
+                return exact_window
+
+        anchor = old_string or new_string
+        approximate_window = self._approximate_string_window(
+            file_lines=file_lines,
+            needle=anchor,
+            label="Closest on-disk block to the requested edit:",
+        )
+        if approximate_window is not None:
+            return approximate_window
+        return None
+
+    def _patch_excerpt_window(
+        self,
+        *,
+        file_lines: list[str],
+        arguments: dict[str, Any],
+    ) -> tuple[int, int, str] | None:
+        hunks = arguments.get("hunks")
+        if not isinstance(hunks, list) or not hunks:
+            return None
+
+        first_hunk = hunks[0]
+        if not isinstance(first_hunk, dict):
+            return None
+
+        anchor_lines: list[str] = []
+        raw_lines = first_hunk.get("lines")
+        if isinstance(raw_lines, list):
+            for raw_line in raw_lines:
+                if not isinstance(raw_line, str) or not raw_line:
+                    continue
+                if raw_line[0] in {" ", "-"}:
+                    anchor_lines.append(raw_line[1:])
+
+        anchor = "\n".join(anchor_lines).strip()
+        approximate_window = self._approximate_string_window(
+            file_lines=file_lines,
+            needle=anchor,
+            label="Closest on-disk block to the requested patch:",
+        )
+        if approximate_window is not None:
+            return approximate_window
+
+        old_start = first_hunk.get("old_start", 1)
+        old_lines = first_hunk.get("old_lines", len(anchor_lines) or 1)
+        try:
+            start = max(0, int(old_start) - 1)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            length = max(1, int(old_lines))
+        except (TypeError, ValueError):
+            length = max(1, len(anchor_lines) or 1)
+        return self._bounded_window(
+            file_lines=file_lines,
+            start=start,
+            length=length,
+            label="Current file contents near the requested patch location:",
+        )
+
+    def _exact_string_window(
+        self,
+        *,
+        content: str,
+        file_lines: list[str],
+        needle: str,
+        label: str,
+    ) -> tuple[int, int, str] | None:
+        if not needle:
+            return None
+        index = content.find(needle)
+        if index == -1:
+            return None
+        start_line = content[:index].count("\n")
+        block_length = max(1, len(needle.splitlines()))
+        return self._bounded_window(
+            file_lines=file_lines,
+            start=start_line,
+            length=block_length,
+            label=label,
+        )
+
+    def _approximate_string_window(
+        self,
+        *,
+        file_lines: list[str],
+        needle: str,
+        label: str,
+    ) -> tuple[int, int, str] | None:
+        normalized_needle = self._normalize_match_text(needle)
+        if not normalized_needle:
+            return None
+
+        needle_lines = [line for line in needle.splitlines() if line.strip()]
+        if not needle_lines:
+            needle_lines = [needle.strip()]
+
+        min_window = 1
+        max_window = min(len(file_lines), max(1, len(needle_lines) + 2))
+        best_score = 0.0
+        best_start = 0
+        best_length = min(max_window, max(1, len(needle_lines)))
+        for window_length in range(min_window, max_window + 1):
+            for start in range(0, len(file_lines) - window_length + 1):
+                candidate = "\n".join(file_lines[start : start + window_length])
+                score = SequenceMatcher(
+                    None,
+                    normalized_needle,
+                    self._normalize_match_text(candidate),
+                ).ratio()
+                if score > best_score:
+                    best_score = score
+                    best_start = start
+                    best_length = window_length
+
+        if best_score < 0.25:
+            return None
+
+        return self._bounded_window(
+            file_lines=file_lines,
+            start=best_start,
+            length=best_length,
+            label=label,
+        )
+
+    def _bounded_window(
+        self,
+        *,
+        file_lines: list[str],
+        start: int,
+        length: int,
+        label: str,
+    ) -> tuple[int, int, str]:
+        context_before = 2
+        context_after = 2
+        start_index = max(0, start - context_before)
+        end_index = min(len(file_lines), start + max(1, length) + context_after)
+        return start_index, end_index, label
+
+    def _format_excerpt_lines(
+        self,
+        file_lines: list[str],
+        start: int,
+        end: int,
+    ) -> list[str]:
+        if start >= end:
+            return []
+        width = len(str(end))
+        return [
+            f"  {line_number:>{width}} | {file_lines[line_number - 1]}"
+            for line_number in range(start + 1, end + 1)
+        ]
+
+    def _normalize_match_text(self, text: str) -> str:
+        return " ".join(str(text or "").split())
+
+    def _active_repair_context(self) -> ActiveRepairContext | None:
+        return extract_active_repair_context(self.context.session.messages)
 
     def _canonicalize_path(self, raw_path: str) -> str:
         if not raw_path:

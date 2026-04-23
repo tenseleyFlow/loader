@@ -44,6 +44,65 @@ async def test_todo_write_persists_and_returns_previous_state(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_todo_write_merges_partial_status_updates_with_existing_scope(
+    tmp_path: Path,
+) -> None:
+    tool = TodoWriteTool(tmp_path)
+
+    initial = await tool.execute(
+        todos=[
+            {
+                "content": "Create nginx index",
+                "active_form": "Creating nginx index",
+                "status": "completed",
+            },
+            {
+                "content": "Create chapter files",
+                "active_form": "Creating chapter files",
+                "status": "in_progress",
+            },
+            {
+                "content": "Verify links",
+                "active_form": "Verifying links",
+                "status": "pending",
+            },
+        ]
+    )
+    partial = await tool.execute(
+        todos=[
+            {
+                "content": "Create chapter files",
+                "active_form": "Creating chapter files",
+                "status": "completed",
+            }
+        ]
+    )
+
+    initial_payload = json.loads(initial.output)
+    partial_payload = json.loads(partial.output)
+    assert initial.is_error is False
+    assert partial.is_error is False
+    assert partial_payload["old_todos"] == initial_payload["new_todos"]
+    assert partial_payload["new_todos"] == [
+        {
+            "content": "Create nginx index",
+            "active_form": "Creating nginx index",
+            "status": "completed",
+        },
+        {
+            "content": "Create chapter files",
+            "active_form": "Creating chapter files",
+            "status": "completed",
+        },
+        {
+            "content": "Verify links",
+            "active_form": "Verifying links",
+            "status": "pending",
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_todo_write_rejects_invalid_payloads_and_sets_verification_nudge(
     tmp_path: Path,
 ) -> None:

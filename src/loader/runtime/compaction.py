@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..llm.base import Message, Role, ToolCall
-from .semantic_rules import html_toc as html_toc_rule
 
 DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 100_000
 MIN_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD = 12_000
@@ -337,19 +336,7 @@ def infer_preferred_next_step(
         current_task=current_task,
         focus_path=focus_path,
     )
-    has_confirmed_titles = _summarize_html_title_discovery(relevant_messages) is not None
-    verification_gap = _summarize_latest_html_verification_gap(relevant_messages)
     if target_path:
-        if verification_gap:
-            return (
-                f"Update `{target_path}` to fix the specific verification failures "
-                f"({verification_gap}) instead of restarting discovery."
-            )
-        if has_confirmed_titles:
-            return (
-                f"Update `{target_path}` using the confirmed chapter file/title pairs "
-                "instead of rereading files."
-            )
         return (
             f"Update `{target_path}` using the confirmed findings instead of "
             "restarting earlier discovery steps."
@@ -440,27 +427,6 @@ def _collect_confirmed_facts(messages: list[Message]) -> list[str]:
     if explicit_mapping_fact:
         facts.append(explicit_mapping_fact)
 
-    verification_gap_fact = _collect_html_verification_gap_fact(
-        messages,
-        tool_calls_by_id=tool_calls_by_id,
-    )
-    if verification_gap_fact:
-        facts.append(verification_gap_fact)
-
-    title_fact = _summarize_html_title_discovery(
-        messages,
-        tool_calls_by_id=tool_calls_by_id,
-    )
-    if title_fact:
-        facts.append(title_fact)
-
-    file_fact = _collect_html_file_discovery_fact(
-        messages,
-        tool_calls_by_id=tool_calls_by_id,
-    )
-    if file_fact:
-        facts.append(file_fact)
-
     return facts
 
 
@@ -529,162 +495,6 @@ def _summarize_html_mappings(payload: str) -> str | None:
     return f"Filename mappings confirmed: {preview}"
 
 
-def _summarize_html_title_discovery(
-    messages: list[Message],
-    *,
-    max_pairs: int = 4,
-    tool_calls_by_id: dict[str, ToolCall] | None = None,
-) -> str | None:
-    if tool_calls_by_id is None:
-        tool_calls_by_id = {
-            tool_call.id: tool_call
-            for message in messages
-            for tool_call in message.tool_calls
-        }
-
-    confirmed_pairs: list[str] = []
-    for message in messages:
-        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
-            continue
-        if any(result.is_error for result in message.tool_results):
-            continue
-
-        tool_call = next(
-            (
-                tool_calls_by_id.get(result.tool_call_id)
-                for result in message.tool_results
-                if result.tool_call_id in tool_calls_by_id
-            ),
-            None,
-        )
-        if tool_call is None or tool_call.name != "read":
-            continue
-
-        raw_path = tool_call.arguments.get("file_path")
-        if not isinstance(raw_path, str):
-            continue
-        normalized_path = _normalize_path_candidate(raw_path) or raw_path
-        if html_toc_rule.is_html_toc_index_path(normalized_path) or "/chapters/" not in normalized_path:
-            continue
-
-        payload = "\n".join(
-            result.content.strip()
-            for result in message.tool_results
-            if result.content.strip()
-        ) or message.content
-        title = html_toc_rule.extract_html_title_from_text(payload)
-        if not title:
-            continue
-
-        pair = f"{Path(normalized_path).name} = {title}"
-        if pair not in confirmed_pairs:
-            confirmed_pairs.append(pair)
-
-    if not confirmed_pairs:
-        return None
-
-    preview = ", ".join(confirmed_pairs[:max_pairs])
-    if len(confirmed_pairs) > max_pairs:
-        preview += ", ..."
-    return f"Chapter titles confirmed: {preview}"
-
-
-def _collect_html_file_discovery_fact(
-    messages: list[Message],
-    *,
-    tool_calls_by_id: dict[str, ToolCall],
-) -> str | None:
-    filenames: list[str] = []
-    for message in messages:
-        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
-            continue
-        if any(result.is_error for result in message.tool_results):
-            continue
-
-        tool_name = _resolve_tool_name(
-            message,
-            tool_calls_by_id=tool_calls_by_id,
-        )
-        if tool_name not in {"glob", "bash"}:
-            continue
-
-        payload = "\n".join(
-            result.content.strip()
-            for result in message.tool_results
-            if result.content.strip()
-        ) or message.content
-        matches = re.findall(r"([A-Za-z0-9_.-]+\.html)", payload)
-        for name in matches:
-            if name not in filenames:
-                filenames.append(name)
-
-    if len(filenames) < 3:
-        return None
-
-    preview = ", ".join(filenames[:6])
-    if len(filenames) > 6:
-        preview += ", ..."
-    return f"Existing files include {preview}"
-
-
-def _collect_html_verification_gap_fact(
-    messages: list[Message],
-    *,
-    tool_calls_by_id: dict[str, ToolCall],
-) -> str | None:
-    gap = _summarize_latest_html_verification_gap(
-        messages,
-        tool_calls_by_id=tool_calls_by_id,
-    )
-    if not gap:
-        return None
-    return f"Verification gaps: {gap}"
-
-
-def _summarize_latest_html_verification_gap(
-    messages: list[Message],
-    *,
-    max_items: int = 2,
-    tool_calls_by_id: dict[str, ToolCall] | None = None,
-) -> str | None:
-    if tool_calls_by_id is None:
-        tool_calls_by_id = {
-            tool_call.id: tool_call
-            for message in messages
-            for tool_call in message.tool_calls
-        }
-
-    for message in reversed(messages):
-        if message.role != Role.TOOL or _is_compacted_context_message(message.content):
-            continue
-        if not any(result.is_error for result in message.tool_results):
-            continue
-        tool_name = _resolve_tool_name(
-            message,
-            tool_calls_by_id=tool_calls_by_id,
-        )
-        if tool_name != "bash":
-            continue
-
-        payload = "\n".join(
-            result.content.strip()
-            for result in message.tool_results
-            if result.content.strip()
-        ) or message.content
-        gap = html_toc_rule.summarize_html_toc_verification_gap(
-            payload,
-            max_items=max_items,
-        )
-        if gap:
-            return gap
-
-    return None
-
-
-def _summarize_html_file_discovery(payload: str) -> str | None:
-    return html_toc_rule.summarize_html_file_discovery(payload)
-
-
 def _resolve_tool_name(
     message: Message,
     *,
@@ -710,9 +520,6 @@ def _choose_target_path(
     if focus_path:
         normalized_focus = _normalize_path_candidate(focus_path)
         if normalized_focus:
-            resolved_focus = html_toc_rule.resolve_html_toc_index_path(normalized_focus)
-            if resolved_focus is not None:
-                return str(resolved_focus)
             return normalized_focus
 
     candidates: Counter[str] = Counter()
@@ -727,9 +534,9 @@ def _choose_target_path(
             if not normalized:
                 continue
             path_name = Path(normalized).name
-            if html_toc_rule.is_html_toc_index_path(normalized):
+            if path_name == "index.html":
                 candidates[normalized] += 10
-            elif path_name.endswith(".html") and "/chapters/" not in normalized:
+            elif "." in path_name:
                 candidates[normalized] += 4
 
     if candidates:
@@ -738,9 +545,6 @@ def _choose_target_path(
     if not current_task:
         return None
     current_task_paths = extract_key_files([Message(role=Role.USER, content=current_task)], limit=3)
-    for path in current_task_paths:
-        if html_toc_rule.is_html_toc_index_path(path):
-            return path
     return current_task_paths[0] if current_task_paths else None
 
 
@@ -770,14 +574,7 @@ def _focus_path_anchors(focus_path: str) -> tuple[str, ...]:
     )
     focus = Path(normalized_focus).expanduser()
     anchors = {str(focus)}
-
-    resolved_index = html_toc_rule.resolve_html_toc_index_path(focus)
-    if resolved_index is not None:
-        anchors.add(str(resolved_index))
-        anchors.add(str(resolved_index.parent))
-        anchors.add(str(resolved_index.parent / "chapters"))
-    else:
-        anchors.add(str(focus.parent))
+    anchors.add(str(focus.parent))
 
     return tuple(anchor for anchor in anchors if anchor)
 

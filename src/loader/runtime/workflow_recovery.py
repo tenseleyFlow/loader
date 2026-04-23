@@ -10,7 +10,7 @@ from .artifact_invalidation import (
     WorkflowRecoveryStrategy,
 )
 from .context import RuntimeContext
-from .dod import DefinitionOfDone
+from .dod import DefinitionOfDone, collect_planned_artifact_targets
 from .events import AgentEvent, TurnSummary
 from .executor import ToolExecutor
 from .workflow import (
@@ -128,6 +128,10 @@ class WorkflowRecoveryController:
     def plan_freshness(self, dod: DefinitionOfDone) -> ArtifactFreshness:
         """Assess whether the persisted workflow artifacts are stale."""
 
+        planned_artifacts_complete = not _first_missing_planned_artifact(
+            dod,
+            project_root=self.context.project_root,
+        )
         return self.artifact_invalidation.assess(
             task_statement=dod.task_statement,
             clarify_text=self._artifact_text(dod.clarify_brief),
@@ -136,6 +140,8 @@ class WorkflowRecoveryController:
             acceptance_criteria=list(dod.acceptance_criteria),
             touched_files=list(dod.touched_files),
             last_verification_result=dod.last_verification_result,
+            retry_count=dod.retry_count,
+            planned_artifacts_complete=planned_artifacts_complete,
         )
 
     async def _run_plan_refresh_reentry(
@@ -198,6 +204,25 @@ class WorkflowRecoveryController:
             ),
             None,
         )
+        missing_artifact = _first_missing_planned_artifact(
+            dod,
+            project_root=self.context.project_root,
+        )
+        if _should_prioritize_missing_artifact(
+            next_pending=next_pending,
+            missing_artifact=missing_artifact,
+        ):
+            target, expect_directory = missing_artifact
+            label = target.name or str(target)
+            if expect_directory and not label.endswith("/"):
+                label += "/"
+            self.context.queue_steering_message(
+                "Plan refresh preserved the progress already made. "
+                "Reuse the existing files and confirmed facts, then resume by creating "
+                f"`{label}`. Prefer one concrete mutation step for `{target}` before "
+                "any more review or consistency-check work."
+            )
+            return True
         if next_pending:
             self.context.queue_steering_message(
                 "Plan refresh preserved the progress already made. "
@@ -350,3 +375,62 @@ class WorkflowRecoveryController:
     @staticmethod
     def _recovery_evidence_summary(freshness: ArtifactFreshness) -> list[str]:
         return list(freshness.evidence_summary)
+
+
+def _first_missing_planned_artifact(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> tuple[Path, bool] | None:
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        exists = target.is_dir() if expect_directory else target.is_file()
+        if not exists:
+            return target, expect_directory
+    return None
+
+
+def _should_prioritize_missing_artifact(
+    *,
+    next_pending: str | None,
+    missing_artifact: tuple[Path, bool] | None,
+) -> bool:
+    if missing_artifact is None:
+        return False
+    if not next_pending:
+        return True
+    lowered = next_pending.lower()
+    if any(
+        hint in lowered
+        for hint in (
+            "verify",
+            "validation",
+            "validate",
+            "review",
+            "consistent",
+            "consistently",
+            "linked",
+            "format",
+            "formatted",
+        )
+    ):
+        return True
+    return not any(
+        hint in lowered
+        for hint in (
+            "create",
+            "update",
+            "edit",
+            "write",
+            "fix",
+            "modify",
+            "change",
+            "patch",
+            "replace",
+            "correct",
+            "rewrite",
+        )
+    )

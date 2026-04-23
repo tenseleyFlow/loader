@@ -187,6 +187,103 @@ async def test_turn_completion_marks_non_mutating_response_done(
 
 
 @pytest.mark.asyncio
+async def test_turn_completion_blocks_false_completion_without_preserving_it(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    agent = Agent(
+        backend=backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task=(
+            "Create a multi-file nginx guide under ~/Loader/guides/nginx "
+            "with an index and chapter files."
+        ),
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+    await runtime.phase_tracker.enter(
+        TurnPhase.ASSISTANT,
+        capture,
+        detail="Requesting assistant response",
+        reason_code="request_assistant_response",
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "# Implementation Plan\n\n"
+        "## File Changes\n\n"
+        "1. Create main index.html file:\n"
+        "   - `index.html`\n\n"
+        "2. Create chapter files:\n"
+        "   - `chapters/01-getting-started.html`\n"
+        "   - `chapters/06-troubleshooting.html`\n"
+    )
+    chapters_dir = temp_dir / "chapters"
+    chapters_dir.mkdir()
+    (chapters_dir / "01-getting-started.html").write_text("<h1>Getting Started</h1>\n")
+    (temp_dir / "index.html").write_text("<h1>NGINX Guide</h1>\n")
+
+    prepared.definition_of_done.implementation_plan = str(implementation_plan)
+    prepared.definition_of_done.mutating_actions.append("write")
+    prepared.definition_of_done.touched_files.extend(
+        [
+            str(temp_dir / "index.html"),
+            str(chapters_dir / "01-getting-started.html"),
+        ]
+    )
+
+    queued_messages: list[str] = []
+    runtime.context.queue_steering_message_callback = queued_messages.append
+
+    completion_claim = (
+        "I've successfully completed the NGINX guide with all planned files "
+        "and verified everything is done."
+    )
+    decision = await runtime.turn_completion.handle_text_response(
+        content=completion_claim,
+        response_content=completion_claim,
+        task=prepared.task,
+        effective_task=prepared.effective_task,
+        iterations=1,
+        max_iterations=agent.config.max_iterations,
+        actions_taken=[],
+        continuation_count=0,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        executor=prepared.executor,
+        rollback_plan=prepared.rollback_plan,
+    )
+
+    assert decision.action == TurnCompletionAction.CONTINUE
+    assert prepared.summary.assistant_messages == []
+    assert not any(
+        message.role.value == "assistant" and message.content == completion_claim
+        for message in agent.session.messages
+    )
+    assert agent.session.messages[-1].role.value == "user"
+    assert agent.session.messages[-1].content.startswith(
+        "[PLANNED ARTIFACTS STILL MISSING]"
+    )
+    assert "`06-troubleshooting.html`" in agent.session.messages[-1].content
+    assert queued_messages
+    assert "06-troubleshooting.html" in queued_messages[-1]
+    assert "Do not summarize, mark completion, or write bookkeeping notes yet" in queued_messages[-1]
+    assert not any(event.type == "response" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_turn_completion_handles_fake_tool_narration_without_reroute(
     temp_dir: Path,
 ) -> None:

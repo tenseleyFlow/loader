@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from loader.llm.base import ToolCall
 from loader.runtime.context import RuntimeContext
+from loader.runtime.dod import create_definition_of_done
 from loader.runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -201,3 +202,569 @@ def test_response_repairer_fails_honestly_when_raw_tool_budget_is_exhausted(
     )
     assert analysis.failure == "raw-text tool recovery budget exhausted"
     assert "Let me know if you'd like me to continue" not in analysis.final_response
+
+
+def test_empty_response_retry_message_surfaces_missing_planned_artifacts_and_working_note(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'index.html'}`",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters' / '01-getting-started.html'}`",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters' / '02-installation.html'}`",
+                "",
+            ]
+        )
+    )
+    first_artifact = temp_dir / "guides" / "nginx" / "index.html"
+    first_artifact.parent.mkdir(parents=True)
+    first_artifact.write_text("<html></html>\n")
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(first_artifact))
+    dod.completed_items.append("Create the main index.html file")
+    dod.pending_items.append("Create each chapter file in sequence")
+
+    context.session.append(
+        SimpleNamespace(
+            role="tool",
+            content=(
+                "Observation [notepad_write_working]: Result: "
+                "- [2026-04-21T19:17:34Z] Creating fifth chapter file: Advanced configurations"
+            ),
+        )
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Latest working note: Creating fifth chapter file: Advanced configurations" in decision.retry_message
+    assert "Next missing planned artifact: `01-getting-started.html`" in decision.retry_message
+    assert "Remaining planned artifacts: `01-getting-started.html`, `02-installation.html`" in decision.retry_message
+    assert "Resume with this exact next step: create `01-getting-started.html`." in decision.retry_message
+    assert f"Prefer one `write` call for `{temp_dir / 'guides' / 'nginx' / 'chapters' / '01-getting-started.html'}` before any more reference reads." in decision.retry_message
+    assert (
+        "Shape the next response as one concrete `write(file_path=..., content=...)` "
+        "tool call for that exact path."
+        in decision.retry_message
+    )
+    assert (
+        "Your next response should be the concrete mutation tool call itself, "
+        "not TodoWrite alone, verification, or a completion summary."
+        in decision.retry_message
+    )
+    assert "Do not restart discovery unless one specific missing fact blocks this step." in decision.retry_message
+
+
+def test_empty_response_retry_mentions_write_can_create_missing_parent_directories(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    index_path = guide_root / "index.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.extend(
+        [
+            "Create nginx guide directory structure",
+            "Write main index.html for nginx guide",
+        ]
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Resume with this exact next step: create `index.html`." in decision.retry_message
+    assert (
+        "The `write` tool can create that file's parent directories automatically"
+        in decision.retry_message
+    )
+    assert (
+        "Shape the next response as one concrete `write(file_path=..., content=...)` "
+        "tool call for that exact path."
+        in decision.retry_message
+    )
+
+
+def test_empty_response_retry_respects_discovery_first_pending_step(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'index.html'}`",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters'}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.extend(
+        [
+            "First, examine the existing fortran guide structure and content to understand the format",
+            "Create the nginx directory structure",
+            "Develop the main index.html file for the nginx guide",
+        ]
+    )
+
+    context.session.append(
+        SimpleNamespace(
+            role="tool",
+            content=(
+                "Observation [notepad_write_working]: Result: "
+                "- [2026-04-22T22:42:18Z] Analyzing the fortran guide structure before creating nginx guide"
+            ),
+        )
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        "Resume with this exact next step: advance `First, examine the existing fortran guide structure and content to understand the format`."
+        in decision.retry_message
+    )
+    assert "one concrete evidence-gathering tool call" in decision.retry_message
+    assert "Resume with this exact next step: create `index.html`." not in decision.retry_message
+
+
+def test_empty_response_retry_budget_extends_for_late_stage_multi_artifact_progress(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_three = chapters / "03-first-website.html"
+    chapter_four = chapters / "04-configuration-basics.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+    chapter_three.write_text("<h1>Three</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                f"- `{chapter_three}`",
+                f"- `{chapter_four}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend(
+        [str(index_path), str(chapter_one), str(chapter_two), str(chapter_three)]
+    )
+    dod.completed_items.extend(
+        [
+            "Create the directory structure for the new nginx guide",
+            "Create the main index.html file with proper structure",
+        ]
+    )
+    dod.pending_items.append("Create each chapter file in sequence")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=3,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "retry 3/4" in decision.retry_message
+    assert "Follow the same one-file-at-a-time mutation pattern" in decision.retry_message
+
+
+def test_empty_response_retry_points_at_next_output_file_when_planned_directory_is_empty(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    index_path.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    dod.pending_items.append("Write the introduction chapter")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Next missing planned artifact: `chapters/`" in decision.retry_message
+    assert (
+        "Resume with this exact next step: continue `Write the introduction chapter` "
+        "by creating the next output file under `chapters/`."
+        in decision.retry_message
+    )
+    assert (
+        f"Prefer one concrete `write` call for a file inside `{chapters}` before more research."
+        in decision.retry_message
+    )
+
+
+def test_empty_response_retry_points_at_declared_child_file_within_incomplete_output_directory(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/introduction.html">Introduction</a>',
+                '<a href="chapters/installation.html">Installation</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    dod.pending_items.append("Write the introduction chapter")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Next missing planned artifact: `chapters/`" in decision.retry_message
+    assert "Next declared output under `chapters/`: `introduction.html`" in decision.retry_message
+    assert (
+        "Resume with this exact next step: continue `Write the introduction chapter` "
+        "by creating `introduction.html`."
+        in decision.retry_message
+    )
+    assert "It is the next missing declared output under `chapters/`." in decision.retry_message
+    assert "Prefer one `write` call for `" in decision.retry_message
+    assert "introduction.html` before more research." in decision.retry_message
+
+
+def test_empty_response_retry_fails_after_extended_late_stage_budget_is_exhausted(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_three = chapters / "03-first-website.html"
+    chapter_four = chapters / "04-configuration-basics.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+    chapter_three.write_text("<h1>Three</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                f"- `{chapter_three}`",
+                f"- `{chapter_four}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend(
+        [str(index_path), str(chapter_one), str(chapter_two), str(chapter_three)]
+    )
+    dod.completed_items.extend(
+        [
+            "Create the directory structure for the new nginx guide",
+            "Create the main index.html file with proper structure",
+        ]
+    )
+    dod.pending_items.append("Create each chapter file in sequence")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=5,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is False
+    assert decision.final_response is not None
+    assert "retrying 4 times" in decision.final_response
+
+
+def test_empty_response_retry_mentions_todowrite_when_progress_has_outpaced_tracking(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root / 'index.html'}`",
+                f"- `{chapters / '01-getting-started.html'}`",
+                f"- `{chapters / '02-installation.html'}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend(
+        [
+            str(guide_root / "index.html"),
+            str(chapters / "01-getting-started.html"),
+        ]
+    )
+    dod.completed_items.extend(
+        [
+            "Create the directory structure for the new nginx guide",
+            "Create the main index.html file with proper structure",
+        ]
+    )
+    dod.pending_items.append("Create each chapter file in sequence")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.retry_message is not None
+    assert (
+        "refresh `TodoWrite` alongside the next concrete mutation"
+        in decision.retry_message
+    )
+
+
+def test_empty_response_retry_omits_stale_aggregate_completed_work_when_artifacts_missing(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_three = chapters / "03-first-website.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                f"- `{chapter_three}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one), str(chapter_two)])
+    dod.completed_items.extend(
+        [
+            "Create the main index.html file with proper structure",
+            "Link all chapters together properly",
+        ]
+    )
+    dod.pending_items.append("Create each chapter file in sequence")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.retry_message is not None
+    assert "Link all chapters together properly" not in decision.retry_message
+    assert "Create the main index.html file with proper structure" in decision.retry_message

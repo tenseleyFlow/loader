@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -11,10 +12,27 @@ from typing import Any, Protocol
 from ..llm.base import ToolCall
 from ..tools.base import Tool, ToolRegistry
 from ..tools.base import ToolResult as RegistryToolResult
+from .dod import (
+    DefinitionOfDoneStore,
+    all_planned_artifacts_exist,
+    collect_missing_declared_html_output_files,
+    collect_planned_artifact_targets,
+    planned_artifact_target_satisfied,
+)
 from .memory import MemoryStore
 from .permissions import PermissionOverride, PermissionPolicy
+from .repair_focus import (
+    extract_active_repair_context,
+    normalize_repair_path,
+    path_matches_allowed_paths,
+    path_within_allowed_roots,
+)
 from .rollback import RollbackPlan, create_rollback_plan_for_action, is_destructive_tool
-from .safeguard_services import ActionTracker, PreActionValidator
+from .safeguard_services import (
+    ActionTracker,
+    PreActionValidator,
+    extract_shell_text_rewrite_target,
+)
 
 
 class HookEvent(StrEnum):
@@ -204,13 +222,21 @@ class RelativePathContextHook(BaseToolHook):
 
         arguments = context.tool_call.arguments
         raw_path = str(arguments.get(argument_key, "")).strip()
-        if not raw_path or raw_path.startswith(("/", "~")):
+        if not raw_path:
             return HookResult()
 
-        resolved = self._resolve_recent_context_path(
-            raw_path,
-            require_existing=True,
-        )
+        require_existing = context.tool_call.name in {"read", "glob", "grep", "edit", "patch"}
+        resolved: str | None = None
+        if raw_path.startswith("/"):
+            resolved = self._resolve_workspace_mirror_path(
+                raw_path,
+                require_existing=require_existing,
+            )
+        elif not raw_path.startswith("~"):
+            resolved = self._resolve_recent_context_path(
+                raw_path,
+                require_existing=require_existing,
+            )
         if resolved is None:
             return HookResult()
 
@@ -244,6 +270,551 @@ class RelativePathContextHook(BaseToolHook):
             if candidate.exists() or candidate.parent.exists():
                 return str(candidate)
         return None
+
+    def _resolve_workspace_mirror_path(
+        self,
+        raw_path: str,
+        *,
+        require_existing: bool,
+    ) -> str | None:
+        candidate = Path(raw_path).expanduser()
+        try:
+            resolved = candidate.resolve(strict=False)
+        except Exception:
+            resolved = candidate
+
+        try:
+            relative = resolved.relative_to(self.workspace_root)
+        except ValueError:
+            return None
+        if not relative.parts:
+            return None
+
+        anchor = relative.parts[0]
+        for base_dir in self.action_tracker.recent_path_contexts():
+            base_path = Path(base_dir).expanduser()
+            try:
+                resolved_base = base_path.resolve(strict=False)
+            except Exception:
+                resolved_base = base_path
+            if resolved_base == self.workspace_root:
+                continue
+            try:
+                resolved_base.relative_to(self.workspace_root)
+                continue
+            except ValueError:
+                pass
+
+            try:
+                anchor_index = resolved_base.parts.index(anchor)
+            except ValueError:
+                continue
+            if anchor_index <= 0:
+                continue
+
+            anchor_root = Path(*resolved_base.parts[: anchor_index + 1])
+            remapped = Path(*resolved_base.parts[:anchor_index]).joinpath(*relative.parts)
+            if remapped == resolved:
+                continue
+            if require_existing:
+                if remapped.exists():
+                    return str(remapped)
+                continue
+            if remapped.exists() or remapped.parent.exists() or anchor_root.exists():
+                return str(remapped)
+        return None
+
+
+_OBSERVATION_TOOLS = frozenset({"read", "glob", "grep", "bash"})
+_MUTATION_TOOLS = frozenset({"write", "edit", "patch", "bash"})
+_READ_ONLY_BASH_PREFIXES = frozenset(
+    {"ls", "pwd", "find", "stat", "cat", "head", "tail", "rg", "grep"}
+)
+_MUTATING_BASH_FRAGMENTS = (
+    " >",
+    ">>",
+    "| tee",
+    "touch ",
+    "mkdir ",
+    "rm ",
+    "mv ",
+    "cp ",
+    "sed -i",
+    "perl -pi",
+    "git add",
+    "git commit",
+    "git apply",
+)
+
+
+def _extract_observation_paths(tool_call: ToolCall) -> list[str]:
+    arguments = tool_call.arguments
+    if tool_call.name == "read":
+        file_path = str(arguments.get("file_path", "")).strip()
+        return [file_path] if file_path else []
+
+    if tool_call.name in {"glob", "grep"}:
+        candidates: list[str] = []
+        search_path = str(arguments.get("path", "")).strip()
+        if search_path:
+            anchored_path = _derive_search_anchor(search_path, str(arguments.get("pattern", "")).strip())
+            candidates.append(anchored_path or search_path)
+        pattern = str(arguments.get("pattern", "")).strip()
+        if not search_path and pattern.startswith(("/", "~")):
+            candidates.append(str(Path(pattern).expanduser().parent))
+        return candidates
+
+    command = str(arguments.get("command", "")).strip()
+    if not _is_read_only_bash(command):
+        return []
+    return _extract_bash_paths(command)
+
+
+def _is_read_only_bash(command: str) -> bool:
+    normalized = " ".join(command.split())
+    if not normalized:
+        return False
+    if extract_shell_text_rewrite_target(normalized) is not None:
+        return False
+    if any(fragment in normalized for fragment in _MUTATING_BASH_FRAGMENTS):
+        return False
+    try:
+        argv = shlex.split(normalized)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    return argv[0] in _READ_ONLY_BASH_PREFIXES
+
+
+def _extract_bash_paths(command: str) -> list[str]:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return []
+    observed: list[str] = []
+    for token in argv[1:]:
+        candidate = token.strip()
+        if not candidate or candidate.startswith("-"):
+            continue
+        if candidate.startswith(("/", "~")):
+            observed.append(candidate)
+    return observed
+
+
+def _derive_search_anchor(search_path: str, pattern: str) -> str:
+    normalized_search_path = str(search_path or "").strip()
+    normalized_pattern = str(pattern or "").strip()
+    if not normalized_search_path or not normalized_pattern:
+        return normalized_search_path
+
+    literal_segments: list[str] = []
+    for segment in normalized_pattern.split("/"):
+        cleaned = segment.strip()
+        if not cleaned or cleaned == ".":
+            continue
+        if any(token in cleaned for token in ("*", "?", "[")):
+            continue
+        literal_segments.append(cleaned)
+
+    if not literal_segments:
+        return normalized_search_path
+
+    if "." in literal_segments[-1]:
+        literal_segments = literal_segments[:-1]
+    if not literal_segments:
+        return normalized_search_path
+
+    try:
+        anchored = Path(normalized_search_path).expanduser().joinpath(*literal_segments)
+    except (OSError, RuntimeError, ValueError):
+        return normalized_search_path
+    return str(anchored)
+
+
+def _extract_mutation_paths(tool_call: ToolCall) -> list[str]:
+    arguments = tool_call.arguments
+    if tool_call.name in {"write", "edit", "patch"}:
+        file_path = str(arguments.get("file_path", "")).strip()
+        return [file_path] if file_path else []
+
+    if tool_call.name != "bash":
+        return []
+
+    command = str(arguments.get("command", "")).strip()
+    if not command or not _is_mutating_bash(command):
+        return []
+    target = extract_shell_text_rewrite_target(command)
+    return [target] if target else []
+
+
+def _is_mutating_bash(command: str) -> bool:
+    normalized = " ".join(command.split())
+    if not normalized:
+        return False
+    if extract_shell_text_rewrite_target(normalized) is not None:
+        return True
+    if any(fragment in normalized for fragment in _MUTATING_BASH_FRAGMENTS):
+        return True
+    try:
+        argv = shlex.split(normalized)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    return argv[0] in {"touch", "mkdir", "rm", "mv", "cp", "chmod", "chown"}
+
+
+def _repair_declared_output_paths(repair: Any, *, project_root: Path) -> set[str]:
+    declared_outputs: set[str] = set()
+    for root in getattr(repair, "allowed_roots", ()) or ():
+        normalized_root = normalize_repair_path(root)
+        if not normalized_root:
+            continue
+        for path in collect_missing_declared_html_output_files(
+            target=Path(normalized_root),
+            project_root=project_root,
+        ):
+            declared_outputs.add(normalize_repair_path(str(path)))
+    return declared_outputs
+
+
+class ActiveRepairScopeHook(BaseToolHook):
+    """Keep fix-mode observations anchored to the active artifact set."""
+
+    def __init__(
+        self,
+        *,
+        dod_store: DefinitionOfDoneStore,
+        project_root: Path,
+        session: Any,
+    ) -> None:
+        self.dod_store = dod_store
+        self.project_root = project_root
+        self.session = session
+
+    async def pre_tool_use(self, context: HookContext) -> HookResult:
+        if context.tool_call.name not in _OBSERVATION_TOOLS:
+            return HookResult()
+        if context.source == "verification":
+            return HookResult()
+
+        repair = self._active_repair_context()
+        if repair is None:
+            return HookResult()
+
+        observed_paths = _extract_observation_paths(context.tool_call)
+        if not observed_paths:
+            return HookResult()
+        declared_output_paths = _repair_declared_output_paths(
+            repair,
+            project_root=self.project_root,
+        )
+        if repair.allowed_paths:
+            if all(path_matches_allowed_paths(path, repair.allowed_paths) for path in observed_paths):
+                return HookResult()
+            if declared_output_paths and all(
+                normalize_repair_path(path) in declared_output_paths
+                for path in observed_paths
+            ):
+                return HookResult()
+            if context.tool_call.name in {"glob", "grep", "bash"} and repair.allowed_roots:
+                if all(path_within_allowed_roots(path, repair.allowed_roots) for path in observed_paths):
+                    return HookResult()
+
+            allowed_preview = ", ".join(f"`{path}`" for path in repair.allowed_paths[:3])
+            if len(repair.allowed_paths) > 3:
+                allowed_preview += ", ..."
+            declared_preview = ", ".join(
+                f"`{Path(path).name or path}`"
+                for path in sorted(declared_output_paths)[:3]
+            )
+            if len(declared_output_paths) > 3:
+                declared_preview += ", ..."
+            suggestion_suffix = (
+                f" Declared sibling outputs currently allowed inside this repair set include: {declared_preview}."
+                if declared_preview
+                else ""
+            )
+            return HookResult(
+                decision=HookDecision.DENY,
+                message=(
+                    "[Blocked - active repair scope: verification already identified "
+                    f"`{repair.artifact_path}` as the current repair target. "
+                    "Stay on the concrete repair files until that repair passes.] "
+                    "Suggestion: inspect or edit only "
+                    f"{allowed_preview} and do not reopen unrelated reference materials."
+                    f"{suggestion_suffix}"
+                ),
+                terminal_state="blocked",
+            )
+
+        if not repair.allowed_roots:
+            return HookResult()
+        if all(path_within_allowed_roots(path, repair.allowed_roots) for path in observed_paths):
+            return HookResult()
+
+        roots_preview = ", ".join(f"`{root}`" for root in repair.allowed_roots[:2])
+        if len(repair.allowed_roots) > 2:
+            roots_preview += ", ..."
+        return HookResult(
+            decision=HookDecision.DENY,
+            message=(
+                "[Blocked - active repair scope: verification already identified "
+                f"`{repair.artifact_path}` as the current repair target. "
+                "Stay inside the current artifact set until that repair passes.] "
+                "Suggestion: inspect or edit files under "
+                f"{roots_preview} and do not reopen unrelated reference materials."
+            ),
+            terminal_state="blocked",
+        )
+
+    def _active_repair_context(self):
+        dod_path = getattr(self.session, "active_dod_path", None)
+        if not dod_path:
+            return None
+        path = Path(str(dod_path))
+        if not path.exists():
+            return None
+        dod = self.dod_store.load(path)
+        if dod.status == "done":
+            return None
+        return extract_active_repair_context(getattr(self.session, "messages", []))
+
+
+class ActiveRepairMutationScopeHook(BaseToolHook):
+    """Keep repair-phase mutations pinned to the concrete repair targets."""
+
+    def __init__(
+        self,
+        *,
+        dod_store: DefinitionOfDoneStore,
+        project_root: Path,
+        session: Any,
+    ) -> None:
+        self.dod_store = dod_store
+        self.project_root = project_root
+        self.session = session
+
+    async def pre_tool_use(self, context: HookContext) -> HookResult:
+        if context.tool_call.name not in _MUTATION_TOOLS:
+            return HookResult()
+        if context.source == "verification":
+            return HookResult()
+
+        repair = self._active_repair_context()
+        if repair is None or not repair.allowed_paths:
+            return HookResult()
+        allowed_paths = {normalize_repair_path(path) for path in repair.allowed_paths}
+
+        mutation_paths = _extract_mutation_paths(context.tool_call)
+        if not mutation_paths:
+            if context.tool_call.name == "bash" and _is_mutating_bash(
+                str(context.tool_call.arguments.get("command", "")).strip()
+            ):
+                return HookResult(
+                    decision=HookDecision.DENY,
+                    message=(
+                        "[Blocked - active repair mutation scope: the current repair already "
+                        f"identifies `{repair.artifact_path}` as the concrete target.] "
+                        "Suggestion: use write/edit/patch directly on one of the active repair "
+                        "files instead of a broad shell mutation."
+                    ),
+                    terminal_state="blocked",
+                )
+            return HookResult()
+        normalized_mutation_paths = [
+            normalize_repair_path(path) for path in mutation_paths if str(path).strip()
+        ]
+        allowed_declared_outputs = _repair_declared_output_paths(
+            repair,
+            project_root=self.project_root,
+        )
+
+        if normalized_mutation_paths and all(
+            path in allowed_paths for path in normalized_mutation_paths
+        ):
+            return HookResult()
+        if normalized_mutation_paths and all(
+            path in allowed_paths or path in allowed_declared_outputs
+            for path in normalized_mutation_paths
+        ):
+            return HookResult()
+
+        allowed_preview = ", ".join(f"`{path}`" for path in repair.allowed_paths[:3])
+        if len(repair.allowed_paths) > 3:
+            allowed_preview += ", ..."
+        declared_preview = ", ".join(
+            f"`{Path(path).name or path}`"
+            for path in sorted(allowed_declared_outputs)[:3]
+        )
+        if len(allowed_declared_outputs) > 3:
+            declared_preview += ", ..."
+        suggestion_suffix = (
+            f" Declared sibling outputs currently allowed inside this repair set include: {declared_preview}."
+            if declared_preview
+            else ""
+        )
+        return HookResult(
+            decision=HookDecision.DENY,
+            message=(
+                "[Blocked - active repair mutation scope: verification already identified "
+                f"`{repair.artifact_path}` as the current repair target.] Suggestion: keep "
+                f"mutations on the active repair files only: {allowed_preview}."
+                f"{suggestion_suffix}"
+            ),
+            terminal_state="blocked",
+        )
+
+    def _active_repair_context(self):
+        dod_path = getattr(self.session, "active_dod_path", None)
+        if not dod_path:
+            return None
+        path = Path(str(dod_path))
+        if not path.exists():
+            return None
+        dod = self.dod_store.load(path)
+        if dod.status == "done":
+            return None
+        return extract_active_repair_context(getattr(self.session, "messages", []))
+
+class LateReferenceDriftHook(BaseToolHook):
+    """Block reopening old reference paths once planned artifacts are well underway."""
+
+    _MIN_COMPLETED_FILES = 3
+
+    def __init__(self, *, dod_store: DefinitionOfDoneStore, project_root: Path, session: Any) -> None:
+        self.dod_store = dod_store
+        self.project_root = project_root
+        self.session = session
+
+    async def pre_tool_use(self, context: HookContext) -> HookResult:
+        if context.tool_call.name not in _OBSERVATION_TOOLS:
+            return HookResult()
+
+        completed_scope = self._completed_artifact_scope()
+        if completed_scope is not None:
+            observed_paths = _extract_observation_paths(context.tool_call)
+            if not observed_paths:
+                return HookResult()
+            if all(path_within_allowed_roots(path, completed_scope) for path in observed_paths):
+                return HookResult()
+
+            roots_preview = ", ".join(f"`{root}`" for root in completed_scope[:2])
+            if len(completed_scope) > 2:
+                roots_preview += ", ..."
+            return HookResult(
+                decision=HookDecision.DENY,
+                message=(
+                    "[Blocked - completed artifact set scope: all explicitly planned artifacts "
+                    "already exist.] Suggestion: stay within the current output roots under "
+                    f"{roots_preview} and use those files as the source of truth instead of "
+                    "reopening earlier reference materials."
+                ),
+                terminal_state="blocked",
+            )
+
+        late_stage = self._late_stage_missing_artifact()
+        if late_stage is None:
+            return HookResult()
+        missing_artifact, planned_roots = late_stage
+        observed_paths = _extract_observation_paths(context.tool_call)
+        if not observed_paths:
+            return HookResult()
+        if all(path_within_allowed_roots(path, planned_roots) for path in observed_paths):
+            return HookResult()
+
+        roots_preview = ", ".join(f"`{root}`" for root in planned_roots[:2])
+        if len(planned_roots) > 2:
+            roots_preview += ", ..."
+        return HookResult(
+            decision=HookDecision.DENY,
+            message=(
+                "[Blocked - late reference drift: several planned artifacts already exist and "
+                f"`{missing_artifact}` is still missing.] Suggestion: finish the next missing "
+                f"artifact inside {roots_preview} before reopening earlier reference materials."
+            ),
+            terminal_state="blocked",
+        )
+
+    def _late_stage_missing_artifact(self) -> tuple[str, tuple[str, ...]] | None:
+        dod_path = getattr(self.session, "active_dod_path", None)
+        if not dod_path:
+            return None
+        path = Path(str(dod_path))
+        if not path.exists():
+            return None
+        dod = self.dod_store.load(path)
+        if dod.status == "done":
+            return None
+
+        planned_targets = collect_planned_artifact_targets(
+            dod,
+            project_root=self.project_root,
+        )
+        if not planned_targets:
+            return None
+
+        missing_label = ""
+        completed_files = 0
+        planned_roots: list[str] = []
+        seen_roots: set[str] = set()
+        for target, expect_directory in planned_targets:
+            satisfied = planned_artifact_target_satisfied(
+                dod,
+                target=target,
+                expect_directory=expect_directory,
+                project_root=self.project_root,
+            )
+            if not expect_directory:
+                if satisfied:
+                    completed_files += 1
+                elif not missing_label:
+                    missing_label = str(target)
+                root = str(target.parent)
+            else:
+                if not satisfied and not missing_label:
+                    missing_label = str(target)
+                root = str(target)
+            if root not in seen_roots:
+                planned_roots.append(root)
+                seen_roots.add(root)
+
+        if not missing_label:
+            return None
+        if completed_files < self._MIN_COMPLETED_FILES:
+            return None
+        return missing_label, tuple(planned_roots)
+
+    def _completed_artifact_scope(self) -> tuple[str, ...] | None:
+        dod_path = getattr(self.session, "active_dod_path", None)
+        if not dod_path:
+            return None
+        path = Path(str(dod_path))
+        if not path.exists():
+            return None
+        dod = self.dod_store.load(path)
+        if dod.status in {"done", "fixing"}:
+            return None
+
+        planned_targets = collect_planned_artifact_targets(
+            dod,
+            project_root=self.project_root,
+        )
+        if not planned_targets:
+            return None
+        if not all_planned_artifacts_exist(dod, project_root=self.project_root):
+            return None
+
+        planned_roots: list[str] = []
+        seen_roots: set[str] = set()
+        for target, expect_directory in planned_targets:
+            root = str(target if expect_directory else target.parent)
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
+            planned_roots.append(root)
+        return tuple(planned_roots)
 
 
 class HookManager:
@@ -437,6 +1008,7 @@ def build_default_tool_hooks(
     registry: ToolRegistry,
     rollback_plan: RollbackPlan | None,
     workspace_root: Path,
+    session: Any,
 ) -> HookManager:
     """Build Loader's default tool hook stack for one runtime turn."""
 
@@ -445,6 +1017,21 @@ def build_default_tool_hooks(
             FilePathAliasHook(),
             SearchPathAliasHook(),
             RelativePathContextHook(action_tracker, workspace_root),
+            ActiveRepairScopeHook(
+                dod_store=DefinitionOfDoneStore(workspace_root),
+                project_root=workspace_root,
+                session=session,
+            ),
+            ActiveRepairMutationScopeHook(
+                dod_store=DefinitionOfDoneStore(workspace_root),
+                project_root=workspace_root,
+                session=session,
+            ),
+            LateReferenceDriftHook(
+                dod_store=DefinitionOfDoneStore(workspace_root),
+                project_root=workspace_root,
+                session=session,
+            ),
             DuplicateActionHook(action_tracker),
             ActionValidationHook(validator),
             RollbackTrackingHook(registry, rollback_plan),

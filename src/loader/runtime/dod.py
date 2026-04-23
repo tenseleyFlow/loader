@@ -12,13 +12,44 @@ from typing import Any, Literal
 
 from ..llm.base import ToolCall
 from ..tools.shell_tools import BashTool
-from .semantic_rules import html_toc as html_toc_rule
 from .verification_observations import VerificationAttempt, verification_attempt_id
 
 TaskSize = Literal["small", "standard", "large"]
 DoDStatus = Literal["draft", "in_progress", "verifying", "fixing", "done", "failed"]
 VerificationConfidence = Literal["high", "medium", "low"]
 VerificationKind = Literal["test", "typecheck", "lint", "build", "smoke", "runtime", "manual"]
+
+_DIRECTORY_CONTENT_HINTS = (
+    "file",
+    "files",
+    "chapter",
+    "chapters",
+    "page",
+    "pages",
+    "test",
+    "tests",
+    "artifact",
+    "artifacts",
+    "document",
+    "documents",
+    "content",
+    "entry",
+    "entries",
+)
+_DIRECTORY_MUTATION_HINTS = (
+    "create",
+    "creating",
+    "generate",
+    "generating",
+    "write",
+    "writing",
+    "add",
+    "adding",
+    "build",
+    "building",
+    "populate",
+    "populating",
+)
 
 
 @dataclass
@@ -213,10 +244,13 @@ def derive_verification_commands(
     """Generate verification commands from execution history and project shape."""
 
     commands: list[str] = []
-    semantic_command = _derive_html_toc_verification_command(
+    html_link_command = _derive_local_html_link_verification_command(
         dod,
         project_root=project_root,
-        task_statement=task_statement,
+    )
+    planned_artifact_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
     )
 
     explicit = [cmd for cmd in dod.successful_commands if _is_verification_command(cmd)]
@@ -230,8 +264,10 @@ def derive_verification_commands(
             if path.suffix == ".py":
                 _append_unique(commands, f"python {shlex.quote(path.name)}")
 
-    if semantic_command:
-        _append_unique(commands, semantic_command)
+    if html_link_command:
+        _append_unique(commands, html_link_command)
+    for command in _build_planned_artifact_verification_commands(planned_artifact_targets):
+        _append_unique(commands, command)
 
     if commands:
         return commands
@@ -512,30 +548,490 @@ def _extract_files_from_bash(command: str) -> list[str]:
     return []
 
 
-def _derive_html_toc_verification_command(
+def _derive_local_html_link_verification_command(
     dod: DefinitionOfDone,
     *,
     project_root: Path,
-    task_statement: str,
 ) -> str | None:
-    task_hints = " ".join([task_statement, *dod.acceptance_criteria]).lower()
-    if not html_toc_rule.task_targets_html_toc(task_hints):
-        return None
-
+    html_paths: list[Path] = []
     for path_str in dod.touched_files:
         path = Path(path_str)
         effective_path = path if path.is_absolute() else (project_root / path)
-        command = html_toc_rule.build_html_toc_verification_command(effective_path)
-        if command:
-            return command
+        if effective_path.suffix.lower() != ".html" or not effective_path.exists():
+            continue
+        html_paths.append(effective_path)
+
+    unique_paths = list(dict.fromkeys(str(path) for path in html_paths))
+    resolved_paths = [Path(path) for path in unique_paths]
+    if not resolved_paths:
+        return None
+    if not any(_html_file_contains_local_links(path) for path in resolved_paths):
+        return None
+    return _build_local_html_link_verification_command(resolved_paths)
+
+
+def collect_planned_artifact_targets(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    max_paths: int | None = None,
+) -> list[tuple[Path, bool]]:
+    if not dod.implementation_plan:
+        return []
+
+    plan_path = Path(dod.implementation_plan)
+    if not plan_path.exists():
+        return []
+
+    markdown = plan_path.read_text()
+    file_change_lines = _extract_markdown_section_lines(markdown, "File Changes")
+    candidates = _extract_planned_path_literals(file_change_lines or markdown.splitlines())
+    if not candidates:
+        confirmed_progress_lines = _extract_markdown_section_lines(
+            markdown,
+            "Confirmed Progress",
+        )
+        candidates = _extract_planned_path_literals(confirmed_progress_lines)
+    targets: list[tuple[Path, bool]] = []
+    seen: set[tuple[str, bool]] = set()
+
+    selected_candidates = candidates if max_paths is None else candidates[:max_paths]
+    for raw_path in selected_candidates:
+        effective_path = _resolve_planned_artifact_path(raw_path, project_root=project_root)
+        if effective_path is None:
+            continue
+        expect_directory = raw_path.endswith("/")
+        if not expect_directory and not effective_path.suffix:
+            continue
+        key = (str(effective_path), expect_directory)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append((effective_path, expect_directory))
+    return targets
+
+
+def all_planned_artifacts_exist(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    max_paths: int | None = None,
+) -> bool:
+    targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=max_paths,
+    )
+    if not targets:
+        return False
+    if not all(
+        planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=expect_directory,
+            project_root=project_root,
+        )
+        for target, expect_directory in targets
+    ):
+        return False
+    return not _planned_html_outputs_have_missing_local_links(
+        dod,
+        project_root=project_root,
+        targets=targets,
+    )
+
+
+def planned_artifact_target_satisfied(
+    dod: DefinitionOfDone,
+    *,
+    target: Path,
+    expect_directory: bool,
+    project_root: Path,
+) -> bool:
+    """Return whether one planned file or directory target is substantively satisfied."""
+
+    if not expect_directory:
+        return target.is_file()
+    if not target.is_dir():
+        return False
+    if not planned_directory_requires_generated_files(
+        dod,
+        target=target,
+        project_root=project_root,
+    ):
+        return True
+    return _directory_contains_files(target)
+
+
+def infer_next_declared_html_output_file(
+    *,
+    target: Path,
+    project_root: Path,
+) -> Path | None:
+    """Return the first missing HTML file already declared within an output directory."""
+
+    missing_targets = collect_missing_declared_html_output_files(
+        target=target,
+        project_root=project_root,
+    )
+    return missing_targets[0] if missing_targets else None
+
+
+def collect_missing_declared_html_output_files(
+    *,
+    target: Path,
+    project_root: Path,
+) -> tuple[Path, ...]:
+    """Return missing HTML outputs already declared within the current artifact graph."""
+
+    normalized_target = target.resolve(strict=False)
+    artifact_root = _resolve_declared_html_artifact_root(
+        normalized_target,
+        project_root=project_root.resolve(strict=False),
+    )
+    if artifact_root is None:
+        return ()
+
+    html_files = [path for path in sorted(artifact_root.rglob("*.html")) if path.is_file()]
+    if not html_files:
+        return ()
+
+    missing_targets: list[Path] = []
+    seen: set[str] = set()
+    for html_file in html_files:
+        try:
+            content = html_file.read_text()
+        except OSError:
+            continue
+        for resolved_target in _iter_local_html_targets(html_file, content):
+            if resolved_target.exists():
+                continue
+            if resolved_target.suffix.lower() not in {".html", ".htm"}:
+                continue
+            try:
+                resolved_target.relative_to(artifact_root)
+                resolved_target.relative_to(normalized_target)
+            except ValueError:
+                continue
+            key = str(resolved_target)
+            if key in seen:
+                continue
+            seen.add(key)
+            missing_targets.append(resolved_target)
+    return tuple(missing_targets)
+
+
+def _build_planned_artifact_verification_commands(
+    targets: list[tuple[Path, bool]],
+) -> list[str]:
+    commands: list[str] = []
+    for effective_path, expect_directory in targets:
+        command = (
+            f"test -d {shlex.quote(str(effective_path))}"
+            if expect_directory
+            else f"test -f {shlex.quote(str(effective_path))}"
+        )
+        _append_unique(commands, command)
+    return commands
+
+
+def _extract_markdown_section_lines(markdown: str, heading: str) -> list[str]:
+    current_heading: str | None = None
+    collected: list[str] = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            current_heading = stripped[3:].strip().lower()
+            continue
+        if current_heading == heading.lower():
+            collected.append(line)
+    return collected
+
+
+def _extract_planned_path_literals(lines: list[str]) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    for line in lines:
+        candidates = re.findall(r"`([^`]+)`", line)
+        if not candidates:
+            stripped = line.strip()
+            stripped = re.sub(r"^[-*+]\s+", "", stripped)
+            stripped = re.sub(r"^\d+[.)]\s+", "", stripped)
+            stripped = stripped.strip("`'\",.:;()[]{}")
+            candidates = [stripped] if _looks_like_path_literal(stripped) else []
+        for candidate in candidates:
+            normalized = candidate.strip("`'\",.:;()[]{}")
+            if not _looks_like_path_literal(normalized) or normalized in seen:
+                continue
+            seen.add(normalized)
+            paths.append(normalized)
+    return paths
+
+
+def _resolve_declared_html_artifact_root(
+    target: Path,
+    *,
+    project_root: Path,
+) -> Path | None:
+    for candidate in [target, *target.parents]:
+        if (candidate / "index.html").is_file():
+            return candidate
+        if candidate == project_root or candidate == candidate.parent:
+            break
+
+    fallback = target if target.exists() else target.parent
+    if fallback.exists():
+        return fallback
     return None
 
 
-def _build_html_toc_verification_command(index_path: Path) -> str:
-    command = html_toc_rule.build_html_toc_verification_command(index_path)
-    if command is None:
-        raise ValueError(f"{index_path} is not a valid HTML TOC target")
-    return command
+def _iter_local_html_targets(file_path: Path, content: str) -> list[Path]:
+    pattern = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+    targets: list[Path] = []
+    seen: set[str] = set()
+    for href in pattern.findall(content):
+        candidate = href.strip()
+        if not _is_local_html_link_target(candidate):
+            continue
+        resolved = (file_path.parent / candidate).resolve(strict=False)
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(resolved)
+    return targets
+
+
+def _is_local_html_link_target(href: str) -> bool:
+    candidate = href.strip()
+    if not candidate or candidate.startswith(("#", "http://", "https://", "mailto:")):
+        return False
+    if "?" in candidate:
+        candidate = candidate.split("?", 1)[0]
+    if "#" in candidate:
+        candidate = candidate.split("#", 1)[0]
+    return Path(candidate).suffix.lower() in {".html", ".htm"}
+
+
+def _looks_like_path_literal(value: str) -> bool:
+    if not value or " " in value:
+        return False
+    if value.startswith(("http://", "https://")):
+        return False
+    return (
+        value.startswith(("~/", "./", "../", "/"))
+        or "/" in value
+        or value.endswith("/")
+    )
+
+
+def _resolve_planned_artifact_path(
+    raw_path: str,
+    *,
+    project_root: Path,
+) -> Path | None:
+    text = raw_path.strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return path
+    return project_root / path
+
+
+def planned_directory_requires_generated_files(
+    dod: DefinitionOfDone,
+    *,
+    target: Path,
+    project_root: Path,
+) -> bool:
+    """Return whether a planned directory is expected to contain generated files."""
+
+    plan_path = Path(dod.implementation_plan) if dod.implementation_plan else None
+    if plan_path is not None and plan_path.exists():
+        markdown = plan_path.read_text()
+        file_change_lines = _extract_markdown_section_lines(markdown, "File Changes")
+        if any(
+            _line_describes_directory_contents(line, target=target, project_root=project_root)
+            for line in file_change_lines
+        ):
+            return True
+
+        execution_lines = _extract_markdown_section_lines(markdown, "Execution Order")
+        if any(
+            _line_mentions_directory_generation(line, target=target)
+            for line in execution_lines
+        ):
+            return True
+
+    todo_lines = [*dod.pending_items, *dod.completed_items]
+    return any(
+        _line_mentions_directory_generation(line, target=target)
+        for line in todo_lines
+    )
+
+
+def _line_describes_directory_contents(
+    line: str,
+    *,
+    target: Path,
+    project_root: Path,
+) -> bool:
+    lowered = line.lower()
+    if not any(hint in lowered for hint in _DIRECTORY_CONTENT_HINTS):
+        return False
+
+    target_text = str(target)
+    relative_target = str(target.relative_to(project_root)) if target.is_relative_to(project_root) else ""
+    if target_text in line or relative_target and relative_target in line:
+        return True
+    return _line_mentions_directory_generation(line, target=target)
+
+
+def _line_mentions_directory_generation(line: str, *, target: Path) -> bool:
+    lowered = line.lower()
+    if not any(hint in lowered for hint in _DIRECTORY_CONTENT_HINTS):
+        return False
+    if not any(hint in lowered for hint in _DIRECTORY_MUTATION_HINTS) and "directory for" not in lowered:
+        return False
+    directory_tokens = _directory_tokens(target)
+    return any(token in lowered for token in directory_tokens)
+
+
+def _directory_tokens(target: Path) -> set[str]:
+    tokens: set[str] = set()
+    for raw_token in re.split(r"[^a-z0-9]+", target.name.lower()):
+        token = raw_token.strip()
+        if len(token) < 2:
+            continue
+        tokens.add(token)
+        if token.endswith("ies") and len(token) > 3:
+            tokens.add(f"{token[:-3]}y")
+        elif token.endswith("s") and len(token) > 3:
+            tokens.add(token[:-1])
+    return tokens
+
+
+def _directory_contains_files(target: Path) -> bool:
+    try:
+        return any(child.is_file() for child in target.rglob("*"))
+    except OSError:
+        return False
+
+
+def _html_file_contains_local_links(path: Path) -> bool:
+    pattern = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    return any(_is_local_html_link_target(href) for href in pattern.findall(text))
+
+
+def _planned_html_outputs_have_missing_local_links(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    targets: list[tuple[Path, bool]],
+) -> bool:
+    html_paths: list[Path] = []
+    for raw_path in dod.touched_files:
+        path = Path(raw_path)
+        effective_path = path if path.is_absolute() else (project_root / path)
+        if effective_path.suffix.lower() != ".html" or not effective_path.exists():
+            continue
+        html_paths.append(effective_path)
+
+    for target, expect_directory in targets:
+        if expect_directory or target.suffix.lower() != ".html" or not target.exists():
+            continue
+        html_paths.append(target)
+
+    seen: set[str] = set()
+    for path in html_paths:
+        normalized = str(path)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if _html_file_has_missing_local_links(path):
+            return True
+    return False
+
+
+def _html_file_has_missing_local_links(path: Path) -> bool:
+    pattern = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    for href in pattern.findall(text):
+        target = href.strip()
+        if not _is_local_html_link_target(target):
+            continue
+        normalized = target.split("#", 1)[0].split("?", 1)[0].strip()
+        if not normalized:
+            continue
+        if not (path.parent / normalized).resolve().exists():
+            return True
+    return False
+
+
+def _is_local_html_link_target(href: str) -> bool:
+    target = href.strip()
+    if not target:
+        return False
+    if target.startswith(("#", "mailto:", "tel:", "javascript:")):
+        return False
+    if "://" in target:
+        return False
+    target = target.split("#", 1)[0].split("?", 1)[0].strip()
+    return bool(target)
+
+
+def _build_local_html_link_verification_command(paths: list[Path]) -> str:
+    serialized_paths = ", ".join(repr(str(path)) for path in paths)
+    return "\n".join(
+        [
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "import re",
+            "",
+            f"paths = [{serialized_paths}]",
+            (
+                r"pattern = re.compile(r'href\s*=\s*[\"\\\']([^\"\\\']+)[\"\\\']', "
+                "re.IGNORECASE)"
+            ),
+            "checked = 0",
+            "missing = []",
+            "for raw_path in paths:",
+            "    html_path = Path(raw_path)",
+            "    if not html_path.exists():",
+            "        continue",
+            "    text = html_path.read_text()",
+            "    for href in pattern.findall(text):",
+            "        target = href.strip()",
+            "        if not target:",
+            "            continue",
+            "        if target.startswith((\"#\", \"mailto:\", \"tel:\", \"javascript:\")):",
+            "            continue",
+            "        if \"://\" in target:",
+            "            continue",
+            "        target = target.split(\"#\", 1)[0].split(\"?\", 1)[0].strip()",
+            "        if not target:",
+            "            continue",
+            "        checked += 1",
+            "        resolved = (html_path.parent / target).resolve()",
+            "        if not resolved.exists():",
+            "            missing.append(f\"{html_path}:{href} -> {resolved}\")",
+            "if missing:",
+            "    print(\"Missing local HTML links:\")",
+            "    print(\"\\n\".join(missing))",
+            "    raise SystemExit(1)",
+            "print(f\"Checked {checked} local HTML links across {len(paths)} file(s).\")",
+            "PY",
+        ]
+    )
 
 
 def _first_non_empty_line(text: str) -> str:

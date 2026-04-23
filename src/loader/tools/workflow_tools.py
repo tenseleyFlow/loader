@@ -117,6 +117,7 @@ class TodoWriteTool(Tool):
 
         store_path = self._store_path()
         old_todos = await asyncio.to_thread(self._read_existing_items, store_path)
+        items = self._merge_partial_update(old_todos, items)
 
         all_done = all(item.status == "completed" for item in items)
         persisted_items = [] if all_done else [item.to_dict() for item in items]
@@ -143,6 +144,29 @@ class TodoWriteTool(Tool):
             output=json.dumps(payload, indent=2, sort_keys=True),
             metadata=payload,
         )
+
+    def _merge_partial_update(
+        self,
+        old_todos: list[dict[str, Any]],
+        items: list[TodoItem],
+    ) -> list[TodoItem]:
+        """Preserve omitted todos when the model sends a narrow status update."""
+
+        old_items = [TodoItem.from_dict(item) for item in old_todos if isinstance(item, dict)]
+        if not old_items or len(items) >= len(old_items):
+            return items
+
+        old_by_content = {item.content: item for item in old_items if item.content}
+        if not old_by_content:
+            return items
+        if not all(item.content in old_by_content for item in items):
+            return items
+
+        updates = {item.content: item for item in items}
+        merged: list[TodoItem] = []
+        for old_item in old_items:
+            merged.append(updates.get(old_item.content, old_item))
+        return merged
 
     def _store_path(self) -> Path:
         return active_todo_store_path(self.workspace_root or Path.cwd())

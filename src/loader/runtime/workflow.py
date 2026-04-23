@@ -10,7 +10,12 @@ from typing import ClassVar
 
 from ..llm.base import ToolCall
 from .clarify_grounding import ClarifyGrounding
-from .dod import slugify
+from .dod import (
+    all_planned_artifacts_exist,
+    collect_planned_artifact_targets,
+    planned_artifact_target_satisfied,
+    slugify,
+)
 from .workflow_policy import (
     ArtifactEvidence,
     ArtifactEvidenceKind,
@@ -46,12 +51,14 @@ __all__ = [
     "WorkflowTimelineEntryKind",
     "advance_todos_from_tool_call",
     "build_execute_bridge",
+    "effective_pending_todo_items",
     "enrich_clarify_brief_with_grounding",
     "extract_verification_commands_from_markdown",
     "load_brief",
     "load_planning_artifacts",
     "merge_refreshed_todos_with_existing_scope",
     "preserve_task_grounded_acceptance_criteria",
+    "reconcile_aggregate_completion_steps",
     "sync_todos_to_definition_of_done",
 ]
 
@@ -106,16 +113,35 @@ _PARSE_STEP_HINTS = (
 )
 _MUTATION_STEP_HINTS = (
     "create",
+    "creating",
     "update",
+    "updating",
     "edit",
+    "editing",
     "write",
+    "writing",
     "fix",
+    "fixing",
     "modify",
+    "modifying",
     "change",
+    "changing",
     "patch",
+    "patching",
     "replace",
+    "replacing",
     "correct",
+    "correcting",
     "rewrite",
+    "rewriting",
+)
+_CREATION_STEP_HINTS = (
+    "create",
+    "creating",
+    "generate",
+    "generating",
+    "scaffold",
+    "scaffolding",
 )
 _VERIFY_STEP_HINTS = (
     "verify",
@@ -135,6 +161,20 @@ _AGGREGATE_TODO_HINTS = (
     "consistently",
     "properly linked",
     "directory structure",
+)
+_ARTIFACT_SET_COMPLETION_HINTS = (
+    "link",
+    "links",
+    "linked",
+    "navigation",
+    "consistency",
+    "consistent",
+    "formatted",
+    "formatting",
+    "review",
+)
+_TODO_FILE_CANDIDATE_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+"
 )
 _ACTIONABLE_STEP_VERBS = {
     "add",
@@ -560,6 +600,25 @@ class PlanningArtifacts:
             implementation_steps=list(self.implementation_steps),
         )
 
+    def with_file_changes(self, file_changes: list[str]) -> PlanningArtifacts:
+        """Return one copy with a rewritten file-changes section."""
+
+        normalized = [item.strip() for item in file_changes if item.strip()]
+        if not normalized:
+            return self
+
+        return PlanningArtifacts(
+            implementation_markdown=_replace_markdown_section_items(
+                self.implementation_markdown,
+                "File Changes",
+                normalized,
+            ),
+            verification_markdown=self.verification_markdown,
+            verification_commands=list(self.verification_commands),
+            acceptance_criteria=list(self.acceptance_criteria),
+            implementation_steps=list(self.implementation_steps),
+        )
+
     def with_progress_context(
         self,
         *,
@@ -650,6 +709,8 @@ def load_planning_artifacts(
 def sync_todos_to_definition_of_done(
     dod,
     todos: list[dict[str, str]],
+    *,
+    project_root: Path | None = None,
 ) -> None:
     """Reflect todo state into DoD pending/completed items."""
 
@@ -671,23 +732,99 @@ def sync_todos_to_definition_of_done(
             "Collect verification evidence",
         }
     ]
+    existing_completed = {
+        item.strip()
+        for item in dod.completed_items
+        if item.strip() and item not in _SPECIAL_TODO_ITEMS
+    }
 
     pending: list[str] = []
     completed: list[str] = []
     for item in todos:
         status = str(item.get("status", "")).strip().lower()
-        label = str(
-            item.get("active_form") if status == "in_progress" else item.get("content", "")
-        ).strip()
-        if not label:
+        content = str(item.get("content", "")).strip()
+        active_form = str(item.get("active_form", "")).strip()
+        label = active_form if status == "in_progress" else content
+        if not label and not content:
+            continue
+        # Treat exact todo items as monotonic. If a successful tool call already
+        # marked the same todo complete, a stale TodoWrite snapshot should not
+        # regress it back to pending / in progress.
+        if status != "completed" and (
+            content in existing_completed or active_form in existing_completed
+        ):
+            completed.append(content or active_form or label)
             continue
         if status == "completed":
-            completed.append(str(item.get("content", label)).strip())
+            completed.append(content or label)
         else:
             pending.append(label)
 
     dod.pending_items = list(dict.fromkeys(pending + special_pending))
     dod.completed_items = list(dict.fromkeys(completed + special_completed))
+
+    if project_root is not None:
+        _reopen_aggregate_completion_steps_for_missing_artifacts(
+            dod,
+            project_root=project_root,
+        )
+        _reopen_directory_content_steps_for_incomplete_artifacts(
+            dod,
+            project_root=project_root,
+        )
+        dod.pending_items = effective_pending_todo_items(
+            dod,
+            project_root=project_root,
+        )
+
+
+def effective_pending_todo_items(
+    dod,
+    *,
+    project_root: Path | None = None,
+) -> list[str]:
+    """Return pending todo items after filtering stale artifact-expansion drift."""
+
+    pending_items = [item for item in dod.pending_items if item.strip()]
+    if not pending_items or project_root is None or dod.status == "fixing":
+        return pending_items
+
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=24,
+    )
+    if not planned_targets:
+        return pending_items
+    if not all_planned_artifacts_exist(dod, project_root=project_root, max_paths=24):
+        return pending_items
+
+    planned_files = {
+        target.name.lower()
+        for target, expect_directory in planned_targets
+        if not expect_directory
+    }
+    if not planned_files:
+        return pending_items
+
+    filtered_items = [
+        item
+        for item in pending_items
+        if not _todo_targets_unplanned_artifact(item, planned_files)
+    ]
+    filtered_items = [
+        item
+        for item in filtered_items
+        if not _todo_describes_stale_creation_after_artifacts_exist(
+            item,
+            planned_files,
+        )
+    ]
+    return [
+        item
+        for item in filtered_items
+        if not _todo_describes_stale_discovery_after_artifacts_exist(item)
+    ]
 
 
 def preserve_task_grounded_acceptance_criteria(
@@ -714,6 +851,7 @@ def merge_refreshed_todos_with_existing_scope(
     existing_pending_items: list[str],
     existing_completed_items: list[str],
     refreshed_steps: list[str],
+    planned_files: set[str] | None = None,
 ) -> list[dict[str, str]]:
     """Merge one refreshed plan with task-grounded todo scope already in flight."""
 
@@ -740,6 +878,12 @@ def merge_refreshed_todos_with_existing_scope(
             or _looks_actionable_refresh_step(item)
         )
     ]
+    if planned_files:
+        refreshed_candidates = [
+            item
+            for item in refreshed_candidates
+            if not _todo_targets_unplanned_artifact(item, planned_files)
+        ]
 
     todos: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -839,6 +983,12 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
         if _contains_any(text, _PARSE_STEP_HINTS) and ".html" in combined:
             score += 1
     elif name in {"glob", "grep"}:
+        if not (
+            _contains_any(text, _SEARCH_STEP_HINTS)
+            or _contains_any(text, _READ_STEP_HINTS)
+            or _contains_any(text, _PARSE_STEP_HINTS)
+        ):
+            return 0
         if _contains_any(text, _SEARCH_STEP_HINTS):
             score += 2
         if name == "glob" and _contains_any(text, _READ_STEP_HINTS) and ".html" in combined:
@@ -874,9 +1024,228 @@ def _contains_any(text: str, candidates: tuple[str, ...]) -> bool:
 
 
 def _todo_describes_aggregate_mutation(text: str) -> bool:
-    return _contains_any(text, _AGGREGATE_TODO_HINTS) and _contains_any(
+    return (
+        _contains_any(text, _AGGREGATE_TODO_HINTS)
+        or _todo_mentions_plural_output_set(text)
+    ) and _contains_any(
         text,
         _MUTATION_STEP_HINTS,
+    )
+
+
+def _todo_requires_complete_artifact_set(text: str) -> bool:
+    return (
+        _contains_any(text, _AGGREGATE_TODO_HINTS)
+        or _todo_mentions_plural_output_set(text)
+    ) and _contains_any(
+        text,
+        _ARTIFACT_SET_COMPLETION_HINTS,
+    )
+
+
+def _todo_mentions_plural_output_set(text: str) -> bool:
+    if _TODO_FILE_CANDIDATE_PATTERN.search(text):
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            "chapter files",
+            "all chapters",
+            "chapters",
+            "files following",
+            "files with",
+            "output files",
+            "artifacts",
+            "documents",
+            "sections",
+            "pages",
+        )
+    )
+
+
+def _todo_targets_unplanned_artifact(item: str, planned_files: set[str]) -> bool:
+    if item in _SPECIAL_TODO_ITEMS:
+        return False
+
+    text = item.strip().lower()
+    if not text or not _contains_any(text, _MUTATION_STEP_HINTS):
+        return False
+
+    candidates = {
+        Path(match).name.lower()
+        for match in _TODO_FILE_CANDIDATE_PATTERN.findall(text)
+    }
+    if not candidates:
+        return False
+
+    return candidates.isdisjoint(planned_files)
+
+
+def _todo_describes_stale_discovery_after_artifacts_exist(item: str) -> bool:
+    text = item.strip().lower()
+    if not text or item in _SPECIAL_TODO_ITEMS:
+        return False
+    if _contains_any(text, _VERIFY_STEP_HINTS):
+        return False
+    if _contains_any(text, _MUTATION_STEP_HINTS):
+        return False
+    if _contains_any(text, _ARTIFACT_SET_COMPLETION_HINTS):
+        return False
+    return (
+        _contains_any(text, _READ_STEP_HINTS)
+        or _contains_any(text, _SEARCH_STEP_HINTS)
+        or _contains_any(text, _PARSE_STEP_HINTS)
+    )
+
+
+def _todo_describes_stale_creation_after_artifacts_exist(
+    item: str,
+    planned_files: set[str],
+) -> bool:
+    text = item.strip().lower()
+    if not text or item in _SPECIAL_TODO_ITEMS:
+        return False
+    if _contains_any(text, _VERIFY_STEP_HINTS):
+        return False
+    if not _contains_any(text, _CREATION_STEP_HINTS):
+        return False
+    candidates = {
+        Path(match).name.lower()
+        for match in _TODO_FILE_CANDIDATE_PATTERN.findall(text)
+    }
+    if not candidates:
+        return False
+    return not candidates.isdisjoint(planned_files)
+
+
+def _todo_describes_directory_content_creation(
+    item: str,
+    directories: list[Path],
+) -> bool:
+    text = item.strip().lower()
+    if not text or item in _SPECIAL_TODO_ITEMS:
+        return False
+    if not _contains_any(text, _CREATION_STEP_HINTS):
+        return False
+    if not any(
+        token in text
+        for token in (
+            "file",
+            "files",
+            "chapter",
+            "chapters",
+            "page",
+            "pages",
+            "artifact",
+            "artifacts",
+            "content",
+            "test",
+            "tests",
+        )
+    ):
+        return False
+
+    for directory in directories:
+        name = directory.name.lower()
+        tokens = {name}
+        if name.endswith("ies") and len(name) > 3:
+            tokens.add(f"{name[:-3]}y")
+        elif name.endswith("s") and len(name) > 3:
+            tokens.add(name[:-1])
+        if any(token in text for token in tokens):
+            return True
+    return False
+
+
+def _reopen_aggregate_completion_steps_for_missing_artifacts(
+    dod,
+    *,
+    project_root: Path,
+) -> None:
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    )
+    if not planned_targets:
+        return
+
+    if all_planned_artifacts_exist(dod, project_root=project_root, max_paths=12):
+        return
+
+    retained_completed: list[str] = []
+    reopened_pending: list[str] = []
+    for item in dod.completed_items:
+        text = item.strip().lower()
+        if item in _SPECIAL_TODO_ITEMS or not _todo_requires_complete_artifact_set(text):
+            retained_completed.append(item)
+            continue
+        reopened_pending.append(item)
+
+    if not reopened_pending:
+        return
+
+    dod.completed_items = retained_completed
+    dod.pending_items = list(dict.fromkeys(dod.pending_items + reopened_pending))
+
+
+def _reopen_directory_content_steps_for_incomplete_artifacts(
+    dod,
+    *,
+    project_root: Path,
+) -> None:
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    )
+    if not planned_targets:
+        return
+
+    incomplete_directories = [
+        target
+        for target, expect_directory in planned_targets
+        if expect_directory
+        and not planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=True,
+            project_root=project_root,
+        )
+    ]
+    if not incomplete_directories:
+        return
+
+    retained_completed: list[str] = []
+    reopened_pending: list[str] = []
+    for item in dod.completed_items:
+        if item in _SPECIAL_TODO_ITEMS:
+            retained_completed.append(item)
+            continue
+        if _todo_describes_directory_content_creation(item, incomplete_directories):
+            reopened_pending.append(item)
+            continue
+        retained_completed.append(item)
+
+    if not reopened_pending:
+        return
+
+    dod.completed_items = retained_completed
+    dod.pending_items = list(dict.fromkeys(dod.pending_items + reopened_pending))
+
+
+def reconcile_aggregate_completion_steps(
+    dod,
+    *,
+    project_root: Path | None,
+) -> None:
+    """Reopen aggregate completion steps when planned artifacts are still missing."""
+
+    if project_root is None:
+        return
+    _reopen_aggregate_completion_steps_for_missing_artifacts(
+        dod,
+        project_root=project_root,
     )
 
 

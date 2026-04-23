@@ -373,8 +373,6 @@ async def test_tool_batch_recovery_controller_includes_known_state_for_missing_f
     assert "Prefer edit/write/patch on the target file" in follow_up.content
     assert "04-variables.html" in follow_up.content
     assert "02-basic-syntax.html -> 02-setup.html" in follow_up.content
-    assert "02-setup.html = Chapter 2: Setting Up Fortran" in follow_up.content
-    assert "/Users/mfwolffe/Loader/guides/fortran/index.html" in follow_up.content
     assert any(event.type == "recovery" for event in events)
 
 
@@ -430,7 +428,6 @@ async def test_tool_batch_recovery_controller_suggests_known_sibling_files(
     assert follow_up is not None
     assert "## LIKELY FILE CANDIDATES" in follow_up.content
     assert "`04-variables.html`" in follow_up.content
-    assert "Chapter 4: Variables and Data Types" in follow_up.content
     assert "instead of retrying the missing path" in follow_up.content
 
 
@@ -506,17 +503,79 @@ async def test_tool_batch_recovery_controller_includes_current_html_target_excer
 
     assert follow_up is not None
     assert "## CURRENT TARGET EXCERPT" in follow_up.content
-    assert "Verified chapter inventory:" in follow_up.content
-    assert "<ul class=\"chapter-list\">" in follow_up.content
-    assert "chapters/02-setup.html = Chapter 2: Setting Up Your Environment" in follow_up.content
-    assert "Suggested replacement block:" in follow_up.content
-    assert '<li><a href="chapters/02-setup.html">Chapter 2: Setting Up Your Environment</a></li>' in follow_up.content
-    assert "Exact edit guidance:" in follow_up.content
-    assert "old_string: use the Current TOC block above exactly" in follow_up.content
-    assert "new_string: use the Suggested replacement block above exactly" in follow_up.content
-    assert "Do not rewrite the whole file." in follow_up.content
-    assert "Suggested edit call:" in follow_up.content
-    assert 'old_string="""' in follow_up.content
+    assert "- Target file:" in follow_up.content
+    assert "index.html" in follow_up.content
+    assert (
+        "Closest on-disk block to the requested patch:" in follow_up.content
+        or "Current file contents near the requested patch location:" in follow_up.content
+    )
+    assert '1 | <h2>Table of Contents</h2>' in follow_up.content
+    assert (
+        '3 |     <li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Fortran</a></li>'
+        in follow_up.content
+    )
+    assert "Use the exact on-disk text above" in follow_up.content
+    assert "Verified chapter inventory:" not in follow_up.content
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_includes_current_target_excerpt_for_edit_mismatch(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(tool_name: str, tool_args: dict, context: str) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(tool_name: str, tool_args: dict, result: str, expected: str = "") -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    guide = temp_dir / "guide.md"
+    guide.write_text(
+        "# Loader Guide\n"
+        "\n"
+        "## Overview\n"
+        "Loader helps agentic coding workflows.\n"
+        "\n"
+        "## Status\n"
+        "The runtime is stable.\n"
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    context.session.current_task = "Update guide.md to mention the runtime is resilient."
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="edit-guide",
+        name="edit",
+        arguments={
+            "file_path": str(guide),
+            "old_string": "## Runtime\nThe runtime is stable.\n",
+            "new_string": "## Runtime\nThe runtime is resilient.\n",
+        },
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="old_string not found in file. Make sure it matches exactly.",
+        is_error=True,
+    )
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=lambda event: _noop_emit(event),
+    )
+
+    assert follow_up is not None
+    assert "## CURRENT TARGET EXCERPT" in follow_up.content
+    assert "- Target file:" in follow_up.content
+    assert "guide.md" in follow_up.content
+    assert "Closest on-disk block to the requested edit:" in follow_up.content
+    assert "6 | ## Status" in follow_up.content
+    assert "7 | The runtime is stable." in follow_up.content
+    assert "replace the containing block in one edit" in follow_up.content
 
 
 @pytest.mark.asyncio
@@ -611,6 +670,94 @@ async def test_tool_batch_recovery_controller_scopes_known_state_to_active_targe
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_prioritizes_active_verification_repair_target(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    nginx_root = temp_dir / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    chapters.mkdir(parents=True)
+    index = nginx_root / "index.html"
+    index.write_text(
+        "<ul>\n"
+        '  <li><a href="chapters/01-introduction.html">Introduction</a></li>\n'
+        "</ul>\n"
+    )
+    (chapters / "01-getting-started.html").write_text("<h1>Getting Started</h1>\n")
+
+    repair_message = (
+        "[DEFINITION OF DONE CHECK FAILED]\n"
+        "Repair focus:\n"
+        f"- Fix the broken local reference `chapters/01-introduction.html` in `{index}`.\n"
+        f"- Immediate next step: edit `{index}`.\n"
+        f"- If the broken reference should remain, create `{chapters / '01-introduction.html'}`; "
+        "otherwise remove or replace `chapters/01-introduction.html`.\n"
+        "- Do not reread unrelated reference materials or restart discovery while this "
+        "concrete repair target is unresolved.\n"
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(role=Role.USER, content=repair_message),
+            Message(
+                role=Role.TOOL,
+                content=(
+                    "Observation [glob]: Result: "
+                    f"{chapters / '01-getting-started.html'}"
+                ),
+            ),
+        ],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    context.session.current_task = (  # type: ignore[attr-defined]
+        "Have a look at ~/Loader/guides/fortran and chapters/ within. Get a feel "
+        "for the structure and cadence of the guide. We are going to make an all "
+        "new equally thorough guide on how to use the nginx tool."
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="read-bad-path",
+        name="read",
+        arguments={"path": "~/nginx-guide/chapter1.html"},
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="File not found: ~/nginx-guide/chapter1.html",
+        is_error=True,
+    )
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=lambda event: _noop_emit(event),
+    )
+
+    assert follow_up is not None
+    assert "## ACTIVE REPAIR TARGET" in follow_up.content
+    assert str(index) in follow_up.content
+    assert "chapters/01-introduction.html" in follow_up.content
+    assert "Do not go back to the original reference guide" in follow_up.content
+    assert "Current task: Have a look at ~/Loader/guides/fortran" not in follow_up.content
+    assert "~/nginx-guide/chapter1.html" in follow_up.content
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_recovery_controller_reuses_context_for_related_missing_files(
     temp_dir: Path,
 ) -> None:
@@ -669,6 +816,71 @@ async def test_tool_batch_recovery_controller_reuses_context_for_related_missing
     assert len(existing.attempts) == 2
     assert "## Current attempt: 2/3" in follow_up.content
     assert "02-basic-syntax.html" in follow_up.content
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_uses_generic_loop_guidance(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    existing = RecoveryContext(
+        original_tool="read",
+        original_args={"file_path": "~/Loader/guides/nginx/chapters/01-introduction.html"},
+        max_retries=3,
+    )
+    existing.add_attempt(
+        "read",
+        {"file_path": "~/Loader/guides/nginx/chapters/01-introduction.html"},
+        "File not found: ~/Loader/guides/nginx/chapters/01-introduction.html",
+    )
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        recovery_context=existing,
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="read-missing-repeat",
+        name="read",
+        arguments={"file_path": "~/Loader/guides/nginx/chapters/01-introduction.html"},
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output="File not found: ~/Loader/guides/nginx/chapters/01-introduction.html",
+        is_error=True,
+    )
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=emit,
+    )
+
+    assert follow_up is not None
+    assert any(event.type == "error" for event in events)
+    error_event = next(event for event in events if event.type == "error")
+    assert "read a config file first" not in error_event.content
+    assert "verify the current result" in error_event.content
 
 
 @pytest.mark.asyncio

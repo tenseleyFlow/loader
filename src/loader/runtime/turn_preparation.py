@@ -160,6 +160,7 @@ class TurnPreparationController:
                 registry=self.context.registry,
                 rollback_plan=rollback_plan,
                 workspace_root=self.context.project_root,
+                session=self.context.session,
             ),
         )
         return executor, rollback_plan
