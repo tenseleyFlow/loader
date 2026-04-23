@@ -597,6 +597,66 @@ def test_empty_response_retry_points_at_next_output_file_when_planned_directory_
     )
 
 
+def test_empty_response_retry_treats_develop_index_step_as_mutation_work(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    chapter_one = chapters / "01-introduction.html"
+    index_path = guide_root / "index.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{index_path}`",
+                f"- `{chapters}/`",
+                f"- `{chapter_one}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.completed_items.extend(
+        [
+            "First, examine the existing Fortran guide structure to understand the format and depth",
+            "Create the new nginx guide directory structure",
+        ]
+    )
+    dod.pending_items.append("Develop the main index.html file with proper structure")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=2,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        "Resume with this exact next step: continue `Develop the main index.html file with proper structure`"
+        in decision.retry_message
+    )
+    assert "Prefer one concrete `write` call" in decision.retry_message
+    assert "Make the next response one concrete evidence-gathering tool call" not in decision.retry_message
+
+
 def test_empty_response_retry_points_at_declared_child_file_within_incomplete_output_directory(
     temp_dir: Path,
 ) -> None:

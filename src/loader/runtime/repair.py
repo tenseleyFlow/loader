@@ -31,6 +31,10 @@ _WORKING_NOTE_TOOL_NAMES = (
 _MUTATION_TODO_HINTS = (
     "create",
     "creating",
+    "develop",
+    "developing",
+    "build",
+    "building",
     "update",
     "updating",
     "edit",
