@@ -50,6 +50,52 @@ _DIRECTORY_MUTATION_HINTS = (
     "populate",
     "populating",
 )
+_READ_ONLY_FILE_CHANGE_HINTS = (
+    "read ",
+    "reading ",
+    "examine ",
+    "examining ",
+    "inspect ",
+    "inspecting ",
+    "analyze ",
+    "analyzing ",
+    "analyse ",
+    "analysing ",
+    "compare ",
+    "comparing ",
+    "review ",
+    "reviewing ",
+    "study ",
+    "studying ",
+    "look at ",
+    "looking at ",
+)
+_MUTATING_FILE_CHANGE_HINTS = (
+    "create",
+    "creating",
+    "write",
+    "writing",
+    "update",
+    "updating",
+    "edit",
+    "editing",
+    "patch",
+    "patching",
+    "fix",
+    "fixing",
+    "modify",
+    "modifying",
+    "add",
+    "adding",
+    "generate",
+    "generating",
+    "build",
+    "building",
+    "populate",
+    "populating",
+    "develop",
+    "developing",
+)
 
 
 @dataclass
@@ -957,6 +1003,8 @@ def _extract_file_change_path_literals(lines: list[str]) -> list[str]:
     directory_stack: list[tuple[int, str]] = []
 
     for line in lines:
+        if _line_describes_read_only_file_change(line):
+            continue
         indent = len(line) - len(line.lstrip(" "))
         while directory_stack and indent <= directory_stack[-1][0]:
             directory_stack.pop()
@@ -986,6 +1034,15 @@ def _extract_file_change_path_literals(lines: list[str]) -> list[str]:
             if contextual.endswith("/"):
                 directory_stack.append((indent, contextual))
     return paths
+
+
+def _line_describes_read_only_file_change(line: str) -> bool:
+    lowered = line.strip().lower()
+    if not lowered:
+        return False
+    if any(hint in lowered for hint in _MUTATING_FILE_CHANGE_HINTS):
+        return False
+    return any(hint in lowered for hint in _READ_ONLY_FILE_CHANGE_HINTS)
 
 
 def _looks_like_file_change_literal(value: str) -> bool:

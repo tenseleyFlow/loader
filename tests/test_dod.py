@@ -328,6 +328,36 @@ def test_collect_planned_artifact_targets_resolves_nested_file_changes_relative_
     ]
 
 
+def test_collect_planned_artifact_targets_ignores_read_only_reference_paths(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{tmp_path / 'Loader' / 'guides' / 'nginx' / 'index.html'}`",
+                f"- `{tmp_path / 'Loader' / 'guides' / 'nginx' / 'chapters'}/`",
+                "- Read `~/Loader/guides/fortran/index.html`",
+                "- Read files in `~/Loader/guides/fortran/chapters/`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create an nginx guide from a Fortran reference.")
+    dod.implementation_plan = str(implementation_plan)
+
+    targets = collect_planned_artifact_targets(dod, project_root=tmp_path)
+
+    assert targets == [
+        (tmp_path / "Loader" / "guides" / "nginx" / "index.html", False),
+        (tmp_path / "Loader" / "guides" / "nginx" / "chapters", True),
+    ]
+
+
 def test_all_planned_artifacts_exist_requires_file_contents_for_planned_output_directory(
     tmp_path: Path,
 ) -> None:
