@@ -171,3 +171,28 @@ def test_artifact_invalidation_treats_child_files_under_planned_directory_as_in_
     assert freshness.stale_plan is False
     assert freshness.recovery_strategy == WorkflowRecoveryStrategy.NONE.value
     assert "touched_files_outside_plan" not in freshness.reason_codes
+
+
+def test_artifact_invalidation_keeps_root_level_sibling_files_out_of_plan() -> None:
+    assessor = ArtifactInvalidationAssessor()
+
+    freshness = assessor.assess(
+        task_statement="Implement the runtime report artifact.",
+        clarify_text=None,
+        implementation_text=(
+            "# Implementation Plan\n"
+            "- Create `/tmp/session/planned.txt`.\n"
+        ),
+        verification_text=(
+            "# Verification Plan\n"
+            "## Acceptance Criteria\n"
+            "- `/tmp/session/planned.txt` exists.\n"
+        ),
+        acceptance_criteria=["/tmp/session/planned.txt exists."],
+        touched_files=["/tmp/session/notes.txt"],
+        last_verification_result=None,
+    )
+
+    assert freshness.stale_plan is True
+    assert freshness.recovery_strategy == WorkflowRecoveryStrategy.PLAN_REFRESH.value
+    assert "touched_files_outside_plan" in freshness.reason_codes

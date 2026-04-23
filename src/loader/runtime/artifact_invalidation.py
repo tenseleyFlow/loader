@@ -244,7 +244,12 @@ def _text_covers_path_reference(text: str, path: str) -> bool:
     ):
         return True
 
-    return any(anchor in canonical_text for anchor in _directory_reference_anchors(path))
+    directory_mentions = _extract_directory_mentions(text)
+    directory_suffixes = _directory_reference_suffixes(path)
+    return any(
+        mention and mention in directory_suffixes
+        for mention in (_canonical_path_reference(item.rstrip("/")) for item in directory_mentions)
+    )
 
 
 def _canonical_path_reference(value: str) -> str:
@@ -253,7 +258,7 @@ def _canonical_path_reference(value: str) -> str:
     return " ".join(normalized.split())
 
 
-def _directory_reference_anchors(path: str) -> tuple[str, ...]:
+def _directory_reference_suffixes(path: str) -> tuple[str, ...]:
     normalized = str(path).strip()
     if not normalized:
         return ()
@@ -298,6 +303,23 @@ def _extract_path_mentions(*texts: str | None) -> list[str]:
             continue
         for match in re.findall(r"[\w./-]+\.[a-z0-9]+", text):
             normalized = match.strip("`'\",.:;()[]{}")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            mentions.append(normalized)
+    return mentions
+
+
+def _extract_directory_mentions(*texts: str | None) -> list[str]:
+    mentions: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        if not text:
+            continue
+        for match in re.finditer(r"(?:~|/)?[\w./-]+/", text):
+            if match.end() < len(text) and re.match(r"[\w.-]", text[match.end()]):
+                continue
+            normalized = match.group(0).strip("`'\",.:;()[]{}")
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
