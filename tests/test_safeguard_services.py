@@ -457,6 +457,69 @@ def test_pre_action_validator_allows_chapter_write_with_future_target_declared_b
     assert result.valid is True
 
 
+def test_pre_action_validator_blocks_undeclared_chapter_file_creation_after_root_seed(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-introduction.html">Introduction</a>',
+                '<a href="chapters/02-installation.html">Installation</a>',
+                '<a href="chapters/03-configuration.html">Configuration</a>',
+                "",
+            ]
+        )
+    )
+    (chapters / "01-introduction.html").write_text("<html></html>\n")
+    (chapters / "02-installation.html").write_text("<html></html>\n")
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "09-monitoring.html"),
+            "content": "<html></html>\n",
+        },
+    )
+
+    assert result.valid is False
+    assert result.reason == "HTML file creation falls outside the current declared artifact set"
+    assert "09-monitoring.html" in result.suggestion
+
+
+def test_pre_action_validator_allows_declared_missing_chapter_file_creation(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-introduction.html">Introduction</a>',
+                '<a href="chapters/02-installation.html">Installation</a>',
+                '<a href="chapters/03-configuration.html">Configuration</a>',
+                "",
+            ]
+        )
+    )
+    (chapters / "01-introduction.html").write_text("<html></html>\n")
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "02-installation.html"),
+            "content": "<html></html>\n",
+        },
+    )
+
+    assert result.valid is True
+
+
 def test_pre_action_validator_blocks_chapter_write_with_undeclared_missing_sibling(
     tmp_path: Path,
 ) -> None:

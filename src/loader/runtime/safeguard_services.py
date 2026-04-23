@@ -719,6 +719,12 @@ class PreActionValidator:
         if not sibling_result.valid:
             return sibling_result
 
+        html_declared_file_result = self._validate_html_declared_file_creation(
+            str(file_path),
+        )
+        if not html_declared_file_result.valid:
+            return html_declared_file_result
+
         if content is None or (isinstance(content, str) and not content.strip()):
             return ValidationResult(
                 valid=True,
@@ -820,6 +826,12 @@ class PreActionValidator:
         if not sibling_result.valid:
             return sibling_result
 
+        html_declared_file_result = self._validate_html_declared_file_creation(
+            str(file_path),
+        )
+        if not html_declared_file_result.valid:
+            return html_declared_file_result
+
         has_hunks = isinstance(hunks, list) and bool(hunks)
         has_raw_patch = isinstance(raw_patch, str) and bool(raw_patch.strip())
         if not has_hunks and not has_raw_patch:
@@ -865,6 +877,61 @@ class PreActionValidator:
                 f"Reuse the confirmed numbered file in `{path.parent}` instead of "
                 f"creating an alternate filename for step {prefix}, for example: {preview}"
             ),
+            severity="error",
+        )
+
+    def _validate_html_declared_file_creation(
+        self,
+        file_path: str,
+    ) -> ValidationResult:
+        normalized = Path(file_path).expanduser()
+        if normalized.exists():
+            return ValidationResult(valid=True)
+        if normalized.suffix.lower() not in {".html", ".htm"}:
+            return ValidationResult(valid=True)
+        if normalized.name.lower() == "index.html":
+            return ValidationResult(valid=True)
+
+        root = self._resolve_html_artifact_root(normalized)
+        current_relative = self._relative_html_target(root, normalized)
+        if current_relative is None:
+            return ValidationResult(valid=True)
+
+        declared_targets, authoritative_root_graph = self._collect_declared_html_targets(
+            root,
+            normalized,
+        )
+        if not declared_targets and not authoritative_root_graph:
+            return ValidationResult(valid=True)
+        if current_relative in declared_targets:
+            return ValidationResult(valid=True)
+
+        declared_preview = ", ".join(sorted(declared_targets)[:3])
+        if authoritative_root_graph:
+            suggestion = (
+                "Keep new non-root HTML files within the root-declared artifact set and "
+                f"update the guide root before creating undeclared sibling pages, for example: {current_relative}"
+            )
+        else:
+            suggestion = (
+                "Keep new non-root HTML files within the current declared artifact set and "
+                f"avoid creating undeclared sibling pages, for example: {current_relative}"
+            )
+        if declared_preview:
+            suggestion += f". Already-declared local targets include: {declared_preview}"
+        declared_suggestions = self._suggest_declared_html_targets(
+            declared_targets,
+            [current_relative],
+        )
+        if declared_suggestions:
+            suggestion += (
+                ". Closest declared local targets include: "
+                + ", ".join(declared_suggestions[:3])
+            )
+        return ValidationResult(
+            valid=False,
+            reason="HTML file creation falls outside the current declared artifact set",
+            suggestion=suggestion,
             severity="error",
         )
 
