@@ -977,7 +977,8 @@ def test_empty_response_retry_omits_stale_aggregate_completed_work_when_artifact
 
     assert decision.retry_message is not None
     assert "Link all chapters together properly" not in decision.retry_message
-    assert "Create the main index.html file with proper structure" in decision.retry_message
+    assert "Continue from the exact next step below." in decision.retry_message
+    assert "Resume with this exact next step:" in decision.retry_message
 
 
 def test_empty_response_retry_names_next_file_from_observed_sibling_directory(

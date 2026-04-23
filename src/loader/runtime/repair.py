@@ -388,7 +388,7 @@ class ResponseRepairer:
 
     def _should_compact_empty_retry_message(self, dod: DefinitionOfDone) -> bool:
         completed_artifacts, missing_artifacts = self._planned_artifact_counts(dod)
-        return completed_artifacts >= 7 and missing_artifacts > 0
+        return completed_artifacts >= 3 and missing_artifacts > 0
 
     def _planned_artifact_counts(self, dod: DefinitionOfDone) -> tuple[int, int]:
         completed = 0
