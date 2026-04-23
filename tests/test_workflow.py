@@ -931,6 +931,39 @@ def test_advance_todos_from_tool_call_tracks_bash_directory_creation_progress() 
     assert "Create index.html for nginx guide" in dod.pending_items
 
 
+def test_advance_todos_from_tool_call_does_not_complete_develop_step_from_reference_read() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the existing fortran guide structure and content",
+                "active_form": "Working on: First, examine the existing fortran guide structure and content",
+                "status": "pending",
+            },
+            {
+                "content": "Develop the main index.html file for the nginx guide",
+                "active_form": "Working on: Develop the main index.html file for the nginx guide",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="read-reference-index",
+            name="read",
+            arguments={"file_path": "~/Loader/guides/fortran/index.html"},
+        ),
+    )
+    assert (
+        "First, examine the existing fortran guide structure and content"
+        in dod.completed_items
+    )
+    assert "Develop the main index.html file for the nginx guide" in dod.pending_items
+
+
 def test_advance_todos_from_tool_call_does_not_complete_linking_step_from_glob() -> None:
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     sync_todos_to_definition_of_done(

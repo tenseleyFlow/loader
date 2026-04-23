@@ -114,6 +114,10 @@ _PARSE_STEP_HINTS = (
 _MUTATION_STEP_HINTS = (
     "create",
     "creating",
+    "develop",
+    "developing",
+    "build",
+    "building",
     "update",
     "updating",
     "edit",
