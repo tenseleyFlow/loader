@@ -205,6 +205,108 @@ async def test_empty_response_retry_budget_resets_after_successful_turn(
 
 
 @pytest.mark.asyncio
+async def test_empty_response_retry_budget_resets_after_todowrite_turn(
+    temp_dir: Path,
+) -> None:
+    first = temp_dir / "index.html"
+    second = temp_dir / "chapters" / "01-introduction.html"
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="I'll create the guide index now.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(first),
+                            "content": "<html></html>\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="I'll create the first chapter now.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-2",
+                        name="write",
+                        arguments={
+                            "file_path": str(second),
+                            "content": "<html></html>\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(
+                content="I'll update the task list now.",
+                tool_calls=[
+                    ToolCall(
+                        id="todo-1",
+                        name="TodoWrite",
+                        arguments={
+                            "todos": [
+                                {
+                                    "content": "Create index.html",
+                                    "status": "completed",
+                                    "active_form": "Creating index.html",
+                                },
+                                {
+                                    "content": "Create 01-introduction.html",
+                                    "status": "completed",
+                                    "active_form": "Creating 01-introduction.html",
+                                },
+                                {
+                                    "content": "Create 02-installation.html",
+                                    "status": "pending",
+                                    "active_form": "Creating 02-installation.html",
+                                },
+                            ]
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="I'll create the second chapter now.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-3",
+                        name="write",
+                        arguments={
+                            "file_path": str(temp_dir / "chapters" / "02-installation.html"),
+                            "content": "<html></html>\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(content="The guide files are created."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create a small nginx guide.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert run.response.startswith("The guide files are created.")
+    retry_messages: list[str] = []
+    for invocation in backend.invocations:
+        for message in invocation.messages:
+            if message.role != Role.USER or "[EMPTY ASSISTANT RESPONSE]" not in message.content:
+                continue
+            if retry_messages and retry_messages[-1] == message.content:
+                continue
+            retry_messages.append(message.content)
+    assert len(retry_messages) >= 2
+    assert all("retry 2/2" not in message for message in retry_messages)
+    assert sum("retry 1/2" in message for message in retry_messages) >= 2
+
+
+@pytest.mark.asyncio
 async def test_repeated_empty_responses_fail_honestly_after_one_retry(
     temp_dir: Path,
 ) -> None:

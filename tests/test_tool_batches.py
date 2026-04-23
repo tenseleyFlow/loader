@@ -2885,6 +2885,138 @@ async def test_tool_batch_runner_todowrite_with_declared_child_targets_names_nex
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_names_concrete_pending_file_after_artifacts_exist(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to NGINX Tool</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation and Setup</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+    chapter_one.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Creating Chapter 2: Installation and Setup",
+        "Complete the requested work",
+    ]
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+
+    queued_messages: list[str] = []
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    tool_call = ToolCall(
+        id="todo-1",
+        name="TodoWrite",
+        arguments={
+            "todos": [
+                {
+                    "content": "Creating Chapter 2: Installation and Setup",
+                    "activeForm": "Creating Chapter 2: Installation and Setup",
+                    "status": "pending",
+                }
+            ]
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={
+                    "new_todos": [
+                        {
+                            "content": "Creating Chapter 2: Installation and Setup",
+                            "active_form": "Creating Chapter 2: Installation and Setup",
+                            "status": "pending",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Todo tracking is updated. Continue with the next pending item: `Creating Chapter 2: Installation and Setup`." in message
+    assert "Resume by creating `02-installation.html` now." in message
+    assert (
+        f"Prefer one `write` call for `{(chapters / '02-installation.html').resolve(strict=False)}` "
+        "instead of more rereads."
+        in message
+    )
+    assert "Make your next response the concrete mutation tool call itself" in message
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_todowrite_uses_observed_sibling_pattern_for_next_file(
     temp_dir: Path,
 ) -> None:

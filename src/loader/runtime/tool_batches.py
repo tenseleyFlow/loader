@@ -40,6 +40,7 @@ from .verification_observations import (
 from .workflow import (
     advance_todos_from_tool_call,
     effective_pending_todo_items,
+    infer_pending_todo_output_target,
     preferred_pending_todo_item,
     reconcile_aggregate_completion_steps,
     sync_todos_to_definition_of_done,
@@ -937,6 +938,33 @@ class ToolBatchRunner:
         )
         if missing_artifact is None:
             if next_pending and _todo_is_mutation_step(next_pending):
+                pending_target = infer_pending_todo_output_target(
+                    dod,
+                    next_pending,
+                    project_root=self.context.project_root,
+                )
+                if pending_target is not None:
+                    concrete_message = (
+                        "Todo tracking is updated. Continue with the next pending item: "
+                        f"`{next_pending}`. Resume by creating `{pending_target.name}` now. "
+                        f"Prefer one `write` call for `{pending_target}` instead of more rereads. "
+                    )
+                    if not pending_target.parent.exists():
+                        concrete_message += (
+                            "The `write` tool can create that file's parent directories "
+                            "automatically, so do the write in one step instead of stopping "
+                            "for a separate mkdir. "
+                        )
+                    concrete_message += (
+                        "Use the current output files as the source of truth, and do not "
+                        "reopen reference materials unless one specific fact required for "
+                        "that step is still unknown. Make your next response the concrete "
+                        "mutation tool call itself, not another bookkeeping-only turn. "
+                        "Perform the mutation now instead of spending another turn on "
+                        "planning, rereads, or verification."
+                    )
+                    self.context.queue_steering_message(concrete_message)
+                    return
                 self.context.queue_steering_message(
                     "Todo tracking is updated. Continue with the next pending item: "
                     f"`{next_pending}`. Use the current output files as the source of "

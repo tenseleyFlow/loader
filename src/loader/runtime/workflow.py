@@ -54,6 +54,7 @@ __all__ = [
     "effective_pending_todo_items",
     "enrich_clarify_brief_with_grounding",
     "extract_verification_commands_from_markdown",
+    "infer_pending_todo_output_target",
     "load_brief",
     "load_planning_artifacts",
     "merge_refreshed_todos_with_existing_scope",
@@ -887,6 +888,87 @@ def todo_file_candidates(item: str) -> list[Path]:
     return candidates
 
 
+def infer_pending_todo_output_target(
+    dod,
+    item: str,
+    *,
+    project_root: Path | None = None,
+) -> Path | None:
+    """Infer the concrete file path a pending todo is asking the model to mutate."""
+
+    root = project_root or Path.cwd()
+    candidates = todo_file_candidates(item)
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=root,
+        max_paths=12,
+    )
+
+    if candidates:
+        planned_files = {
+            target.name.lower(): target
+            for target, expect_directory in planned_targets
+            if not expect_directory
+        }
+        planned_directories = [
+            target
+            for target, expect_directory in planned_targets
+            if expect_directory
+        ]
+        touched_paths = [
+            Path(path)
+            for path in dod.touched_files
+            if str(path).strip()
+        ]
+
+        for candidate in candidates:
+            candidate_str = str(candidate)
+            if candidate.is_absolute() or candidate_str.startswith("~"):
+                return Path(candidate_str).expanduser()
+
+            planned_match = planned_files.get(candidate.name.lower())
+            if planned_match is not None:
+                return planned_match
+
+            for touched in reversed(touched_paths):
+                if touched.name.lower() == candidate.name.lower():
+                    continue
+                if candidate.suffix and touched.suffix.lower() != candidate.suffix.lower():
+                    continue
+                return touched.parent / candidate.name
+
+            for directory in planned_directories:
+                return directory / candidate.name
+
+    target_label = _normalize_pending_output_label(item)
+    if not target_label:
+        return None
+
+    matches: list[tuple[int, bool, Path]] = []
+    for html_file in _pending_item_html_sources(
+        dod,
+        project_root=root,
+    ):
+        try:
+            content = html_file.read_text()
+        except OSError:
+            continue
+        for href, link_text in _iter_local_html_links(content):
+            resolved = (html_file.parent / href).resolve(strict=False)
+            score = _pending_output_link_match_score(
+                target_label,
+                _normalize_pending_output_label(link_text),
+            )
+            if score <= 0:
+                continue
+            matches.append((score, not resolved.exists(), resolved))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[0], item[1], str(item[2])), reverse=True)
+    return matches[0][2]
+
+
 def preserve_task_grounded_acceptance_criteria(
     task_statement: str,
     *,
@@ -903,6 +985,96 @@ def preserve_task_grounded_acceptance_criteria(
         and _task_text_covers_requirement(task_statement, item)
     ]
     return list(dict.fromkeys([*grounded_existing, *refreshed_acceptance_criteria]))
+
+
+def _pending_item_html_sources(
+    dod,
+    *,
+    project_root: Path,
+) -> list[Path]:
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    )
+    html_sources: list[Path] = []
+    seen: set[str] = set()
+
+    for raw_path in dod.touched_files:
+        path = Path(raw_path).expanduser().resolve(strict=False)
+        if path.suffix.lower() not in {".html", ".htm"}:
+            continue
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        html_sources.append(path)
+
+    for target, expect_directory in planned_targets:
+        if expect_directory or target.suffix.lower() not in {".html", ".htm"}:
+            continue
+        key = str(target)
+        if key in seen:
+            continue
+        seen.add(key)
+        html_sources.append(target)
+
+    return html_sources
+
+
+def _normalize_pending_output_label(value: str) -> str:
+    text = " ".join(str(value).strip().split()).lower()
+    if not text:
+        return ""
+    text = re.sub(
+        r"^(?:working on:\s*)?(?:create|creating|write|writing|build|building|develop|developing)\s+",
+        "",
+        text,
+    )
+    text = re.sub(r"\bfor nginx guide\b", "", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _pending_output_link_match_score(todo_label: str, link_label: str) -> int:
+    if not todo_label or not link_label:
+        return 0
+    if todo_label == link_label:
+        return 3
+    if todo_label in link_label or link_label in todo_label:
+        return 2
+    todo_tokens = {token for token in todo_label.split() if len(token) > 2}
+    link_tokens = {token for token in link_label.split() if len(token) > 2}
+    if not todo_tokens or not link_tokens:
+        return 0
+    overlap = todo_tokens & link_tokens
+    if len(overlap) >= min(3, len(todo_tokens), len(link_tokens)):
+        return 1
+    return 0
+
+
+def _iter_local_html_links(content: str) -> list[tuple[str, str]]:
+    pattern = re.compile(
+        r"<a\b[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    links: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for href, inner_html in pattern.findall(content):
+        target = href.strip()
+        if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+            continue
+        trimmed_target = target.split("?", 1)[0].split("#", 1)[0]
+        if Path(trimmed_target).suffix.lower() not in {".html", ".htm"}:
+            continue
+        label = re.sub(r"<[^>]+>", " ", inner_html)
+        label = " ".join(label.split())
+        key = (trimmed_target, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append((trimmed_target, label))
+    return links
 
 
 def merge_refreshed_todos_with_existing_scope(
