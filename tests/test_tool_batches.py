@@ -2885,6 +2885,143 @@ async def test_tool_batch_runner_todowrite_with_declared_child_targets_names_nex
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_uses_observed_sibling_pattern_for_next_file(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    reference_chapters = temp_dir / "fortran" / "chapters"
+    reference_chapters.mkdir(parents=True)
+    (reference_chapters / "01-introduction.html").write_text("<h1>Introduction</h1>\n")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    index_path.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Write the introduction chapter",
+        "Complete the requested work",
+    ]
+    dod.touched_files.append(str(index_path))
+
+    queued_messages: list[str] = []
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="read-ref-1",
+                        name="read",
+                        arguments={"file_path": str(reference_chapters / "01-introduction.html")},
+                    )
+                ],
+            )
+        ],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    tool_call = ToolCall(
+        id="todo-observed-1",
+        name="TodoWrite",
+        arguments={
+            "todos": [
+                {
+                    "content": "Write the introduction chapter",
+                    "activeForm": "Writing the introduction chapter",
+                    "status": "pending",
+                }
+            ]
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={
+                    "new_todos": [
+                        {
+                            "content": "Write the introduction chapter",
+                            "active_form": "Writing the introduction chapter",
+                            "status": "pending",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Continue with the next pending item: `Write the introduction chapter`." in message
+    assert "Resume by creating `01-introduction.html` now." in message
+    assert (
+        "It mirrors the observed filename pattern from another `chapters/` directory "
+        "you already inspected."
+        in message
+    )
+    assert "01-introduction.html` instead of more rereads." in message
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_bookkeeping_note_with_missing_artifact_requeues_resume_step(
     temp_dir: Path,
 ) -> None:

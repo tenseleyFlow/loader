@@ -18,7 +18,7 @@ from .dod import (
     collect_planned_artifact_targets,
     derive_verification_commands,
     ensure_active_verification_attempt,
-    infer_next_declared_html_output_file,
+    infer_next_output_file,
     is_state_mutating_tool_call,
     planned_artifact_target_satisfied,
     record_successful_tool_call,
@@ -365,6 +365,7 @@ class ToolBatchRunner:
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
                     project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
                 )
                 + " Do not switch into review or consistency-check mode until the missing artifact exists."
             )
@@ -375,6 +376,7 @@ class ToolBatchRunner:
                 mutation_suffix = _missing_artifact_resume_suffix(
                     missing_artifact,
                     project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
                 )
                 if not mutation_suffix:
                     mutation_suffix = (
@@ -404,6 +406,7 @@ class ToolBatchRunner:
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
                     project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
                 ).strip()
             )
             return
@@ -594,6 +597,7 @@ class ToolBatchRunner:
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
             )
             + f" Stay within the current output roots under {roots_preview}"
             + " and finish that artifact before reopening older reference materials."
@@ -818,6 +822,7 @@ class ToolBatchRunner:
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
                     project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
                 )
                 + " Do not switch into review or consistency-check mode until the missing artifact exists."
             )
@@ -828,6 +833,7 @@ class ToolBatchRunner:
             mutation_suffix = _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
             )
             if not mutation_suffix:
                 mutation_suffix = (
@@ -922,6 +928,7 @@ class ToolBatchRunner:
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
                     project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
                 )
                 + " No TodoWrite, no verification, no rereads until that artifact exists."
             )
@@ -932,6 +939,7 @@ class ToolBatchRunner:
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
             )
             + todo_refresh
             + " Do not move to verification, final confirmation, or TodoWrite-only "
@@ -1039,6 +1047,7 @@ class ToolBatchRunner:
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
             )
             + todo_refresh
             + " Do not spend the next turn on TodoWrite alone, bookkeeping notes, "
@@ -1096,6 +1105,7 @@ class ToolBatchRunner:
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
             )
             + todo_refresh
             + " Do not spend the next turn on additional notes, rediscovery, "
@@ -1170,6 +1180,7 @@ def _missing_artifact_resume_suffix(
     missing_artifact: tuple[Path, bool] | None,
     *,
     project_root: Path,
+    messages: list[Any] | None = None,
 ) -> str:
     if missing_artifact is None:
         return ""
@@ -1179,14 +1190,23 @@ def _missing_artifact_resume_suffix(
     if expect_directory and not label.endswith("/"):
         label += "/"
     if expect_directory:
-        next_output_file = infer_next_declared_html_output_file(
+        next_output_file, next_output_source = infer_next_output_file(
             target=target,
             project_root=project_root,
+            messages=list(messages or []),
         )
         if next_output_file is not None:
+            guidance_origin = (
+                f"It is the next missing declared output under `{label}`."
+                if next_output_source == "declared"
+                else (
+                    "It mirrors the observed filename pattern from another "
+                    f"`{label}` directory you already inspected."
+                )
+            )
             guidance = (
-                f" Resume by creating `{next_output_file.name}` now. It is the next missing "
-                f"declared output under `{label}`. Prefer one `write` call for "
+                f" Resume by creating `{next_output_file.name}` now. {guidance_origin} "
+                f"Prefer one `write` call for "
                 f"`{next_output_file}` instead of more rereads."
             )
             if not next_output_file.parent.exists():

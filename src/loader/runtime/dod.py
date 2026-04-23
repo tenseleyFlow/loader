@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from ..llm.base import ToolCall
+from ..llm.base import Message, ToolCall
 from ..tools.shell_tools import BashTool
 from .verification_observations import VerificationAttempt, verification_attempt_id
 
@@ -742,6 +742,35 @@ def infer_next_declared_html_output_file(
     return missing_targets[0] if missing_targets else None
 
 
+def infer_next_output_file(
+    *,
+    target: Path,
+    project_root: Path,
+    messages: list[Message] | None = None,
+) -> tuple[Path | None, str | None]:
+    """Infer the next concrete output file for a planned output directory.
+
+    Returns a tuple of `(path, source)` where source is one of:
+    - `"declared"` when inferred from the current artifact graph
+    - `"observed"` when mirrored from an already-inspected sibling directory
+    """
+
+    declared_target = infer_next_declared_html_output_file(
+        target=target,
+        project_root=project_root,
+    )
+    if declared_target is not None:
+        return declared_target, "declared"
+
+    observed_target = _infer_next_observed_output_file(
+        target=target,
+        messages=messages or [],
+    )
+    if observed_target is not None:
+        return observed_target, "observed"
+    return None, None
+
+
 def collect_missing_declared_html_output_files(
     *,
     target: Path,
@@ -784,6 +813,49 @@ def collect_missing_declared_html_output_files(
             seen.add(key)
             missing_targets.append(resolved_target)
     return tuple(missing_targets)
+
+
+def _infer_next_observed_output_file(
+    *,
+    target: Path,
+    messages: list[Message],
+) -> Path | None:
+    normalized_target = target.resolve(strict=False)
+    if normalized_target.suffix:
+        return None
+
+    existing_names = {
+        path.name
+        for path in normalized_target.glob("*.html")
+        if path.is_file()
+    }
+    candidate_names: set[str] = set()
+    for message in messages:
+        for tool_call in getattr(message, "tool_calls", []) or []:
+            if tool_call.name != "read":
+                continue
+            raw_path = str(tool_call.arguments.get("file_path", "")).strip()
+            if not raw_path:
+                continue
+            observed_path = Path(raw_path).expanduser().resolve(strict=False)
+            if observed_path.suffix.lower() not in {".html", ".htm"}:
+                continue
+            if observed_path.name.lower() == "index.html":
+                continue
+            if observed_path.parent.name != normalized_target.name:
+                continue
+            try:
+                observed_path.relative_to(normalized_target)
+                continue
+            except ValueError:
+                pass
+            if observed_path.name in existing_names:
+                continue
+            candidate_names.add(observed_path.name)
+
+    if not candidate_names:
+        return None
+    return normalized_target / sorted(candidate_names)[0]
 
 
 def _build_planned_artifact_verification_commands(

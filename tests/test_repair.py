@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from loader.llm.base import ToolCall
+from loader.llm.base import Message, Role, ToolCall
 from loader.runtime.context import RuntimeContext
 from loader.runtime.dod import create_definition_of_done
 from loader.runtime.permissions import (
@@ -909,3 +909,79 @@ def test_empty_response_retry_omits_stale_aggregate_completed_work_when_artifact
     assert decision.retry_message is not None
     assert "Link all chapters together properly" not in decision.retry_message
     assert "Create the main index.html file with proper structure" in decision.retry_message
+
+
+def test_empty_response_retry_names_next_file_from_observed_sibling_directory(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    reference_chapters = temp_dir / "fortran" / "chapters"
+    reference_chapters.mkdir(parents=True)
+    (reference_chapters / "01-introduction.html").write_text("<h1>Introduction</h1>\n")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    index_path.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    dod.pending_items.append("Write the introduction chapter")
+    context.session.append(
+        Message(
+            role=Role.ASSISTANT,
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="read-ref-1",
+                    name="read",
+                    arguments={"file_path": str(reference_chapters / "01-introduction.html")},
+                )
+            ],
+        )
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Next missing planned artifact: `chapters/`" in decision.retry_message
+    assert "Next observed output pattern under `chapters/`: `01-introduction.html`" in decision.retry_message
+    assert (
+        "Resume with this exact next step: continue `Write the introduction chapter` "
+        "by creating `01-introduction.html`."
+        in decision.retry_message
+    )
+    assert (
+        "It mirrors the observed filename pattern from another `chapters/` directory "
+        "you already inspected."
+        in decision.retry_message
+    )

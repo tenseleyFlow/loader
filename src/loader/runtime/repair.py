@@ -11,7 +11,7 @@ from .context import RuntimeContext
 from .dod import (
     DefinitionOfDone,
     collect_planned_artifact_targets,
-    infer_next_declared_html_output_file,
+    infer_next_output_file,
     planned_artifact_target_satisfied,
 )
 from .parsing import parse_tool_calls
@@ -430,14 +430,20 @@ class ResponseRepairer:
             (None, False),
         )
         if first_missing_target is not None and first_missing_is_directory:
-            next_output_file = infer_next_declared_html_output_file(
+            next_output_file, next_output_source = infer_next_output_file(
                 target=first_missing_target,
                 project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
             )
             if next_output_file is not None:
-                lines.append(
+                next_output_detail = (
                     "Next declared output under "
-                    f"{self._format_artifact_label(first_missing_target, expect_directory=True)}: "
+                    if next_output_source == "declared"
+                    else "Next observed output pattern under "
+                )
+                lines.append(
+                    next_output_detail
+                    + f"{self._format_artifact_label(first_missing_target, expect_directory=True)}: "
                     f"{self._format_artifact_label(next_output_file, expect_directory=False)}"
                 )
         if len(missing_labels) > 1:
@@ -509,9 +515,10 @@ class ResponseRepairer:
                 expect_directory=expect_directory,
             )
             if expect_directory:
-                next_output_file = infer_next_declared_html_output_file(
+                next_output_file, next_output_source = infer_next_output_file(
                     target=target,
                     project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
                 )
                 if next_output_file is not None:
                     next_output_label = self._format_artifact_label(
@@ -530,6 +537,11 @@ class ResponseRepairer:
                         ]
                     lines.append(
                         f"It is the next missing declared output under {label}."
+                        if next_output_source == "declared"
+                        else (
+                            "It mirrors the observed filename pattern from another "
+                            f"{label} directory you already inspected."
+                        )
                     )
                     lines.append(
                         f"Prefer one `write` call for `{next_output_file}` before more research."
