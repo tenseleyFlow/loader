@@ -1505,6 +1505,67 @@ async def test_late_reference_drift_hook_blocks_reference_reads_after_artifacts_
 
 
 @pytest.mark.asyncio
+async def test_late_reference_drift_hook_allows_verification_reference_reads_after_artifacts_exist(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    dod_store = DefinitionOfDoneStore(temp_dir)
+    dod = create_definition_of_done("Create a multi-file guide from a reference")
+    dod.status = "in_progress"
+    plan_path = temp_dir / "implementation.md"
+    plan_path.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{temp_dir / 'guide'}`",
+                f"- `{temp_dir / 'guide' / 'chapters'}`",
+                f"- `{temp_dir / 'guide' / 'index.html'}`",
+                f"- `{temp_dir / 'guide' / 'chapters' / '01-getting-started.html'}`",
+                f"- `{temp_dir / 'guide' / 'chapters' / '02-installation.html'}`",
+                "",
+            ]
+        )
+    )
+    dod.implementation_plan = str(plan_path)
+    guide_dir = temp_dir / "guide" / "chapters"
+    guide_dir.mkdir(parents=True, exist_ok=True)
+    (temp_dir / "guide" / "index.html").write_text("index")
+    (guide_dir / "01-getting-started.html").write_text("one")
+    (guide_dir / "02-installation.html").write_text("two")
+    dod_path = dod_store.save(dod)
+    session = FakeSession(active_dod_path=str(dod_path), messages=[])
+    hook = LateReferenceDriftHook(
+        dod_store=dod_store,
+        project_root=temp_dir,
+        session=session,
+    )
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="read-verify-1",
+                name="read",
+                arguments={"file_path": str(temp_dir / "reference" / "index.html")},
+            ),
+            tool=registry.get("read"),
+            registry=registry,
+            permission_policy=policy,
+            source="verification",
+        )
+    )
+
+    assert result.decision == HookDecision.CONTINUE
+    assert result.message is None
+
+
+@pytest.mark.asyncio
 async def test_late_reference_drift_hook_blocks_excessive_post_build_self_audits(
     temp_dir: Path,
 ) -> None:

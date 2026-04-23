@@ -830,6 +830,8 @@ class LateReferenceDriftHook(BaseToolHook):
     async def pre_tool_use(self, context: HookContext) -> HookResult:
         if context.tool_call.name not in _OBSERVATION_TOOLS:
             return HookResult()
+        if context.source == "verification":
+            return HookResult()
 
         completed_scope = self._completed_artifact_scope()
         if completed_scope is not None:
