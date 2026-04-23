@@ -15,7 +15,11 @@ from .dod import (
     planned_artifact_target_satisfied,
 )
 from .parsing import parse_tool_calls
-from .workflow import preferred_pending_todo_item, reconcile_aggregate_completion_steps
+from .workflow import (
+    preferred_pending_todo_item,
+    reconcile_aggregate_completion_steps,
+    todo_file_candidates,
+)
 
 _SPECIAL_DOD_ITEMS = {
     "Complete the requested work",
@@ -307,9 +311,8 @@ class ResponseRepairer:
                     "Confirmed completed work: " + "; ".join(completed[-2:])
                 )
 
-            next_pending = preferred_pending_todo_item(
+            next_pending = self._preferred_resume_pending_item(
                 dod,
-                project_root=self.context.project_root,
                 missing_artifact=next(
                     (
                         artifact
@@ -490,9 +493,8 @@ class ResponseRepairer:
             ),
             None,
         )
-        next_pending = preferred_pending_todo_item(
+        next_pending = self._preferred_resume_pending_item(
             dod,
-            project_root=self.context.project_root,
             missing_artifact=next_missing_artifact,
         )
         if (
@@ -519,6 +521,40 @@ class ResponseRepairer:
                 lines.append(
                     "Do not restart from scratch unless one specific missing fact blocks "
                     "that discovery step."
+            )
+            return lines
+
+        inferred_pending_target = (
+            self._infer_pending_item_output_target(dod, next_pending)
+            if next_pending
+            else None
+        )
+        if next_pending and inferred_pending_target is not None:
+            inferred_label = self._format_artifact_label(
+                inferred_pending_target,
+                expect_directory=False,
+            )
+            lines = [
+                "Resume with this exact next step: continue "
+                f"`{next_pending}` by creating {inferred_label}."
+            ]
+            lines.append(
+                f"Prefer one `write(content=...)` call for `{inferred_pending_target}` before more research."
+            )
+            if completed_artifacts >= 2:
+                lines.append(
+                    "Follow the same one-file-at-a-time mutation pattern that already "
+                    "created the confirmed output files."
+                )
+            if retry_number >= 2:
+                lines.append(
+                    "Do not return another working note or empty response; emit the "
+                    "concrete mutation tool call now."
+                )
+            else:
+                lines.append(
+                    "Do not restart discovery unless one specific missing fact blocks "
+                    "that file write."
                 )
             return lines
 
@@ -638,6 +674,86 @@ class ResponseRepairer:
                 )
             return lines
         return []
+
+    def _infer_pending_item_output_target(
+        self,
+        dod: DefinitionOfDone,
+        item: str,
+    ) -> Path | None:
+        candidates = todo_file_candidates(item)
+        if not candidates:
+            return None
+
+        planned_targets = collect_planned_artifact_targets(
+            dod,
+            project_root=self.context.project_root,
+            max_paths=12,
+        )
+        planned_files = {
+            target.name.lower(): target
+            for target, expect_directory in planned_targets
+            if not expect_directory
+        }
+        planned_directories = [
+            target
+            for target, expect_directory in planned_targets
+            if expect_directory
+        ]
+        touched_paths = [
+            Path(path)
+            for path in dod.touched_files
+            if str(path).strip()
+        ]
+
+        for candidate in candidates:
+            candidate_str = str(candidate)
+            if candidate.is_absolute() or candidate_str.startswith("~"):
+                return Path(candidate_str).expanduser()
+
+            planned_match = planned_files.get(candidate.name.lower())
+            if planned_match is not None:
+                return planned_match
+
+            for touched in reversed(touched_paths):
+                if touched.name.lower() == candidate.name.lower():
+                    continue
+                if candidate.suffix and touched.suffix.lower() != candidate.suffix.lower():
+                    continue
+                return touched.parent / candidate.name
+
+            for directory in planned_directories:
+                return directory / candidate.name
+
+        return None
+
+    def _preferred_resume_pending_item(
+        self,
+        dod: DefinitionOfDone,
+        *,
+        missing_artifact: tuple[Path, bool] | None,
+    ) -> str | None:
+        preferred = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=missing_artifact,
+        )
+        if preferred:
+            return preferred
+
+        explicit_file_items = [
+            item
+            for item in dod.pending_items
+            if item not in _SPECIAL_DOD_ITEMS
+            and _todo_is_mutation_step(item)
+            and todo_file_candidates(item)
+        ]
+        if explicit_file_items:
+            return explicit_file_items[0]
+
+        return next(
+            (item for item in dod.pending_items if item not in _SPECIAL_DOD_ITEMS),
+            None,
+        )
 
     @staticmethod
     def _format_artifact_label(path: Path, *, expect_directory: bool) -> str:

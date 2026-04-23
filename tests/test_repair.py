@@ -318,14 +318,17 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
 
     assert decision.should_continue is True
     assert decision.retry_message is not None
-    assert "Resume with this exact next step: create `index.html`." in decision.retry_message
     assert (
-        "The `write` tool can create that file's parent directories automatically"
+        "Resume with this exact next step: continue `Write main index.html for nginx guide` "
+        "by creating `index.html`."
         in decision.retry_message
     )
     assert (
-        "Shape the next response as one concrete `write(file_path=..., content=...)` "
-        "tool call for that exact path."
+        f"Prefer one `write(content=...)` call for `{index_path}` before more research."
+        in decision.retry_message
+    )
+    assert (
+        "Do not restart discovery unless one specific missing fact blocks that file write."
         in decision.retry_message
     )
 
@@ -653,7 +656,7 @@ def test_empty_response_retry_treats_develop_index_step_as_mutation_work(
         "Resume with this exact next step: continue `Develop the main index.html file with proper structure`"
         in decision.retry_message
     )
-    assert "Prefer one concrete `write` call" in decision.retry_message
+    assert "Prefer one `write(content=...)` call" in decision.retry_message
     assert "Make the next response one concrete evidence-gathering tool call" not in decision.retry_message
 
 
@@ -722,6 +725,72 @@ def test_empty_response_retry_points_at_declared_child_file_within_incomplete_ou
     assert "It is the next missing declared output under `chapters/`." in decision.retry_message
     assert "Prefer one `write` call for `" in decision.retry_message
     assert "introduction.html` before more research." in decision.retry_message
+
+
+def test_empty_response_retry_infers_concrete_file_from_pending_todo_after_broad_artifacts_exist(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+    dod.completed_items.extend(
+        [
+            "Create index.html for nginx guide",
+            "Create first chapter file (01-introduction.html)",
+        ]
+    )
+    dod.pending_items.append("Create second chapter file (02-installation.html)")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=2,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        "Resume with this exact next step: continue `Create second chapter file "
+        "(02-installation.html)` by creating `02-installation.html`."
+        in decision.retry_message
+    )
+    assert (
+        f"Prefer one `write(content=...)` call for `{chapters / '02-installation.html'}` "
+        "before more research."
+        in decision.retry_message
+    )
+    assert "Do not return another working note or empty response" in decision.retry_message
 
 
 def test_empty_response_retry_fails_after_extended_late_stage_budget_is_exhausted(

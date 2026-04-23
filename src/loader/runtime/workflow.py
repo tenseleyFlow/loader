@@ -61,6 +61,7 @@ __all__ = [
     "preferred_pending_todo_item",
     "reconcile_aggregate_completion_steps",
     "sync_todos_to_definition_of_done",
+    "todo_file_candidates",
 ]
 
 VERIFICATION_SEPARATOR = "<<<VERIFICATION>>>"
@@ -863,6 +864,25 @@ def preferred_pending_todo_item(
             continue
         return item
     return pending_items[0]
+
+
+def todo_file_candidates(item: str) -> list[Path]:
+    """Extract explicit file references from a todo item in source order."""
+
+    if item in _SPECIAL_TODO_ITEMS:
+        return []
+    seen: set[str] = set()
+    candidates: list[Path] = []
+    for match in _TODO_FILE_CANDIDATE_PATTERN.findall(item.strip()):
+        normalized = match.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(Path(normalized))
+    return candidates
 
 
 def preserve_task_grounded_acceptance_criteria(
