@@ -118,6 +118,8 @@ _MUTATION_STEP_HINTS = (
     "creating",
     "develop",
     "developing",
+    "populate",
+    "populating",
     "build",
     "building",
     "update",
