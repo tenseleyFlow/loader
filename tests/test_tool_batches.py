@@ -3069,6 +3069,66 @@ async def test_tool_batch_runner_hands_off_noop_toc_edit_when_file_is_already_va
     assert queued_messages == []
 
 
+def test_tool_batch_runner_blocked_noop_edit_nudge_stays_on_active_repair_target(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    repair_target = temp_dir / "guide" / "chapters" / "04-basic-usage.html"
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    "Repair focus:\n"
+                    f"- Fix the broken local reference `05-advanced-topics.html` in `{repair_target}`.\n"
+                    f"- Immediate next step: edit `{repair_target}`.\n"
+                    f"- If the broken reference should remain, create `{temp_dir / 'guide' / 'chapters' / '05-advanced-topics.html'}`; otherwise remove or replace `05-advanced-topics.html`.\n"
+                ),
+            )
+        ],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    runner._queue_blocked_html_edit_nudge(
+        ToolCall(
+            id="edit-1",
+            name="edit",
+            arguments={
+                "file_path": str(repair_target),
+                "old_string": "same",
+                "new_string": "same",
+            },
+        ),
+        "[Blocked - old_string and new_string are identical - no change would occur] Suggestion: Provide different old and new strings",
+    )
+
+    assert queued
+    assert str(repair_target) in queued[0]
+    assert "no on-disk change" in queued[0]
+    assert "replace the surrounding block" in queued[0]
+    assert "Do not reopen unrelated reference materials" in queued[0]
+
+
 async def _noop_emit(event: AgentEvent) -> None:
     return None
 

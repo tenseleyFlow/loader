@@ -655,8 +655,30 @@ class ToolBatchRunner:
     def _queue_blocked_html_edit_nudge(self, tool_call: ToolCall, event_content: str) -> None:
         """Keep blocked edit feedback generic; avoid task-class-specific steering."""
 
-        _ = tool_call, event_content
-        return
+        if tool_call.name != "edit":
+            return
+        if "old_string and new_string are identical - no change would occur" not in event_content:
+            return
+
+        repair = extract_active_repair_context(self.context.session.messages)
+        if repair is None:
+            return
+
+        target = (
+            str(tool_call.arguments.get("file_path") or "").strip() or repair.artifact_path
+        )
+        if not target:
+            return
+
+        self.context.queue_steering_message(
+            "That edit would make no on-disk change. "
+            f"Stay on `{target}` and use the current file contents as the source of truth. "
+            "Read the exact current text you need to change, then submit one `edit`, `patch`, "
+            "or `write` call that actually changes the file. "
+            "If a narrow single-line edit keeps bouncing, replace the surrounding block in one "
+            "mutation instead of retrying the same no-op edit. "
+            "Do not reopen unrelated reference materials while this concrete repair target is unresolved."
+        )
 
     async def _record_successful_execution(
         self,
