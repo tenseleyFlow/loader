@@ -274,3 +274,39 @@ class TestFormatToolResult:
         assert "write" in result
         assert "Error" in result
         assert "Permission denied" in result
+
+    def test_format_todowrite_compacts_payload(self):
+        result = format_tool_result(
+            "TodoWrite",
+            json.dumps(
+                {
+                    "old_todos": [
+                        {
+                            "content": "Create index.html",
+                            "active_form": "Creating index.html",
+                            "status": "completed",
+                        }
+                    ],
+                    "new_todos": [
+                        {
+                            "content": "Create index.html",
+                            "active_form": "Creating index.html",
+                            "status": "completed",
+                        },
+                        {
+                            "content": "Create installation chapter (02-installation.html)",
+                            "active_form": "Creating installation chapter",
+                            "status": "pending",
+                        },
+                    ],
+                    "verification_nudge_needed": False,
+                    "store_path": "/tmp/.loader/todos/active.json",
+                }
+            ),
+        )
+        assert "Observation [TodoWrite]: Result: updated todo list" in result
+        assert "1 completed" in result
+        assert "1 pending" in result
+        assert "next pending: Create installation chapter (02-installation.html)" in result
+        assert "old_todos" not in result
+        assert "new_todos" not in result

@@ -407,5 +407,44 @@ def parse_tool_calls(
 def format_tool_result(tool_name: str, result: str, is_error: bool = False) -> str:
     """Format a tool result for inclusion in conversation."""
 
+    if tool_name == "TodoWrite" and not is_error:
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            todos = payload.get("new_todos", [])
+            if isinstance(todos, list):
+                completed = 0
+                in_progress = 0
+                pending = 0
+                next_pending: str | None = None
+                for item in todos:
+                    if not isinstance(item, dict):
+                        continue
+                    status = str(item.get("status", "")).strip().lower()
+                    content = str(item.get("content", "")).strip()
+                    if status == "completed":
+                        completed += 1
+                    elif status == "in_progress":
+                        in_progress += 1
+                        if next_pending is None and content:
+                            next_pending = content
+                    else:
+                        pending += 1
+                        if next_pending is None and content:
+                            next_pending = content
+                summary_parts = [
+                    "updated todo list",
+                    f"{completed} completed",
+                    f"{in_progress} in progress",
+                    f"{pending} pending",
+                ]
+                if next_pending:
+                    summary_parts.append(f"next pending: {next_pending}")
+                if payload.get("verification_nudge_needed") is True:
+                    summary_parts.append("verification should be reviewed next")
+                result = "; ".join(summary_parts)
+
     prefix = "Error" if is_error else "Result"
     return f"Observation [{tool_name}]: {prefix}: {result}"
