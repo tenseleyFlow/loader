@@ -239,6 +239,29 @@ class ResponseRepairer:
         retry_number: int,
         max_empty_retries: int,
     ) -> str:
+        if dod is not None and self._should_compact_empty_retry_message(dod):
+            compact_lines: list[str] = []
+            compact_lines.extend(self._planned_artifact_progress_lines(dod)[:2])
+            compact_lines.extend(
+                self._next_step_resume_lines(
+                    dod,
+                    retry_number=retry_number,
+                )
+            )
+            return "\n".join(
+                [
+                    "[EMPTY ASSISTANT RESPONSE]",
+                    (
+                        "Your last response was empty "
+                        f"(retry {retry_number}/{max_empty_retries}). Continue from the "
+                        "exact next step below."
+                    ),
+                    *[f"- {line}" for line in compact_lines],
+                    "",
+                    "Respond with that concrete mutation tool call now. Do not return an empty response.",
+                ]
+            )
+
         progress_lines: list[str] = []
         if dod is not None:
             reconcile_aggregate_completion_steps(
@@ -342,6 +365,10 @@ class ResponseRepairer:
         if completed_artifacts < 3 or missing_artifacts == 0:
             return base_max_empty_retries
         return base_max_empty_retries + _LATE_STAGE_EMPTY_RETRY_EXTRA
+
+    def _should_compact_empty_retry_message(self, dod: DefinitionOfDone) -> bool:
+        completed_artifacts, missing_artifacts = self._planned_artifact_counts(dod)
+        return completed_artifacts >= 7 and missing_artifacts > 0
 
     def _planned_artifact_counts(self, dod: DefinitionOfDone) -> tuple[int, int]:
         completed = 0

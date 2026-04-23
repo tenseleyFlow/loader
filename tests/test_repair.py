@@ -459,6 +459,87 @@ def test_empty_response_retry_budget_extends_for_late_stage_multi_artifact_progr
     assert "Follow the same one-file-at-a-time mutation pattern" in decision.retry_message
 
 
+def test_empty_response_retry_uses_compact_prompt_after_substantial_progress(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    context.session.messages.append(
+        SimpleNamespace(
+            content=(
+                "Observation [notepad_write_working]: Result: "
+                "- [2026-04-23T19:00:00Z] Creating fifth chapter file: Advanced features"
+            )
+        )
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_three = chapters / "03-first-website.html"
+    chapter_four = chapters / "04-configuration-basics.html"
+    chapter_five = chapters / "05-advanced-features.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+    chapter_three.write_text("<h1>Three</h1>\n")
+    chapter_four.write_text("<h1>Four</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                f"- `{chapter_three}`",
+                f"- `{chapter_four}`",
+                f"- `{chapter_five}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend(
+        [str(index_path), str(chapter_one), str(chapter_two), str(chapter_three)]
+    )
+    dod.completed_items.extend(
+        [
+            "Create the directory structure for the new nginx guide",
+            "Create the main index.html file with proper structure",
+        ]
+    )
+    dod.pending_items.append("Create each chapter file in sequence")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=3,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Continue from the exact next step below." in decision.retry_message
+    assert "Latest working note:" not in decision.retry_message
+    assert "Confirmed completed work:" not in decision.retry_message
+    assert "Next pending item:" not in decision.retry_message
+
+
 def test_empty_response_retry_points_at_next_output_file_when_planned_directory_is_empty(
     temp_dir: Path,
 ) -> None:

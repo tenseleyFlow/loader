@@ -913,6 +913,19 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
+        if _late_stage_missing_artifact_build(
+            dod,
+            project_root=self.context.project_root,
+        ):
+            self.context.queue_steering_message(
+                f"Confirmed progress: {current_label} is now recorded."
+                + _missing_artifact_resume_suffix(
+                    missing_artifact,
+                    project_root=self.context.project_root,
+                )
+                + " No TodoWrite, no verification, no rereads until that artifact exists."
+            )
+            return
         self.context.queue_steering_message(
             f"Confirmed progress: {current_label} is now recorded."
             " One explicitly planned artifact is still missing."
@@ -1127,6 +1140,30 @@ def _next_missing_planned_artifact(
         ):
             return target, expect_directory
     return None
+
+
+def _late_stage_missing_artifact_build(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> bool:
+    completed = 0
+    missing = 0
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=expect_directory,
+            project_root=project_root,
+        ):
+            completed += 1
+        else:
+            missing += 1
+    return completed >= 7 and missing > 0
 
 
 def _missing_artifact_resume_suffix(

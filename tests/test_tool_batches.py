@@ -2184,6 +2184,126 @@ async def test_tool_batch_runner_large_plan_does_not_claim_completion_early(
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_uses_compact_missing_artifact_nudge_after_substantial_progress(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_paths = [
+        chapters / "01-introduction.html",
+        chapters / "02-installation.html",
+        chapters / "03-configuration.html",
+        chapters / "04-basic-usage.html",
+        chapters / "05-advanced-features.html",
+    ]
+    for path in (index_path, *chapter_paths[:4]):
+        path.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                *[f"- `{path}`" for path in chapter_paths],
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a thorough nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend(str(path) for path in (index_path, *chapter_paths[:4]))
+    dod.completed_items.extend(
+        [
+            "Create the nginx directory structure",
+            "Create the main index.html file with proper structure",
+        ]
+    )
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create each chapter file with appropriate content",
+                "active_form": "Creating each chapter file with appropriate content",
+                "status": "pending",
+            }
+        ],
+    )
+    tool_call = ToolCall(
+        id="write-chapter-04",
+        name="write",
+        arguments={
+            "file_path": str(chapter_paths[3]),
+            "content": "<html>updated</html>\n",
+        },
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output=f"Successfully wrote {chapter_paths[3]}",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Resume by creating `05-advanced-features.html` now." in message
+    assert "No TodoWrite, no verification, no rereads until that artifact exists." in message
+    assert "refresh `TodoWrite`" not in message
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_todowrite_with_missing_artifact_requeues_exact_resume_step(
     temp_dir: Path,
 ) -> None:
