@@ -962,38 +962,54 @@ class PreActionValidator:
             return ValidationResult(valid=True)
 
         root = self._resolve_html_artifact_root(normalized)
-        existing_html_files = [
-            path
-            for path in root.rglob("*.html")
-            if path.is_file() and path != normalized
-        ]
-        if not existing_html_files:
+        current_relative = self._relative_html_target(root, normalized)
+        declared_targets, authoritative_root_graph = self._collect_declared_html_targets(root, normalized)
+        if not declared_targets and not authoritative_root_graph:
             return ValidationResult(valid=True)
 
-        declared_targets = self._collect_declared_html_targets(root, existing_html_files)
-        undeclared_missing: list[str] = []
+        undeclared_targets: list[str] = []
         for href, resolved in local_targets:
-            if resolved.exists():
-                continue
             relative_target = self._relative_html_target(root, resolved)
             if relative_target is None:
                 continue
-            if relative_target not in declared_targets and href not in undeclared_missing:
-                undeclared_missing.append(href)
+            if relative_target == "index.html" or relative_target == current_relative:
+                continue
+            if relative_target in declared_targets:
+                continue
+            if not authoritative_root_graph and resolved.exists():
+                continue
+            if href not in undeclared_targets:
+                undeclared_targets.append(href)
 
-        if not undeclared_missing:
+        if not undeclared_targets:
             return ValidationResult(valid=True)
 
-        preview = ", ".join(undeclared_missing[:3])
-        if len(undeclared_missing) > 3:
+        preview = ", ".join(undeclared_targets[:3])
+        if len(undeclared_targets) > 3:
             preview += ", ..."
         declared_preview = ", ".join(sorted(declared_targets)[:3])
-        suggestion = (
-            "Keep non-root HTML pages within the current declared local-link set and "
-            f"avoid introducing new missing sibling targets, for example fix: {preview}"
-        )
+        if authoritative_root_graph:
+            suggestion = (
+                "Keep non-root HTML pages within the root-declared local-link set and "
+                f"avoid introducing new sibling targets that the guide root does not declare, "
+                f"for example fix: {preview}"
+            )
+        else:
+            suggestion = (
+                "Keep non-root HTML pages within the current declared local-link set and "
+                f"avoid introducing new missing sibling targets, for example fix: {preview}"
+            )
         if declared_preview:
             suggestion += f". Already-declared local targets include: {declared_preview}"
+        declared_suggestions = self._suggest_declared_html_targets(
+            declared_targets,
+            undeclared_targets,
+        )
+        if declared_suggestions:
+            suggestion += (
+                ". Closest declared local targets include: "
+                + ", ".join(declared_suggestions[:3])
+            )
         return ValidationResult(
             valid=False,
             reason="HTML page introduces new local targets outside the current declared artifact set",
@@ -1024,8 +1040,27 @@ class PreActionValidator:
     def _collect_declared_html_targets(
         self,
         root: Path,
-        html_files: list[Path],
-    ) -> set[str]:
+        current_file: Path,
+    ) -> tuple[set[str], bool]:
+        root_index = root / "index.html"
+        if root_index.exists():
+            try:
+                root_text = root_index.read_text()
+            except OSError:
+                root_text = ""
+            declared_from_root = {
+                relative_target
+                for _href, resolved in self._collect_local_html_targets(root_index, root_text)
+                if (relative_target := self._relative_html_target(root, resolved)) is not None
+            }
+            if declared_from_root:
+                return declared_from_root, True
+
+        html_files = [
+            path
+            for path in root.rglob("*.html")
+            if path.is_file() and path != current_file
+        ]
         declared: set[str] = set()
         for html_file in html_files:
             try:
@@ -1036,7 +1071,7 @@ class PreActionValidator:
                 relative_target = self._relative_html_target(root, resolved)
                 if relative_target is not None:
                     declared.add(relative_target)
-        return declared
+        return declared, False
 
     def _resolve_html_artifact_root(self, file_path: Path) -> Path:
         for candidate in [file_path.parent, *file_path.parents]:
@@ -1111,6 +1146,53 @@ class PreActionValidator:
                 )
                 if candidate is not None and candidate not in suggestions:
                     suggestions.append(candidate)
+
+        return suggestions
+
+    def _suggest_declared_html_targets(
+        self,
+        declared_targets: set[str],
+        undeclared_targets: list[str],
+    ) -> list[str]:
+        suggestions: list[str] = []
+        available = sorted(declared_targets)
+        available_names = [Path(candidate).name for candidate in available]
+
+        for href in undeclared_targets:
+            href_name = Path(href).name
+            chapter_match = re.match(r"(\d+)[-_]", href_name)
+            preferred = available
+            preferred_names = available_names
+            if chapter_match is not None:
+                prefix = f"{chapter_match.group(1)}-"
+                filtered = [
+                    candidate
+                    for candidate in available
+                    if Path(candidate).name.startswith(prefix)
+                ]
+                if filtered:
+                    preferred = filtered
+                    preferred_names = [Path(candidate).name for candidate in filtered]
+
+            matched_names = get_close_matches(
+                href_name,
+                preferred_names,
+                n=1,
+                cutoff=0.0,
+            )
+            if not matched_names:
+                continue
+
+            candidate = next(
+                (
+                    declared
+                    for declared in preferred
+                    if Path(declared).name == matched_names[0]
+                ),
+                None,
+            )
+            if candidate is not None and candidate not in suggestions:
+                suggestions.append(candidate)
 
         return suggestions
 

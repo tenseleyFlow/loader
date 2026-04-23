@@ -496,6 +496,81 @@ def test_pre_action_validator_blocks_chapter_write_with_undeclared_missing_sibli
     assert "advanced.html" in result.suggestion
 
 
+def test_pre_action_validator_blocks_chapter_write_with_existing_but_undeclared_sibling(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-introduction.html">Introduction</a>',
+                '<a href="chapters/02-installation.html">Installation</a>',
+                '<a href="chapters/03-basic-configuration.html">Basic Configuration</a>',
+                '<a href="chapters/04-advanced-configuration.html">Advanced Configuration</a>',
+                "",
+            ]
+        )
+    )
+    (chapters / "01-introduction.html").write_text('<a href="02-installation.html">Next</a>\n')
+    (chapters / "02-installation.html").write_text(
+        '<a href="03-basic-configuration.html">Next</a>\n'
+    )
+    (chapters / "04-locations-and-servers.html").write_text(
+        '<a href="05-static-content.html">Next</a>\n'
+    )
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "03-basic-configuration.html"),
+            "content": '<a href="04-locations-and-servers.html">Next</a>\n',
+        },
+    )
+
+    assert result.valid is False
+    assert (
+        result.reason
+        == "HTML page introduces new local targets outside the current declared artifact set"
+    )
+    assert "04-locations-and-servers.html" in result.suggestion
+    assert "04-advanced-configuration.html" in result.suggestion
+
+
+def test_pre_action_validator_allows_chapter_write_with_root_declared_sibling_and_index_link(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-introduction.html">Introduction</a>',
+                '<a href="chapters/02-installation.html">Installation</a>',
+                '<a href="chapters/03-basic-configuration.html">Basic Configuration</a>',
+                "",
+            ]
+        )
+    )
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "02-installation.html"),
+            "content": (
+                '<a href="../index.html">Back to guide</a>\n'
+                '<a href="03-basic-configuration.html">Next</a>\n'
+            ),
+        },
+    )
+
+    assert result.valid is True
+
+
 def test_pre_action_validator_blocks_missing_numbered_read_with_existing_sibling(
     tmp_path: Path,
 ) -> None:
