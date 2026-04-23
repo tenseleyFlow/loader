@@ -682,11 +682,14 @@ class LateReferenceDriftHook(BaseToolHook):
     """Block reopening old reference paths once planned artifacts are well underway."""
 
     _MIN_COMPLETED_FILES = 3
+    _MAX_COMPLETED_SCOPE_OBSERVATIONS = 4
 
     def __init__(self, *, dod_store: DefinitionOfDoneStore, project_root: Path, session: Any) -> None:
         self.dod_store = dod_store
         self.project_root = project_root
         self.session = session
+        self._completed_scope_key: tuple[str, ...] | None = None
+        self._completed_scope_observation_count = 0
 
     async def pre_tool_use(self, context: HookContext) -> HookResult:
         if context.tool_call.name not in _OBSERVATION_TOOLS:
@@ -698,6 +701,26 @@ class LateReferenceDriftHook(BaseToolHook):
             if not observed_paths:
                 return HookResult()
             if all(path_within_allowed_roots(path, completed_scope) for path in observed_paths):
+                self._sync_completed_scope_state(completed_scope)
+                if (
+                    context.source != "verification"
+                    and self._completed_scope_observation_count
+                    >= self._MAX_COMPLETED_SCOPE_OBSERVATIONS
+                ):
+                    roots_preview = ", ".join(f"`{root}`" for root in completed_scope[:2])
+                    if len(completed_scope) > 2:
+                        roots_preview += ", ..."
+                    return HookResult(
+                        decision=HookDecision.DENY,
+                        message=(
+                            "[Blocked - post-build audit loop: all explicitly planned artifacts "
+                            "already exist and the current output set has already been inspected "
+                            "several times.] Suggestion: move to verification now or make one "
+                            "concrete edit for a specific mismatch inside "
+                            f"{roots_preview} instead of more rereads."
+                        ),
+                        terminal_state="blocked",
+                    )
                 return HookResult()
 
             roots_preview = ", ".join(f"`{root}`" for root in completed_scope[:2])
@@ -786,6 +809,30 @@ class LateReferenceDriftHook(BaseToolHook):
             return None
         return missing_label, tuple(planned_roots)
 
+    async def post_tool_use(self, context: HookContext) -> HookResult:
+        if context.tool_call.name in _MUTATION_TOOLS:
+            self._reset_completed_scope_state()
+            return HookResult()
+        if context.tool_call.name not in _OBSERVATION_TOOLS:
+            return HookResult()
+        if context.source == "verification":
+            return HookResult()
+
+        completed_scope = self._completed_artifact_scope()
+        if completed_scope is None:
+            self._reset_completed_scope_state()
+            return HookResult()
+
+        observed_paths = _extract_observation_paths(context.tool_call)
+        if not observed_paths:
+            return HookResult()
+        if not all(path_within_allowed_roots(path, completed_scope) for path in observed_paths):
+            return HookResult()
+
+        self._sync_completed_scope_state(completed_scope)
+        self._completed_scope_observation_count += 1
+        return HookResult()
+
     def _completed_artifact_scope(self) -> tuple[str, ...] | None:
         dod_path = getattr(self.session, "active_dod_path", None)
         if not dod_path:
@@ -815,6 +862,17 @@ class LateReferenceDriftHook(BaseToolHook):
             seen_roots.add(root)
             planned_roots.append(root)
         return tuple(planned_roots)
+
+    def _sync_completed_scope_state(self, completed_scope: tuple[str, ...]) -> None:
+        normalized = tuple(sorted(completed_scope))
+        if self._completed_scope_key == normalized:
+            return
+        self._completed_scope_key = normalized
+        self._completed_scope_observation_count = 0
+
+    def _reset_completed_scope_state(self) -> None:
+        self._completed_scope_key = None
+        self._completed_scope_observation_count = 0
 
 
 class HookManager:

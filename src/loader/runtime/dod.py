@@ -266,6 +266,13 @@ def derive_verification_commands(
 
     if html_link_command:
         _append_unique(commands, html_link_command)
+    html_quality_command = _derive_multi_page_html_quality_command(
+        dod,
+        project_root=project_root,
+        task_statement=task_statement,
+    )
+    if html_quality_command:
+        _append_unique(commands, html_quality_command)
     for command in _build_planned_artifact_verification_commands(planned_artifact_targets):
         _append_unique(commands, command)
 
@@ -570,6 +577,62 @@ def _derive_local_html_link_verification_command(
     return _build_local_html_link_verification_command(resolved_paths)
 
 
+def _derive_multi_page_html_quality_command(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    task_statement: str,
+) -> str | None:
+    html_paths = _multi_page_html_quality_paths(dod, project_root=project_root)
+    if len(html_paths) < 4:
+        return None
+    if not _task_requires_substantive_html_guide_quality(task_statement):
+        return None
+
+    path_literals = ", ".join(repr(str(path)) for path in html_paths)
+    return "\n".join(
+        [
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "import re",
+            "",
+            f"paths = [{path_literals}]",
+            "tag_pattern = re.compile(r'<[^>]+>')",
+            "content_block_pattern = re.compile(r'<(p|li|pre|code|section|article|table|h2|h3|h4)\\b', re.IGNORECASE)",
+            "issues = []",
+            "checked = 0",
+            "for raw_path in paths:",
+            "    path = Path(raw_path)",
+            "    if not path.exists():",
+            "        continue",
+            "    checked += 1",
+            "    text = path.read_text()",
+            "    plain = tag_pattern.sub(' ', text)",
+            "    plain = re.sub(r'\\s+', ' ', plain).strip()",
+            "    content_blocks = len(content_block_pattern.findall(text))",
+            "    has_h1 = bool(re.search(r'<h1\\b', text, re.IGNORECASE))",
+            "    minimum_chars = 180 if path.name.lower() == 'index.html' else 220",
+            "    minimum_blocks = 2 if path.name.lower() == 'index.html' else 3",
+            "    if not has_h1:",
+            "        issues.append(f'{path}: missing <h1>')",
+            "    if len(plain) < minimum_chars:",
+            "        issues.append(",
+            "            f'{path}: thin content ({len(plain)} text chars, expected at least {minimum_chars})'",
+            "        )",
+            "    if content_blocks < minimum_blocks:",
+            "        issues.append(",
+            "            f'{path}: insufficient structured content ({content_blocks} blocks, expected at least {minimum_blocks})'",
+            "        )",
+            "if issues:",
+            "    print('HTML guide content quality issues:')",
+            "    print('\\n'.join(issues))",
+            "    raise SystemExit(1)",
+            "print(f'Checked HTML guide content quality across {checked} file(s).')",
+            "PY",
+        ]
+    )
+
+
 def collect_planned_artifact_targets(
     dod: DefinitionOfDone,
     *,
@@ -733,6 +796,51 @@ def _build_planned_artifact_verification_commands(
         )
         _append_unique(commands, command)
     return commands
+
+
+def _multi_page_html_quality_paths(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> list[Path]:
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=24,
+    )
+    planned_html = [
+        target
+        for target, expect_directory in planned_targets
+        if not expect_directory and target.suffix.lower() in {".html", ".htm"}
+    ]
+    if planned_html:
+        return planned_html
+
+    touched_html = []
+    for path_str in dod.touched_files:
+        path = Path(path_str)
+        effective_path = path if path.is_absolute() else (project_root / path)
+        if effective_path.suffix.lower() in {".html", ".htm"}:
+            touched_html.append(effective_path)
+    return list(dict.fromkeys(touched_html))
+
+
+def _task_requires_substantive_html_guide_quality(task_statement: str) -> bool:
+    lowered = task_statement.lower()
+    if not any(token in lowered for token in ("guide", "tutorial", "documentation", "docs")):
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "thorough",
+            "comprehensive",
+            "detailed",
+            "equally",
+            "cadence",
+            "chapter",
+            "chapters",
+        )
+    )
 
 
 def _extract_markdown_section_lines(markdown: str, heading: str) -> list[str]:

@@ -223,6 +223,44 @@ def test_derive_verification_commands_adds_planned_artifact_existence_checks(
     assert f"test -d {tmp_path / 'docs/chapters'}" in commands
 
 
+def test_derive_verification_commands_adds_html_guide_quality_check_for_thorough_guides(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    chapters = docs / "chapters"
+    chapters.mkdir(parents=True)
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{docs / 'index.html'}`",
+                f"- `{chapters / '01-introduction.html'}`",
+                f"- `{chapters / '02-installation.html'}`",
+                f"- `{chapters / '03-configuration.html'}`",
+                f"- `{chapters / '04-troubleshooting.html'}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done(
+        "Create an equally thorough multi-page HTML guide with chapter files."
+    )
+    dod.implementation_plan = str(implementation_plan)
+
+    commands = derive_verification_commands(
+        dod,
+        project_root=tmp_path,
+        task_statement=dod.task_statement,
+        supplement_existing=True,
+    )
+
+    assert any("HTML guide content quality issues:" in command for command in commands)
+
+
 def test_collect_planned_artifact_targets_ignores_prose_path_fragments_in_refreshed_plan(
     tmp_path: Path,
 ) -> None:
