@@ -294,6 +294,40 @@ def test_collect_planned_artifact_targets_ignores_prose_path_fragments_in_refres
     assert targets == [(touched_index, False)]
 
 
+def test_collect_planned_artifact_targets_resolves_nested_file_changes_relative_to_parent_directory(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{tmp_path / 'guide' / 'index.html'}`",
+                f"- Create chapter files in `{tmp_path / 'guide' / 'chapters'}/`:",
+                "  - `00-introduction.html`",
+                "  - `01-installation.html`",
+                "  - `02-configuration.html`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-page guide.")
+    dod.implementation_plan = str(implementation_plan)
+
+    targets = collect_planned_artifact_targets(dod, project_root=tmp_path)
+
+    assert targets == [
+        (tmp_path / "guide" / "index.html", False),
+        (tmp_path / "guide" / "chapters", True),
+        (tmp_path / "guide" / "chapters" / "00-introduction.html", False),
+        (tmp_path / "guide" / "chapters" / "01-installation.html", False),
+        (tmp_path / "guide" / "chapters" / "02-configuration.html", False),
+    ]
+
+
 def test_all_planned_artifacts_exist_requires_file_contents_for_planned_output_directory(
     tmp_path: Path,
 ) -> None:
@@ -325,7 +359,38 @@ def test_all_planned_artifacts_exist_requires_file_contents_for_planned_output_d
 
     assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
 
-    (chapters / "01-getting-started.html").write_text("<h1>Intro</h1>\n")
+
+def test_all_planned_artifacts_exist_respects_nested_file_change_entries(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{tmp_path / 'guide' / 'index.html'}`",
+                f"- Create chapter files in `{tmp_path / 'guide' / 'chapters'}/`:",
+                "  - `00-introduction.html`",
+                "  - `01-installation.html`",
+                "",
+            ]
+        )
+    )
+
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text("<html></html>\n")
+    (chapters / "00-introduction.html").write_text("<html></html>\n")
+
+    dod = create_definition_of_done("Create a multi-page guide.")
+    dod.implementation_plan = str(implementation_plan)
+
+    assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
+
+    (chapters / "01-installation.html").write_text("<h1>Installation</h1>\n")
 
     assert all_planned_artifacts_exist(dod, project_root=tmp_path) is True
 

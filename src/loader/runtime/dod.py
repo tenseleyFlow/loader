@@ -648,7 +648,9 @@ def collect_planned_artifact_targets(
 
     markdown = plan_path.read_text()
     file_change_lines = _extract_markdown_section_lines(markdown, "File Changes")
-    candidates = _extract_planned_path_literals(file_change_lines or markdown.splitlines())
+    candidates = _extract_file_change_path_literals(file_change_lines)
+    if not candidates:
+        candidates = _extract_planned_path_literals(file_change_lines or markdown.splitlines())
     if not candidates:
         confirmed_progress_lines = _extract_markdown_section_lines(
             markdown,
@@ -875,6 +877,58 @@ def _extract_planned_path_literals(lines: list[str]) -> list[str]:
             seen.add(normalized)
             paths.append(normalized)
     return paths
+
+
+def _extract_file_change_path_literals(lines: list[str]) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    directory_stack: list[tuple[int, str]] = []
+
+    for line in lines:
+        indent = len(line) - len(line.lstrip(" "))
+        while directory_stack and indent <= directory_stack[-1][0]:
+            directory_stack.pop()
+
+        backticked = re.findall(r"`([^`]+)`", line)
+        if backticked:
+            candidates = backticked
+        else:
+            stripped = line.strip()
+            stripped = re.sub(r"^[-*+]\s+", "", stripped)
+            stripped = re.sub(r"^\d+[.)]\s+", "", stripped)
+            stripped = stripped.strip("`'\",.:;()[]{}")
+            candidates = [stripped] if _looks_like_path_literal(stripped) else []
+
+        for candidate in candidates:
+            normalized = candidate.strip("`'\",.:;()[]{}")
+            if not _looks_like_file_change_literal(normalized):
+                continue
+            contextual = _apply_directory_context_to_file_change(
+                normalized,
+                directory_stack[-1][1] if directory_stack else None,
+            )
+            if contextual in seen:
+                continue
+            seen.add(contextual)
+            paths.append(contextual)
+            if contextual.endswith("/"):
+                directory_stack.append((indent, contextual))
+    return paths
+
+
+def _looks_like_file_change_literal(value: str) -> bool:
+    return _looks_like_path_literal(value) or bool(Path(value).suffix)
+
+
+def _apply_directory_context_to_file_change(
+    value: str,
+    directory_context: str | None,
+) -> str:
+    if not directory_context:
+        return value
+    if value.startswith(("~/", "./", "../", "/")) or "/" in value:
+        return value
+    return directory_context.rstrip("/") + "/" + value
 
 
 def _resolve_declared_html_artifact_root(
