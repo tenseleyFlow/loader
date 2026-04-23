@@ -682,7 +682,7 @@ class ResponseRepairer:
     ) -> Path | None:
         candidates = todo_file_candidates(item)
         if not candidates:
-            return None
+            return self._infer_pending_item_target_from_html_graph(dod, item)
 
         planned_targets = collect_planned_artifact_targets(
             dod,
@@ -725,6 +725,67 @@ class ResponseRepairer:
                 return directory / candidate.name
 
         return None
+
+    def _infer_pending_item_target_from_html_graph(
+        self,
+        dod: DefinitionOfDone,
+        item: str,
+    ) -> Path | None:
+        target_label = _normalize_pending_output_label(item)
+        if not target_label:
+            return None
+
+        html_files = self._pending_item_html_sources(dod)
+        matches: list[tuple[int, bool, Path]] = []
+        for html_file in html_files:
+            try:
+                content = html_file.read_text()
+            except OSError:
+                continue
+            for href, link_text in _iter_local_html_links(html_file, content):
+                resolved = (html_file.parent / href).resolve(strict=False)
+                score = _pending_output_link_match_score(
+                    target_label,
+                    _normalize_pending_output_label(link_text),
+                )
+                if score <= 0:
+                    continue
+                matches.append((score, not resolved.exists(), resolved))
+
+        if not matches:
+            return None
+        matches.sort(key=lambda item: (item[0], item[1], str(item[2])), reverse=True)
+        return matches[0][2]
+
+    def _pending_item_html_sources(self, dod: DefinitionOfDone) -> list[Path]:
+        planned_targets = collect_planned_artifact_targets(
+            dod,
+            project_root=self.context.project_root,
+            max_paths=12,
+        )
+        html_sources: list[Path] = []
+        seen: set[str] = set()
+
+        for raw_path in dod.touched_files:
+            path = Path(raw_path).expanduser().resolve(strict=False)
+            if path.suffix.lower() not in {".html", ".htm"}:
+                continue
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            html_sources.append(path)
+
+        for target, expect_directory in planned_targets:
+            if expect_directory or target.suffix.lower() not in {".html", ".htm"}:
+                continue
+            key = str(target)
+            if key in seen:
+                continue
+            seen.add(key)
+            html_sources.append(target)
+
+        return html_sources
 
     def _preferred_resume_pending_item(
         self,
@@ -794,3 +855,58 @@ def _todo_is_mutation_step(label: str) -> bool:
 def _todo_is_consistency_review_step(label: str) -> bool:
     lowered = label.lower()
     return any(token in lowered for token in _CONSISTENCY_REVIEW_HINTS)
+
+
+def _normalize_pending_output_label(value: str) -> str:
+    text = " ".join(str(value).strip().split()).lower()
+    if not text:
+        return ""
+    text = re.sub(
+        r"^(?:working on:\s*)?(?:create|creating|write|writing|build|building|develop|developing)\s+",
+        "",
+        text,
+    )
+    text = re.sub(r"\bfor nginx guide\b", "", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _pending_output_link_match_score(todo_label: str, link_label: str) -> int:
+    if not todo_label or not link_label:
+        return 0
+    if todo_label == link_label:
+        return 3
+    if todo_label in link_label or link_label in todo_label:
+        return 2
+    todo_tokens = {token for token in todo_label.split() if len(token) > 2}
+    link_tokens = {token for token in link_label.split() if len(token) > 2}
+    if not todo_tokens or not link_tokens:
+        return 0
+    overlap = todo_tokens & link_tokens
+    if len(overlap) >= min(3, len(todo_tokens), len(link_tokens)):
+        return 1
+    return 0
+
+
+def _iter_local_html_links(file_path: Path, content: str) -> list[tuple[str, str]]:
+    pattern = re.compile(
+        r"<a\b[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    links: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for href, inner_html in pattern.findall(content):
+        target = href.strip()
+        if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+            continue
+        trimmed_target = target.split("?", 1)[0].split("#", 1)[0]
+        if Path(trimmed_target).suffix.lower() not in {".html", ".htm"}:
+            continue
+        label = re.sub(r"<[^>]+>", " ", inner_html)
+        label = " ".join(label.split())
+        key = (trimmed_target, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append((trimmed_target, label))
+    return links

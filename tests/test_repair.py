@@ -722,9 +722,11 @@ def test_empty_response_retry_points_at_declared_child_file_within_incomplete_ou
         "by creating `introduction.html`."
         in decision.retry_message
     )
-    assert "It is the next missing declared output under `chapters/`." in decision.retry_message
-    assert "Prefer one `write` call for `" in decision.retry_message
-    assert "introduction.html` before more research." in decision.retry_message
+    assert (
+        f"Prefer one `write(content=...)` call for `{(chapters / 'introduction.html').resolve(strict=False)}` "
+        "before more research."
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_infers_concrete_file_from_pending_todo_after_broad_artifacts_exist(
@@ -791,6 +793,81 @@ def test_empty_response_retry_infers_concrete_file_from_pending_todo_after_broad
         in decision.retry_message
     )
     assert "Do not return another working note or empty response" in decision.retry_message
+
+
+def test_empty_response_retry_maps_title_style_todo_to_html_graph_target(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to NGINX Tool</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation and Setup</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+    chapter_one.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+    dod.completed_items.extend(
+        [
+            "Create index.html for nginx guide",
+            "Create Chapter 1: Introduction to NGINX Tool",
+        ]
+    )
+    dod.pending_items.append("Creating Chapter 2: Installation and Setup")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=2,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        "Resume with this exact next step: continue `Creating Chapter 2: Installation and Setup` "
+        "by creating `02-installation.html`."
+        in decision.retry_message
+    )
+    assert (
+        f"Prefer one `write(content=...)` call for `{(chapters / '02-installation.html').resolve(strict=False)}` "
+        "before more research."
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_fails_after_extended_late_stage_budget_is_exhausted(
