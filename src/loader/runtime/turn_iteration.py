@@ -263,12 +263,22 @@ class TurnIterationController:
                     policy_stage="empty_response",
                     policy_outcome="retry",
                 )
-            self.context.session.append(
-                Message(
-                    role=Role.USER,
-                    content=empty_decision.retry_message,
-                )
+            retry_message = Message(
+                role=Role.USER,
+                content=empty_decision.retry_message,
             )
+            if (
+                self.context.session.messages
+                and self.context.session.messages[-1].role == Role.USER
+                and self.context.session.messages[-1].content.startswith(
+                    "[EMPTY ASSISTANT RESPONSE]"
+                )
+            ):
+                self.context.session.messages[-1] = retry_message
+                self.context.session.touch()
+                self.context.session.persist()
+            else:
+                self.context.session.append(retry_message)
             return TurnIterationDecision(
                 action=TurnIterationAction.CONTINUE,
                 continuation_count=continuation_count,

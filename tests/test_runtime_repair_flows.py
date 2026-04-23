@@ -244,6 +244,49 @@ async def test_repeated_empty_responses_fail_honestly_after_one_retry(
 
 
 @pytest.mark.asyncio
+async def test_empty_response_retries_replace_prior_retry_message_within_same_episode(
+    temp_dir: Path,
+) -> None:
+    target = temp_dir / "three.txt"
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(content=""),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="I'll create the file now.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(target),
+                            "content": "three\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create three.txt.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert run.response.startswith("Done.")
+    third_invocation_retry_messages = [
+        message.content
+        for message in backend.invocations[2].messages
+        if message.role == Role.USER and "[EMPTY ASSISTANT RESPONSE]" in message.content
+    ]
+    assert len(third_invocation_retry_messages) == 1
+    assert "retry 2/2" in third_invocation_retry_messages[0]
+
+
+@pytest.mark.asyncio
 async def test_raw_text_tool_recovery_budget_fails_honestly(
     temp_dir: Path,
 ) -> None:
