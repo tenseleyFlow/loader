@@ -897,6 +897,7 @@ def infer_pending_todo_output_target(
     """Infer the concrete file path a pending todo is asking the model to mutate."""
 
     root = project_root or Path.cwd()
+    target_label = _normalize_pending_output_label(item)
     candidates = todo_file_candidates(item)
     planned_targets = collect_planned_artifact_targets(
         dod,
@@ -905,11 +906,11 @@ def infer_pending_todo_output_target(
     )
 
     if candidates:
-        planned_files = {
-            target.name.lower(): target
+        planned_files = [
+            target
             for target, expect_directory in planned_targets
             if not expect_directory
-        }
+        ]
         planned_directories = [
             target
             for target, expect_directory in planned_targets
@@ -926,21 +927,35 @@ def infer_pending_todo_output_target(
             if candidate.is_absolute() or candidate_str.startswith("~"):
                 return Path(candidate_str).expanduser()
 
-            planned_match = planned_files.get(candidate.name.lower())
-            if planned_match is not None:
-                return planned_match
+            planned_matches = [
+                target
+                for target in planned_files
+                if target.name.lower() == candidate.name.lower()
+            ]
+            if planned_matches:
+                return _select_best_pending_output_path(
+                    planned_matches,
+                    todo_label=target_label,
+                )
 
-            for touched in reversed(touched_paths):
-                if touched.name.lower() == candidate.name.lower():
-                    continue
-                if candidate.suffix and touched.suffix.lower() != candidate.suffix.lower():
-                    continue
-                return touched.parent / candidate.name
+            touched_matches = [
+                touched.parent / candidate.name
+                for touched in reversed(touched_paths)
+                if touched.name.lower() != candidate.name.lower()
+                and (
+                    not candidate.suffix
+                    or touched.suffix.lower() == candidate.suffix.lower()
+                )
+            ]
+            if touched_matches:
+                return _select_best_pending_output_path(
+                    touched_matches,
+                    todo_label=target_label,
+                )
 
             for directory in planned_directories:
                 return directory / candidate.name
 
-    target_label = _normalize_pending_output_label(item)
     if not target_label:
         return None
 
@@ -967,6 +982,23 @@ def infer_pending_todo_output_target(
         return None
     matches.sort(key=lambda item: (item[0], item[1], str(item[2])), reverse=True)
     return matches[0][2]
+
+
+def _select_best_pending_output_path(
+    paths: list[Path],
+    *,
+    todo_label: str,
+) -> Path:
+    ranked = sorted(
+        paths,
+        key=lambda path: (
+            _pending_output_path_match_score(todo_label, path),
+            not path.expanduser().exists(),
+            str(path),
+        ),
+        reverse=True,
+    )
+    return ranked[0]
 
 
 def preserve_task_grounded_acceptance_criteria(
@@ -1051,6 +1083,13 @@ def _pending_output_link_match_score(todo_label: str, link_label: str) -> int:
     if len(overlap) >= min(3, len(todo_tokens), len(link_tokens)):
         return 1
     return 0
+
+
+def _pending_output_path_match_score(todo_label: str, path: Path) -> int:
+    if not todo_label:
+        return 0
+    path_label = _normalize_pending_output_label(str(path))
+    return _pending_output_link_match_score(todo_label, path_label)
 
 
 def _iter_local_html_links(content: str) -> list[tuple[str, str]]:
