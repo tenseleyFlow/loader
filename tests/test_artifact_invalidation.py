@@ -138,3 +138,36 @@ def test_artifact_invalidation_allows_supplemental_repair_files_after_failed_ver
         and "styles.css" in item.summary
         for item in freshness.evidence
     )
+
+
+def test_artifact_invalidation_treats_child_files_under_planned_directory_as_in_plan() -> None:
+    assessor = ArtifactInvalidationAssessor()
+
+    freshness = assessor.assess(
+        task_statement="Build a multi-file nginx guide.",
+        clarify_text=None,
+        implementation_text=(
+            "# Implementation Plan\n"
+            "- Create `~/Loader/guides/nginx/index.html`.\n"
+            "- Create `~/Loader/guides/nginx/chapters/`.\n"
+        ),
+        verification_text=(
+            "# Verification Plan\n"
+            "## Acceptance Criteria\n"
+            "- `~/Loader/guides/nginx/index.html` exists.\n"
+            "- Chapter files exist under `~/Loader/guides/nginx/chapters/`.\n"
+        ),
+        acceptance_criteria=[
+            "~/Loader/guides/nginx/index.html exists.",
+            "Chapter files exist under ~/Loader/guides/nginx/chapters/.",
+        ],
+        touched_files=[
+            "/private/tmp/session/Loader/guides/nginx/index.html",
+            "/private/tmp/session/Loader/guides/nginx/chapters/03-configuration.html",
+        ],
+        last_verification_result=None,
+    )
+
+    assert freshness.stale_plan is False
+    assert freshness.recovery_strategy == WorkflowRecoveryStrategy.NONE.value
+    assert "touched_files_outside_plan" not in freshness.reason_codes

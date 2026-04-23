@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from pathlib import Path
 
 from .workflow_policy import (
     ArtifactEvidence,
@@ -237,16 +238,38 @@ def _text_covers_path_reference(text: str, path: str) -> bool:
             return True
 
     canonical_text = _canonical_path_reference(text)
-    return any(
+    if any(
         canonical_candidate and canonical_candidate in canonical_text
         for canonical_candidate in (_canonical_path_reference(candidate) for candidate in candidates)
-    )
+    ):
+        return True
+
+    return any(anchor in canonical_text for anchor in _directory_reference_anchors(path))
 
 
 def _canonical_path_reference(value: str) -> str:
     normalized = value.lower().strip()
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
     return " ".join(normalized.split())
+
+
+def _directory_reference_anchors(path: str) -> tuple[str, ...]:
+    normalized = str(path).strip()
+    if not normalized:
+        return ()
+
+    candidate = Path(normalized)
+    directory = candidate if not candidate.suffix else candidate.parent
+    parts = [part for part in directory.parts if part not in {"", "/", "~"}]
+    if len(parts) < 2:
+        return ()
+
+    anchors: list[str] = []
+    for width in range(min(4, len(parts)), 1, -1):
+        anchor = _canonical_path_reference("/".join(parts[-width:]))
+        if anchor and anchor not in anchors:
+            anchors.append(anchor)
+    return tuple(anchors)
 
 
 def _text_covers_requirement(text: str, requirement: str) -> bool:
