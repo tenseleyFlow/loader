@@ -528,6 +528,15 @@ async def test_relative_path_context_hook_remaps_workspace_mirror_of_external_ro
 
     assert result.updated_arguments is not None
     assert Path(result.updated_arguments["file_path"]).resolve() == expected_external_path.resolve()
+    resolved_loader_root = (external_root / "Loader").resolve()
+    assert result.injected_messages == [
+        (
+            "[Path anchor correction] A repo-local mirror path was remapped to the "
+            f"established output root under `{resolved_loader_root}`. Keep future "
+            "file/search tool calls on that external root and use `index.html` there "
+            "instead of re-anchoring work to the workspace checkout."
+        )
+    ]
 
 
 class FakeSession:

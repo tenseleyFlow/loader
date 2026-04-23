@@ -259,11 +259,16 @@ class RelativePathContextHook(BaseToolHook):
 
         require_existing = context.tool_call.name in {"read", "glob", "grep", "edit", "patch"}
         resolved: str | None = None
+        injected_messages: list[str] = []
         if raw_path.startswith("/"):
             resolved = self._resolve_workspace_mirror_path(
                 raw_path,
                 require_existing=require_existing,
             )
+            if resolved is not None:
+                injected_messages.append(
+                    self._workspace_mirror_correction_message(raw_path, resolved)
+                )
         elif not raw_path.startswith("~"):
             resolved = self._resolve_recent_context_path(
                 raw_path,
@@ -274,7 +279,10 @@ class RelativePathContextHook(BaseToolHook):
 
         updated_arguments = dict(arguments)
         updated_arguments[argument_key] = resolved
-        return HookResult(updated_arguments=updated_arguments)
+        return HookResult(
+            updated_arguments=updated_arguments,
+            injected_messages=injected_messages,
+        )
 
     def _argument_key(self, tool_name: str) -> str | None:
         if tool_name in self._FILE_TOOLS:
@@ -355,6 +363,29 @@ class RelativePathContextHook(BaseToolHook):
             if remapped.exists() or remapped.parent.exists() or anchor_root.exists():
                 return str(remapped)
         return None
+
+    def _workspace_mirror_correction_message(self, raw_path: str, resolved_path: str) -> str:
+        raw_name = Path(str(raw_path)).name or str(raw_path)
+        resolved_root = self._describe_anchor_root(resolved_path)
+        return (
+            "[Path anchor correction] A repo-local mirror path was remapped to the established "
+            f"output root under `{resolved_root}`. Keep future file/search tool calls on that "
+            f"external root and use `{raw_name}` there instead of re-anchoring work to the "
+            "workspace checkout."
+        )
+
+    def _describe_anchor_root(self, path_value: str) -> str:
+        resolved = Path(path_value).expanduser()
+        try:
+            candidate = resolved.resolve(strict=False)
+        except Exception:
+            candidate = resolved
+
+        parts = candidate.parts
+        if "Loader" in parts:
+            loader_index = parts.index("Loader")
+            return str(Path(*parts[: loader_index + 1]))
+        return str(candidate.parent)
 
 
 _OBSERVATION_TOOLS = frozenset({"read", "glob", "grep", "bash"})
