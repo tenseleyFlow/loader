@@ -638,8 +638,10 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
     context.session.current_task = (
         f"Update {temp_dir / 'index.html'} with the right chapter links."
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     tool_call = ToolCall(
         id="read-dup",
@@ -686,11 +688,15 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
         consecutive_errors=0,
     )
 
-    assert len(queued_messages) == 1
-    assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
-    assert "A declared output artifact is still missing." in queued_messages[0]
-    assert "Resume by creating `04-variables.html` now." in queued_messages[0]
-    assert f"Prefer one `write` call for `{temp_dir / 'chapters' / '04-variables.html'}` instead of more rereads." in queued_messages[0]
+    assert len(persistent_messages) == 1
+    assert "Reuse the earlier observation instead of repeating it." in persistent_messages[0]
+    assert "A declared output artifact is still missing." in persistent_messages[0]
+    assert "Resume by creating `04-variables.html` now." in persistent_messages[0]
+    assert (
+        f"Prefer one `write` call for `{temp_dir / 'chapters' / '04-variables.html'}` instead of more rereads."
+        in persistent_messages[0]
+    )
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -852,8 +858,10 @@ async def test_tool_batch_runner_proactively_queues_verified_html_inventory(
     context.session.current_task = (
         f"Update {temp_dir / 'index.html'} so the chapter links match the sibling files."
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     tool_call = ToolCall(
         id="glob-1",
@@ -890,7 +898,8 @@ async def test_tool_batch_runner_proactively_queues_verified_html_inventory(
         consecutive_errors=0,
     )
 
-    assert queued_messages == []
+    assert persistent_messages == []
+    assert ephemeral_messages == []
     assert len(summary.tool_result_messages) == 1
     assert "Verified chapter inventory:" not in summary.tool_result_messages[0].content
 
@@ -948,8 +957,10 @@ async def test_tool_batch_runner_marks_validated_html_toc_completion_after_succe
     context.session.current_task = (
         "Update index.html so every chapter link and title matches the real HTML files in chapters/."
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     tool_call = ToolCall(
         id="edit-1",
@@ -991,7 +1002,8 @@ async def test_tool_batch_runner_marks_validated_html_toc_completion_after_succe
         "Semantic verification preview:" not in message.content
         for message in summary.tool_result_messages
     )
-    assert queued_messages == []
+    assert persistent_messages == []
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -1045,8 +1057,10 @@ async def test_tool_batch_runner_does_not_apply_html_toc_handoff_to_reference_re
         auto_recover=False,
     )
     context.session.current_task = prompt  # type: ignore[attr-defined]
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     tool_call = ToolCall(
         id="read-index",
@@ -1078,7 +1092,8 @@ async def test_tool_batch_runner_does_not_apply_html_toc_handoff_to_reference_re
         consecutive_errors=0,
     )
 
-    assert queued_messages == []
+    assert persistent_messages == []
+    assert ephemeral_messages == []
     assert all(
         "Semantic verification preview:" not in message.content
         for message in summary.tool_result_messages
@@ -1116,8 +1131,10 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create an equally thorough nginx guide.")
     sync_todos_to_definition_of_done(
@@ -1177,11 +1194,11 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
     assert any(
         "Continue with the next pending item: `Create the nginx directory structure`"
         in message
-        for message in queued_messages
+        for message in persistent_messages
     )
     assert any(
         "stop gathering more reference material and perform the change now" in message
-        for message in queued_messages
+        for message in persistent_messages
     )
 
 
@@ -1231,8 +1248,10 @@ async def test_tool_batch_runner_duplicate_reference_read_prefers_next_pending_t
         "new equally thorough guide on how to use the nginx tool."
     )
     context.session.current_task = prompt
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done(prompt)
     sync_todos_to_definition_of_done(
@@ -1297,10 +1316,14 @@ async def test_tool_batch_runner_duplicate_reference_read_prefers_next_pending_t
         consecutive_errors=0,
     )
 
-    assert len(queued_messages) == 1
-    assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
-    assert "Continue with the next pending item: `Create the nginx directory structure`" in queued_messages[0]
-    assert "Update `" not in queued_messages[0]
+    assert len(persistent_messages) == 1
+    assert "Reuse the earlier observation instead of repeating it." in persistent_messages[0]
+    assert (
+        "Continue with the next pending item: `Create the nginx directory structure`"
+        in persistent_messages[0]
+    )
+    assert "Update `" not in persistent_messages[0]
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -1358,8 +1381,10 @@ async def test_tool_batch_runner_successful_reference_read_prioritizes_concrete_
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -1422,18 +1447,19 @@ async def test_tool_batch_runner_successful_reference_read_prioritizes_concrete_
         consecutive_errors=0,
     )
 
-    assert queued_messages
+    assert persistent_messages
     assert any(
         "Confirmed progress: `Examine the existing Fortran guide structure to understand the format and cadence`"
         in message
-        for message in queued_messages
+        for message in persistent_messages
     )
-    assert any("Resume by creating `index.html` now." in message for message in queued_messages)
+    assert any("Resume by creating `index.html` now." in message for message in persistent_messages)
     assert not any(
         "Continue with the next pending item: `Create each chapter file with appropriate content`"
         in message
-        for message in queued_messages
+        for message in persistent_messages
     )
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -1491,8 +1517,10 @@ async def test_tool_batch_runner_duplicate_read_ignores_unplanned_expansion_afte
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -1544,9 +1572,10 @@ async def test_tool_batch_runner_duplicate_read_ignores_unplanned_expansion_afte
         consecutive_errors=0,
     )
 
-    assert len(queued_messages) == 1
-    assert "Verify all guide files are linked and complete" in queued_messages[0]
-    assert "Create 07-performance-tuning.html" not in queued_messages[0]
+    assert len(persistent_messages) == 1
+    assert "Verify all guide files are linked and complete" in persistent_messages[0]
+    assert "Create 07-performance-tuning.html" not in persistent_messages[0]
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -1604,8 +1633,10 @@ async def test_tool_batch_runner_duplicate_read_after_plan_complete_pushes_verif
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -1657,10 +1688,14 @@ async def test_tool_batch_runner_duplicate_read_after_plan_complete_pushes_verif
         consecutive_errors=0,
     )
 
-    assert len(queued_messages) == 1
-    assert "All explicitly planned artifacts already exist." in queued_messages[0]
-    assert "Move to verification or final confirmation using the files already on disk." in queued_messages[0]
-    assert "Create 07-performance-tuning.html" not in queued_messages[0]
+    assert len(persistent_messages) == 1
+    assert "All explicitly planned artifacts already exist." in persistent_messages[0]
+    assert (
+        "Move to verification or final confirmation using the files already on disk."
+        in persistent_messages[0]
+    )
+    assert "Create 07-performance-tuning.html" not in persistent_messages[0]
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -1718,8 +1753,10 @@ async def test_tool_batch_runner_duplicate_read_after_plan_complete_ignores_stal
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -1772,11 +1809,15 @@ async def test_tool_batch_runner_duplicate_read_after_plan_complete_ignores_stal
         consecutive_errors=0,
     )
 
-    assert len(queued_messages) == 1
-    assert "All explicitly planned artifacts already exist." in queued_messages[0]
-    assert "Move to verification or final confirmation using the files already on disk." in queued_messages[0]
-    assert "Create 01-getting-started.html" not in queued_messages[0]
-    assert "Creating 02-installation.html" not in queued_messages[0]
+    assert len(persistent_messages) == 1
+    assert "All explicitly planned artifacts already exist." in persistent_messages[0]
+    assert (
+        "Move to verification or final confirmation using the files already on disk."
+        in persistent_messages[0]
+    )
+    assert "Create 01-getting-started.html" not in persistent_messages[0]
+    assert "Creating 02-installation.html" not in persistent_messages[0]
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -1810,8 +1851,10 @@ async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     sync_todos_to_definition_of_done(
@@ -1862,12 +1905,13 @@ async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
     assert any(
         "Continue with the next pending item: `Create the nginx index.html file`"
         in message
-        for message in queued_messages
+        for message in persistent_messages
     )
     assert any(
         "stop gathering more reference material and perform the change now" in message
-        for message in queued_messages
+        for message in persistent_messages
     )
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -2004,8 +2048,10 @@ async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_af
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -2055,8 +2101,8 @@ async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_af
         consecutive_errors=0,
     )
 
-    assert queued_messages
-    message = queued_messages[-1]
+    assert persistent_messages
+    message = persistent_messages[-1]
     assert "Next step: create `index.html`." in message
     assert (
         f"Prefer one `write(file_path=..., content=...)` call for `{(nginx_root / 'index.html').resolve(strict=False)}` now."
@@ -2065,6 +2111,7 @@ async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_af
     assert "One declared output artifact is still missing." not in message
     assert "Do not reread reference material or spend the next turn on bookkeeping." in message
     assert "Resume by creating the next output file under `chapters/` now." not in message
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio

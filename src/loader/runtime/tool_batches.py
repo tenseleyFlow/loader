@@ -933,6 +933,11 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
+        queue_message = (
+            self.context.queue_steering_message
+            if not has_file_artifact_progress
+            else self.context.queue_ephemeral_steering_message
+        )
         todo_refresh = _todo_refresh_guidance(
             dod,
             project_root=self.context.project_root,
@@ -944,7 +949,7 @@ class ToolBatchRunner:
                 messages=list(getattr(self.context.session, "messages", []) or []),
             )
             if compact_handoff:
-                self.context.queue_ephemeral_steering_message(
+                queue_message(
                     f"Confirmed progress: {current_label} is now recorded. "
                     + compact_handoff
                     + " Do not reread reference material or spend the next turn on bookkeeping."
@@ -954,7 +959,7 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         ):
-            self.context.queue_ephemeral_steering_message(
+            queue_message(
                 f"Confirmed progress: {current_label} is now recorded."
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
@@ -964,7 +969,7 @@ class ToolBatchRunner:
                 + " No TodoWrite, no verification, no rereads until that artifact exists."
             )
             return
-        self.context.queue_ephemeral_steering_message(
+        queue_message(
             f"Confirmed progress: {current_label} is now recorded."
             " One declared output artifact is still missing."
             + _missing_artifact_resume_suffix(
