@@ -2025,6 +2025,61 @@ async def test_blocked_html_index_edit_queues_inventory_reuse_steering(
 
 
 @pytest.mark.asyncio
+async def test_blocked_root_html_write_cannot_drop_existing_local_pages(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guide"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_file = guide_root / "index.html"
+    (chapters / "introduction.html").write_text("<h1>Introduction</h1>\n")
+    (chapters / "installation.html").write_text("<h1>Installation</h1>\n")
+    index_file.write_text(
+        "\n".join(
+            [
+                '<a href="chapters/introduction.html">Introduction</a>',
+                '<a href="chapters/installation.html">Installation</a>',
+            ]
+        )
+        + "\n"
+    )
+
+    backend = ScriptedBackend(
+        completions=[
+            native_tool_response(
+                ToolCall(
+                    id="write-1",
+                    name="write",
+                    arguments={
+                        "file_path": str(index_file),
+                        "content": (
+                            "<html><body>"
+                            '<a href="chapters/installation.html">Installation</a>'
+                            "</body></html>\n"
+                        ),
+                    },
+                ),
+                content="I'll rewrite the root page.",
+            ),
+            final_response("I'll keep the guide coherent."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Update the guide root page.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    messages = tool_result_messages(run)
+    assert any(
+        "Edited HTML root page drops links to existing local pages" in message
+        for message in messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_full_path_glob_pattern_still_injects_verified_html_inventory(
     temp_dir: Path,
 ) -> None:

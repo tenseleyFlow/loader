@@ -749,6 +749,13 @@ class PreActionValidator:
         if not html_declared_target_result.valid:
             return html_declared_target_result
 
+        html_root_coverage_result = self._validate_html_root_link_coverage(
+            str(file_path),
+            str(content),
+        )
+        if not html_root_coverage_result.valid:
+            return html_root_coverage_result
+
         return ValidationResult(valid=True)
 
     def _validate_edit(self, arguments: dict) -> ValidationResult:
@@ -1148,7 +1155,15 @@ class PreActionValidator:
 
     def _relative_html_target(self, root: Path, target: Path) -> str | None:
         try:
-            return str(target.relative_to(root))
+            normalized_root = root.resolve(strict=False)
+        except OSError:
+            normalized_root = root.expanduser()
+        try:
+            normalized_target = target.resolve(strict=False)
+        except OSError:
+            normalized_target = target.expanduser()
+        try:
+            return str(normalized_target.relative_to(normalized_root))
         except ValueError:
             return None
 
@@ -1281,3 +1296,51 @@ class PreActionValidator:
             )
 
         return ValidationResult(valid=True)
+
+    def _validate_html_root_link_coverage(
+        self,
+        file_path: str,
+        content: str,
+    ) -> ValidationResult:
+        normalized = Path(file_path).expanduser()
+        if normalized.suffix.lower() != ".html" or normalized.name.lower() != "index.html":
+            return ValidationResult(valid=True)
+        if not normalized.exists():
+            return ValidationResult(valid=True)
+
+        root = self._resolve_html_artifact_root(normalized)
+        try:
+            existing_text = normalized.read_text()
+        except OSError:
+            return ValidationResult(valid=True)
+
+        existing_targets = {
+            relative_target
+            for _href, resolved in self._collect_local_html_targets(normalized, existing_text)
+            if (relative_target := self._relative_html_target(root, resolved)) is not None
+            and resolved.exists()
+        }
+        if not existing_targets:
+            return ValidationResult(valid=True)
+
+        new_targets = {
+            relative_target
+            for _href, resolved in self._collect_local_html_targets(normalized, content)
+            if (relative_target := self._relative_html_target(root, resolved)) is not None
+        }
+        dropped_targets = sorted(existing_targets - new_targets)
+        if not dropped_targets:
+            return ValidationResult(valid=True)
+
+        preview = ", ".join(dropped_targets[:3])
+        if len(dropped_targets) > 3:
+            preview += ", ..."
+        return ValidationResult(
+            valid=False,
+            reason="Edited HTML root page drops links to existing local pages",
+            suggestion=(
+                "Keep the existing local page set linked from the root HTML page "
+                f"unless you are intentionally removing those files, for example restore: {preview}"
+            ),
+            severity="error",
+        )
