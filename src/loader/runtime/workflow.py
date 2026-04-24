@@ -186,6 +186,14 @@ _ARTIFACT_SET_COMPLETION_HINTS = (
     "same structure",
     "follow the same",
 )
+_CONTENT_EVIDENCE_HINTS = (
+    "content",
+    "cadence",
+    "depth",
+    "writing style",
+    "thorough",
+    "thoroughness",
+)
 _BROAD_SETUP_HINTS = (
     "directory structure",
     "directories",
@@ -1279,6 +1287,8 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
         if _contains_any(text, _PARSE_STEP_HINTS) and ".html" in combined:
             score += 1
     elif name in {"glob", "grep"}:
+        if _todo_requires_content_level_evidence(text):
+            return 0
         if not (
             _contains_any(text, _SEARCH_STEP_HINTS)
             or _contains_any(text, _READ_STEP_HINTS)
@@ -1294,6 +1304,8 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
             if _contains_any(text, _VERIFY_STEP_HINTS):
                 score += 3
         elif _looks_like_search_command(command):
+            if _todo_requires_content_level_evidence(text):
+                return 0
             if _contains_any(text, _SEARCH_STEP_HINTS):
                 score += 2
         elif _looks_like_read_command(command):
@@ -1317,6 +1329,10 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
 
 def _contains_any(text: str, candidates: tuple[str, ...]) -> bool:
     return any(candidate in text for candidate in candidates)
+
+
+def _todo_requires_content_level_evidence(text: str) -> bool:
+    return _contains_any(text, _CONTENT_EVIDENCE_HINTS)
 
 
 def _todo_describes_aggregate_mutation(text: str) -> bool:
