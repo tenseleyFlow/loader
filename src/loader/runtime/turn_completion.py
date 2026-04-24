@@ -5,11 +5,17 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from ..llm.base import Message, Role
 from .completion_policy import CompletionPolicy
 from .context import RuntimeContext
-from .dod import DefinitionOfDone
+from .dod import (
+    DefinitionOfDone,
+    collect_planned_artifact_targets,
+    infer_next_output_file,
+    planned_artifact_target_satisfied,
+)
 from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance
 from .executor import ToolExecutor
@@ -22,8 +28,38 @@ from .policy_timeline import (
 from .repair import ResponseRepairer
 from .rollback import RollbackPlan
 from .verification_observations import VerificationObservation
+from .workflow import (
+    effective_pending_todo_items,
+    infer_pending_todo_output_target,
+    preferred_pending_todo_item,
+)
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
+
+_SPECIAL_DOD_ITEMS = {
+    "Complete the requested work",
+    "Collect verification evidence",
+}
+_PROGRESS_INTENT_HINTS = (
+    "i'll ",
+    "i will ",
+    "i am going to ",
+    "i'm going to ",
+    "let me ",
+    "now i'll ",
+    "next i'll ",
+    "continue by ",
+    "continue with ",
+)
+_COMPLETION_HINTS = (
+    "done",
+    "completed",
+    "finished",
+    "all set",
+    "verified",
+    "successfully completed",
+    "everything is done",
+)
 
 
 class TurnCompletionAction(StrEnum):
@@ -225,6 +261,42 @@ class TurnCompletionController:
                     finalize_reason_summary=continuation_decision.decision_summary,
                 )
 
+        progress_intent_prompt = _build_in_progress_continuation_prompt(
+            content=content,
+            dod=dod,
+            project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
+        )
+        if progress_intent_prompt:
+            assistant_message = Message(role=Role.ASSISTANT, content=response_content)
+            self.context.session.append(assistant_message)
+            summary.assistant_messages.append(assistant_message)
+            self.context.session.append(
+                Message(role=Role.USER, content=progress_intent_prompt)
+            )
+            self._append_completion_trace_entry(
+                summary=summary,
+                stage="continuation_check",
+                outcome="continue",
+                decision_code="in_progress_transition_continue",
+                decision_summary=(
+                    "continued because the assistant described the next planned step "
+                    "without executing it yet"
+                ),
+            )
+            self._record_completion_decision(
+                summary=summary,
+                decision_code="in_progress_transition_continue",
+                decision_summary=(
+                    "continued because the assistant described the next planned step "
+                    "without executing it yet"
+                ),
+            )
+            return TurnCompletionDecision(
+                action=TurnCompletionAction.CONTINUE,
+                continuation_count=continuation_count + 1,
+            )
+
         final_response = self.completion_policy.finalize_response_text(
             content=content,
             actions_taken=actions_taken,
@@ -281,3 +353,137 @@ class TurnCompletionController:
             action=TurnCompletionAction.COMPLETE,
             continuation_count=continuation_count,
         )
+
+
+def _build_in_progress_continuation_prompt(
+    *,
+    content: str,
+    dod: DefinitionOfDone,
+    project_root: Path,
+    messages: list[object],
+) -> str | None:
+    if not _looks_like_progress_intent(content):
+        return None
+
+    missing_artifact = _next_missing_planned_artifact(
+        dod,
+        project_root=project_root,
+        messages=messages,
+    )
+    next_pending = preferred_pending_todo_item(
+        dod,
+        project_root=project_root,
+        missing_artifact=missing_artifact,
+    )
+    if not next_pending and missing_artifact is None:
+        return None
+
+    target = _preferred_progress_target(
+        dod,
+        next_pending=next_pending,
+        missing_artifact=missing_artifact,
+        project_root=project_root,
+        messages=messages,
+    )
+    if target is not None:
+        return (
+            "[CONTINUE CURRENT STEP]\n"
+            "You just described the next planned step, but the concrete output is not on disk yet. "
+            f"Respond with one concrete `write` or `edit`-style tool call that creates or updates `{target}` now. "
+            "Do not summarize, verify, or restart discovery first."
+        )
+
+    if next_pending:
+        return (
+            "[CONTINUE CURRENT STEP]\n"
+            "You just described the next planned step, but it has not been executed yet. "
+            f"Continue with `{next_pending}` now by emitting one concrete tool call instead of another narration, summary, or verification claim."
+        )
+    return None
+
+
+def _looks_like_progress_intent(content: str) -> bool:
+    text = content.lower().strip()
+    if not text or "?" in text:
+        return False
+    if any(marker in text for marker in _COMPLETION_HINTS):
+        return False
+    return any(marker in text for marker in _PROGRESS_INTENT_HINTS)
+
+
+def _next_missing_planned_artifact(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    messages: list[object],
+) -> tuple[Path, bool] | None:
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if not planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=expect_directory,
+            project_root=project_root,
+        ):
+            return target, expect_directory
+
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if not expect_directory or not target.is_dir():
+            continue
+        next_output_file, _ = infer_next_output_file(
+            target=target,
+            project_root=project_root,
+            messages=list(messages or []),
+        )
+        if next_output_file is not None and not next_output_file.exists():
+            return next_output_file, False
+    return None
+
+
+def _preferred_progress_target(
+    dod: DefinitionOfDone,
+    *,
+    next_pending: str | None,
+    missing_artifact: tuple[Path, bool] | None,
+    project_root: Path,
+    messages: list[object],
+) -> Path | None:
+    pending_items = [
+        item
+        for item in effective_pending_todo_items(
+            dod,
+            project_root=project_root,
+        )
+        if item not in _SPECIAL_DOD_ITEMS
+    ]
+    if next_pending and next_pending in pending_items:
+        pending_target = infer_pending_todo_output_target(
+            dod,
+            next_pending,
+            project_root=project_root,
+        )
+        if pending_target is not None and not pending_target.exists():
+            return pending_target
+
+    if missing_artifact is None:
+        return None
+
+    target, expect_directory = missing_artifact
+    if not expect_directory:
+        return target
+
+    next_output_file, _ = infer_next_output_file(
+        target=target,
+        project_root=project_root,
+        messages=list(messages or []),
+    )
+    if next_output_file is not None:
+        return next_output_file
+    return None
