@@ -194,17 +194,6 @@ _CONTENT_EVIDENCE_HINTS = (
     "thorough",
     "thoroughness",
 )
-_DEEP_CONTENT_EVIDENCE_HINTS = (
-    "organization",
-    "cadence",
-    "depth",
-    "writing style",
-    "thorough",
-    "thoroughness",
-    "same structure",
-    "same style",
-    "same pattern",
-)
 _BROAD_SETUP_HINTS = (
     "directory structure",
     "directories",
@@ -1293,7 +1282,7 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
         score += 1
 
     if name == "read":
-        if _todo_requires_deep_content_evidence(text) and _is_summary_artifact_name(
+        if _todo_requires_content_level_evidence(text) and _is_summary_artifact_name(
             basename
         ):
             return 0
@@ -1348,10 +1337,6 @@ def _contains_any(text: str, candidates: tuple[str, ...]) -> bool:
 
 def _todo_requires_content_level_evidence(text: str) -> bool:
     return _contains_any(text, _CONTENT_EVIDENCE_HINTS)
-
-
-def _todo_requires_deep_content_evidence(text: str) -> bool:
-    return _contains_any(text, _DEEP_CONTENT_EVIDENCE_HINTS)
 
 
 def _is_summary_artifact_name(name: str) -> bool:
