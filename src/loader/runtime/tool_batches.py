@@ -338,6 +338,7 @@ class ToolBatchRunner:
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
         )
         next_pending = preferred_pending_todo_item(
             dod,
@@ -357,7 +358,7 @@ class ToolBatchRunner:
                 prefix += f"Confirmed facts: {confirmed_facts}. "
             self.context.queue_steering_message(
                 prefix
-                + "An explicitly planned artifact is still missing."
+                + "A declared output artifact is still missing."
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
                     project_root=self.context.project_root,
@@ -568,6 +569,7 @@ class ToolBatchRunner:
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
         )
         if missing_artifact is None:
             return
@@ -786,6 +788,7 @@ class ToolBatchRunner:
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
         )
         next_pending = preferred_pending_todo_item(
             dod,
@@ -800,7 +803,7 @@ class ToolBatchRunner:
         ):
             self.context.queue_steering_message(
                 f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
-                f"`{tool_call.name}` result. One explicitly planned artifact is still missing."
+                f"`{tool_call.name}` result. One declared output artifact is still missing."
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
                     project_root=self.context.project_root,
@@ -910,7 +913,7 @@ class ToolBatchRunner:
             return
         self.context.queue_steering_message(
             f"Confirmed progress: {current_label} is now recorded."
-            " One explicitly planned artifact is still missing."
+            " One declared output artifact is still missing."
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
@@ -930,6 +933,7 @@ class ToolBatchRunner:
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
         )
         next_pending = preferred_pending_todo_item(
             dod,
@@ -1038,7 +1042,7 @@ class ToolBatchRunner:
             else ""
         )
         self.context.queue_steering_message(
-            "Todo tracking is updated. An explicitly planned artifact is still missing."
+            "Todo tracking is updated. A declared output artifact is still missing."
             + next_pending_suffix
             + _missing_artifact_resume_suffix(
                 missing_artifact,
@@ -1062,6 +1066,7 @@ class ToolBatchRunner:
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
         )
         if missing_artifact is None:
             return
@@ -1079,6 +1084,17 @@ class ToolBatchRunner:
             next_pending
             and not _todo_is_mutation_step(next_pending)
             and not _todo_is_consistency_review_step(next_pending)
+            and not _should_prioritize_missing_artifact(
+                next_pending=next_pending,
+                missing_artifact=(
+                    missing_artifact
+                    if _has_confirmed_artifact_progress(
+                        dod,
+                        project_root=self.context.project_root,
+                    )
+                    else None
+                ),
+            )
         ):
             self.context.queue_steering_message(
                 "Bookkeeping note is recorded. Continue with the next pending item: "
@@ -1091,7 +1107,7 @@ class ToolBatchRunner:
             return
 
         self.context.queue_steering_message(
-            "Bookkeeping note is recorded. An explicitly planned artifact is still missing."
+            "Bookkeeping note is recorded. A declared output artifact is still missing."
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
@@ -1126,6 +1142,7 @@ def _next_missing_planned_artifact(
     dod: DefinitionOfDone,
     *,
     project_root: Path,
+    messages: list[Any] | None = None,
 ) -> tuple[Path, bool] | None:
     for target, expect_directory in collect_planned_artifact_targets(
         dod,
@@ -1139,6 +1156,20 @@ def _next_missing_planned_artifact(
             project_root=project_root,
         ):
             return target, expect_directory
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if not expect_directory or not target.is_dir():
+            continue
+        next_output_file, _ = infer_next_output_file(
+            target=target,
+            project_root=project_root,
+            messages=list(messages or []),
+        )
+        if next_output_file is not None and not next_output_file.exists():
+            return next_output_file, False
     return None
 
 
@@ -1164,6 +1195,26 @@ def _late_stage_missing_artifact_build(
         else:
             missing += 1
     return completed >= 7 and missing > 0
+
+
+def _has_confirmed_artifact_progress(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> bool:
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=expect_directory,
+            project_root=project_root,
+        ):
+            return True
+    return bool(dod.touched_files)
 
 
 def _missing_artifact_resume_suffix(

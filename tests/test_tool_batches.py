@@ -2438,7 +2438,7 @@ async def test_tool_batch_runner_todowrite_with_missing_artifact_requeues_exact_
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Todo tracking is updated. A declared output artifact is still missing." in message
     assert "Resume by creating `02-installation.html` now." in message
     assert "refresh `TodoWrite`" in message
     assert "Do not spend the next turn on TodoWrite alone" in message
@@ -2746,7 +2746,7 @@ async def test_tool_batch_runner_todowrite_with_existing_output_roots_requeues_n
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Todo tracking is updated. A declared output artifact is still missing." in message
     assert "Continue with the next pending item: `Write the introduction chapter`." in message
     assert "Resume by creating `01-introduction.html` now." in message
     assert "It is the next missing declared output under `chapters/`." in message
@@ -2875,7 +2875,7 @@ async def test_tool_batch_runner_todowrite_with_declared_child_targets_names_nex
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Todo tracking is updated. A declared output artifact is still missing." in message
     assert "Continue with the next pending item: `Write the introduction chapter`." in message
     assert "Resume by creating `introduction.html` now." in message
     assert "It is the next missing declared output under `chapters/`." in message
@@ -3006,7 +3006,8 @@ async def test_tool_batch_runner_todowrite_names_concrete_pending_file_after_art
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. Continue with the next pending item: `Creating Chapter 2: Installation and Setup`." in message
+    assert "Todo tracking is updated. A declared output artifact is still missing." in message
+    assert "Continue with the next pending item: `Creating Chapter 2: Installation and Setup`." in message
     assert "Resume by creating `02-installation.html` now." in message
     assert (
         f"Prefer one `write` call for `{(chapters / '02-installation.html').resolve(strict=False)}` "
@@ -3142,7 +3143,7 @@ async def test_tool_batch_runner_todowrite_uses_observed_sibling_pattern_for_nex
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. An explicitly planned artifact is still missing." in message
+    assert "Todo tracking is updated. A declared output artifact is still missing." in message
     assert "Continue with the next pending item: `Write the introduction chapter`." in message
     assert "Resume by creating `01-introduction.html` now." in message
     assert (
@@ -3262,7 +3263,7 @@ async def test_tool_batch_runner_bookkeeping_note_with_missing_artifact_requeues
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Bookkeeping note is recorded. An explicitly planned artifact is still missing." in message
+    assert "Bookkeeping note is recorded. A declared output artifact is still missing." in message
     assert "Resume by creating `02-installation.html` now." in message
     assert "Make your next response the concrete mutation tool call itself" in message
     assert "refresh `TodoWrite`" in message
@@ -3361,6 +3362,113 @@ async def test_tool_batch_runner_working_note_respects_discovery_first_pending_s
     )
     assert "one concrete evidence-gathering tool call" in message
     assert "Resume by creating `index.html` now." not in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_working_note_prefers_declared_output_gap_over_stale_discovery(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters_dir = guide_root / "chapters"
+    chapters_dir.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    first_chapter = chapters_dir / "01-introduction.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-introduction.html">Introduction</a>',
+                '<a href="chapters/02-installation.html">Installation</a>',
+                '<a href="chapters/03-configuration.html">Configuration</a>',
+            ]
+        )
+    )
+    first_chapter.write_text("<h1>Introduction</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root / 'index.html'}`",
+                f"- `{chapters_dir}/`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.extend(
+        [
+            "First, examine the existing fortran guide structure and content to understand the format",
+            "Create chapter files following the established pattern",
+        ]
+    )
+    dod.touched_files.extend([str(index_path), str(first_chapter)])
+
+    tool_call = ToolCall(
+        id="working-note",
+        name="notepad_write_working",
+        arguments={"content": "Created index and first chapter; next is chapter 2"},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Working note recorded",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Bookkeeping note is recorded. A declared output artifact is still missing." in message
+    assert "Resume by creating `02-installation.html` now." in message
+    assert "Continue with the next pending item: `First, examine the existing fortran guide structure" not in message
 
 
 @pytest.mark.asyncio
