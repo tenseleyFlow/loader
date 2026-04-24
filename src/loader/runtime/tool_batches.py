@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1106,6 +1107,11 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
+        if (
+            not has_file_artifact_progress
+            and _is_pure_directory_creation_tool_call(tool_call)
+        ):
+            return
         resume_target = _preferred_resume_target_path(
             dod,
             next_pending=next_pending,
@@ -2110,6 +2116,21 @@ def _current_mutation_label(tool_call: ToolCall) -> str:
         if command:
             return f"`{command}`"
     return f"the successful `{tool_call.name}` result"
+
+
+def _is_pure_directory_creation_tool_call(tool_call: ToolCall) -> bool:
+    if tool_call.name != "bash":
+        return False
+    command = str(tool_call.arguments.get("command", "")).strip()
+    if not command or any(
+        operator in command for operator in ("&&", "||", ";", "|", "$(", ">", "<")
+    ):
+        return False
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    return bool(parts) and parts[0] == "mkdir"
 
 
 def _tool_call_label(tool_call: ToolCall) -> str:

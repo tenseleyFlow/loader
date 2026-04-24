@@ -2024,7 +2024,7 @@ async def test_tool_batch_runner_discovery_completion_handoff_stays_persistent(
 
 
 @pytest.mark.asyncio
-async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_after_mkdir(
+async def test_tool_batch_runner_missing_artifact_nudge_stays_quiet_after_setup_mkdir(
     temp_dir: Path,
 ) -> None:
     async def assess_confidence(
@@ -2119,16 +2119,7 @@ async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_af
         consecutive_errors=0,
     )
 
-    assert persistent_messages
-    message = persistent_messages[-1]
-    assert "Next step: create `index.html`." in message
-    assert (
-        f"Prefer one `write(file_path=..., content=...)` call for `{(nginx_root / 'index.html').resolve(strict=False)}` now."
-        in message
-    )
-    assert "One declared output artifact is still missing." not in message
-    assert "Do not reread reference material or spend the next turn on bookkeeping." in message
-    assert "Resume by creating the next output file under `chapters/` now." not in message
+    assert persistent_messages == []
     assert ephemeral_messages == []
 
 
