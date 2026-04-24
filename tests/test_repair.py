@@ -317,6 +317,10 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
         in decision.retry_message
     )
     assert (
+        f'Emit this tool shape now: `write(file_path="{index_path.resolve(strict=False)}", content="...")`.'
+        in decision.retry_message
+    )
+    assert (
         "Do not restart discovery unless one specific missing fact blocks that file write."
         in decision.retry_message
     )
@@ -385,6 +389,10 @@ def test_empty_response_retry_recovers_blocked_empty_file_path_to_concrete_targe
         in decision.retry_message
     )
     assert "Do not leave `file_path` empty" in decision.retry_message
+    assert (
+        f'Emit this tool shape now: `write(file_path="{second_chapter.resolve(strict=False)}", content="...")`.'
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_respects_discovery_first_pending_step(
@@ -1144,6 +1152,10 @@ def test_empty_response_retry_maps_title_style_todo_to_html_graph_target(
     assert (
         f"Prefer one `write(content=...)` call for `{(chapters / '02-installation.html').resolve(strict=False)}` "
         "before more research."
+        in decision.retry_message
+    )
+    assert (
+        f'Emit this tool shape now: `write(file_path="{(chapters / "02-installation.html").resolve(strict=False)}", content="...")`.'
         in decision.retry_message
     )
     assert (

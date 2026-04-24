@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -375,6 +376,12 @@ class ResponseRepairer:
                 return [
                     target_line,
                     "Do not leave `file_path` empty; point it at the concrete next output file.",
+                    self._mutation_tool_scaffold(
+                        Path(target),
+                        tool_name="write",
+                    )
+                    if target
+                    else "Emit the `write(file_path=..., content=\"...\")` call with the real target path now.",
                 ]
             if attempt.tool_name == "edit":
                 target_line = (
@@ -385,6 +392,12 @@ class ResponseRepairer:
                 return [
                     target_line,
                     "Do not leave `file_path` empty; point it at the concrete file you already know needs the edit.",
+                    self._mutation_tool_scaffold(
+                        Path(target),
+                        tool_name="edit",
+                    )
+                    if target
+                    else "Emit the `edit(file_path=..., old_string=\"...\", new_string=\"...\")` call with the real target path now.",
                 ]
             if attempt.tool_name == "patch":
                 target_line = (
@@ -395,19 +408,32 @@ class ResponseRepairer:
                 return [
                     target_line,
                     "Do not leave `file_path` empty; point it at the concrete file you already know needs the patch.",
+                    self._mutation_tool_scaffold(
+                        Path(target),
+                        tool_name="patch",
+                    )
+                    if target
+                    else "Emit the `patch(file_path=..., patch=\"...\")` call with the real target path now.",
                 ]
         if attempt.tool_name == "write":
-            target_line = (
-                f"Last tool failure: resend `write` for `{target}` with real `content`, not just summary fields."
-                if target
-                else "Last tool failure: resend `write` with real `content`, not just summary fields."
-            )
-            return [
-                target_line,
-                f"Do not use {invalid} in place of the actual file body.",
+            lines = [
+                (
+                    f"Last tool failure: resend `write` for `{target}` with real `content`, not just summary fields."
+                    if target
+                    else "Last tool failure: resend `write` with real `content`, not just summary fields."
+                ),
             ]
+            lines.append(f"Do not use {invalid} in place of the actual file body.")
+            if target:
+                lines.append(
+                    self._mutation_tool_scaffold(
+                        Path(target),
+                        tool_name="write",
+                    )
+                )
+            return lines
         if attempt.tool_name == "edit":
-            return [
+            lines = [
                 (
                     f"Last tool failure: resend `edit` for `{target}` with the real text payload."
                     if target
@@ -415,8 +441,16 @@ class ResponseRepairer:
                 ),
                 f"Do not use {invalid} in place of `old_string`/`new_string`.",
             ]
+            if target:
+                lines.append(
+                    self._mutation_tool_scaffold(
+                        Path(target),
+                        tool_name="edit",
+                    )
+                )
+            return lines
         if attempt.tool_name == "patch":
-            return [
+            lines = [
                 (
                     f"Last tool failure: resend `patch` for `{target}` with real patch text or structured hunks."
                     if target
@@ -424,6 +458,14 @@ class ResponseRepairer:
                 ),
                 f"Do not use {invalid} in place of the real patch payload.",
             ]
+            if target:
+                lines.append(
+                    self._mutation_tool_scaffold(
+                        Path(target),
+                        tool_name="patch",
+                    )
+                )
+            return lines
         return []
 
     def _todo_refresh_retry_line(self, dod: DefinitionOfDone) -> str | None:
@@ -666,6 +708,12 @@ class ResponseRepairer:
             lines.append(
                 f"Prefer one `write(content=...)` call for `{inferred_pending_target}` before more research."
             )
+            lines.append(
+                self._mutation_tool_scaffold(
+                    inferred_pending_target,
+                    tool_name="write",
+                )
+            )
             if outline_label:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
@@ -741,6 +789,12 @@ class ResponseRepairer:
                     lines.append(
                         f"Prefer one `write` call for `{next_output_file}` before more research."
                     )
+                    lines.append(
+                        self._mutation_tool_scaffold(
+                            next_output_file,
+                            tool_name="write",
+                        )
+                    )
                     if outline_label:
                         lines.append(
                             f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
@@ -791,8 +845,10 @@ class ResponseRepairer:
                         "for a separate mkdir."
                     )
                 lines.append(
-                    "Shape the next response as one concrete `write(file_path=..., "
-                    "content=...)` tool call for that exact path."
+                    self._mutation_tool_scaffold(
+                        target,
+                        tool_name="write",
+                    )
                 )
             if completed_artifacts >= 3:
                 lines.append(
@@ -1000,6 +1056,20 @@ class ResponseRepairer:
                 first_line = re.sub(r"^-\s*\[[^\]]+\]\s*", "", first_line).strip()
                 return first_line or None
         return None
+
+    @staticmethod
+    def _mutation_tool_scaffold(path: Path, *, tool_name: str) -> str:
+        normalized_path = json.dumps(str(path.expanduser().resolve(strict=False)))
+        if tool_name == "edit":
+            signature = (
+                f"edit(file_path={normalized_path}, old_string=\"...\", "
+                'new_string="...")'
+            )
+        elif tool_name == "patch":
+            signature = f"patch(file_path={normalized_path}, patch=\"...\")"
+        else:
+            signature = f"write(file_path={normalized_path}, content=\"...\")"
+        return f"Emit this tool shape now: `{signature}`."
 
 
 def _todo_is_mutation_step(label: str) -> bool:
