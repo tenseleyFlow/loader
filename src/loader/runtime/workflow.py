@@ -817,6 +817,16 @@ def effective_pending_todo_items(
     )
     if not planned_targets:
         return pending_items
+    pending_items = [
+        item
+        for item in pending_items
+        if not _todo_describes_completed_setup_step(
+            item,
+            dod=dod,
+            planned_targets=planned_targets,
+            project_root=project_root,
+        )
+    ]
     if not all_planned_artifacts_exist(dod, project_root=project_root, max_paths=24):
         return pending_items
 
@@ -1461,6 +1471,41 @@ def _todo_describes_directory_content_creation(
         if any(token in text for token in tokens):
             return True
     return False
+
+
+def _todo_describes_completed_setup_step(
+    item: str,
+    *,
+    dod,
+    planned_targets: list[tuple[Path, bool]],
+    project_root: Path,
+) -> bool:
+    text = item.strip().lower()
+    if not text or item in _SPECIAL_TODO_ITEMS:
+        return False
+    if not _contains_any(text, _CREATION_STEP_HINTS):
+        return False
+    if not _contains_any(text, _BROAD_SETUP_HINTS):
+        return False
+
+    planned_directories = [
+        target
+        for target, expect_directory in planned_targets
+        if expect_directory
+    ]
+    if not planned_directories:
+        return False
+    if any(
+        not planned_artifact_target_satisfied(
+            dod=dod,
+            target=directory,
+            expect_directory=True,
+            project_root=project_root,
+        )
+        for directory in planned_directories
+    ):
+        return False
+    return True
 
 
 def _reopen_aggregate_completion_steps_for_missing_artifacts(

@@ -1111,6 +1111,70 @@ def test_empty_response_retry_uses_compact_prompt_after_early_progress_with_conc
     )
 
 
+def test_empty_response_retry_ignores_stale_setup_todo_after_files_created(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapters / '02-installation.html'}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+    dod.completed_items.extend(
+        [
+            "Develop the main index.html file for the nginx guide",
+            "Create first chapter file (01-introduction.html)",
+        ]
+    )
+    dod.pending_items.extend(
+        [
+            "Create the nginx directory structure",
+            "Create second chapter file (02-installation.html)",
+        ]
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Create the nginx directory structure" not in decision.retry_message
+    assert "02-installation.html" in decision.retry_message
+
+
 def test_empty_response_retry_fails_after_extended_late_stage_budget_is_exhausted(
     temp_dir: Path,
 ) -> None:

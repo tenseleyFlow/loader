@@ -569,6 +569,49 @@ def test_effective_pending_todo_items_filters_stale_discovery_after_artifacts_ex
     assert not any("Fortran guide structure" in item for item in pending)
 
 
+def test_effective_pending_todo_items_filters_completed_setup_before_build_finishes(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapters / '02-installation.html'}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Create the nginx directory structure",
+        "Create each chapter file with appropriate content",
+        "Complete the requested work",
+    ]
+
+    pending = effective_pending_todo_items(dod, project_root=temp_dir)
+
+    assert "Create the nginx directory structure" not in pending
+    assert "Create each chapter file with appropriate content" in pending
+    assert "Complete the requested work" in pending
+
+
 def test_effective_pending_todo_items_filters_stale_creation_steps_after_artifacts_exist(
     temp_dir: Path,
 ) -> None:
