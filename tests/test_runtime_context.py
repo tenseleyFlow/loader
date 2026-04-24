@@ -8,6 +8,7 @@ from loader.agent.loop import Agent, AgentConfig
 from loader.runtime.bootstrap import build_runtime_bootstrap_source, build_runtime_context
 from loader.runtime.context import RuntimeContext
 from loader.runtime.recovery import RecoveryContext
+from loader.runtime.steering import SteeringDirective
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -53,7 +54,9 @@ def test_runtime_context_control_callbacks_stay_in_sync(temp_dir: Path) -> None:
     context = build_runtime_context(source)
     context.queue_steering_message("Re-check the current task.")
 
-    assert context.drain_steering_messages() == ["Re-check the current task."]
+    assert context.drain_steering_messages() == [
+        SteeringDirective(content="Re-check the current task.")
+    ]
 
     context.set_workflow_mode("clarify")
     assert agent.workflow_mode == "clarify"

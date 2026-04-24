@@ -118,6 +118,16 @@ class TurnFinalizer:
 
         mutating_paths = [path for path in dod.touched_files if path]
         requires_verification = bool(mutating_paths or dod.mutating_actions)
+        if (
+            tracked_pending_items
+            and not requires_verification
+            and _response_declares_no_mutation_needed(candidate_response)
+        ):
+            tracked_pending_items = [
+                item
+                for item in tracked_pending_items
+                if not _is_task_restatement_pending_item(item, dod.task_statement)
+            ]
         rlog = get_runtime_logger()
         rlog.completion_check(
             "dod_gate",
@@ -1081,6 +1091,36 @@ def _verification_state_signature(dod: DefinitionOfDone) -> str:
         f";touched={touched}"
         f";actions={len(dod.mutating_actions)}"
         f";commands={commands}"
+    )
+
+
+def _normalize_pending_statement(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _is_task_restatement_pending_item(item: str, task_statement: str) -> bool:
+    normalized_item = _normalize_pending_statement(item)
+    normalized_task = _normalize_pending_statement(task_statement)
+    return bool(normalized_item and normalized_item == normalized_task)
+
+
+def _response_declares_no_mutation_needed(candidate_response: str) -> bool:
+    lowered = candidate_response.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "already correct",
+            "already up to date",
+            "already matches",
+            "already complete",
+            "no edit is needed",
+            "no edits are needed",
+            "no change is needed",
+            "no changes are needed",
+            "nothing to change",
+            "no update is needed",
+            "no updates are needed",
+        )
     )
 
 

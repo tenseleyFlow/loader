@@ -12,6 +12,7 @@ from loader.runtime.bootstrap import RuntimeBootstrapView, build_runtime_context
 from loader.runtime.conversation import ConversationRuntime
 from loader.runtime.launcher import RuntimeLauncher, build_runtime_launcher
 from loader.runtime.runtime_handle import RuntimeHandle
+from loader.runtime.steering import SteeringDirective
 from tests.helpers.runtime_harness import ScriptedBackend, run_explore_scenario, run_scenario
 
 
@@ -180,4 +181,6 @@ def test_runtime_handle_exposes_public_shell_steering_contract(
 
     assert handle.is_running is True
     assert handle.steer("stay in runtime") is True
-    assert handle.drain_steering_messages() == ["stay in runtime"]
+    assert handle.drain_steering_messages() == [
+        SteeringDirective(content="stay in runtime")
+    ]

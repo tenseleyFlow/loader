@@ -37,6 +37,7 @@ from loader.runtime.public_shell import (
 )
 from loader.runtime.runtime_handle import RuntimeHandle
 from loader.runtime.session import ConversationSession
+from loader.runtime.steering import SteeringDirective
 from tests.helpers.runtime_harness import ScriptedBackend
 
 
@@ -320,10 +321,12 @@ def test_steering_mailbox_tracks_running_state_and_fifo_messages() -> None:
     assert mailbox.steer("stay in runtime") is True
 
     mailbox.queue("double-check the current task")
+    mailbox.queue_ephemeral("show a lighter nudge")
 
     assert mailbox.drain() == [
-        "stay in runtime",
-        "double-check the current task",
+        SteeringDirective(content="stay in runtime"),
+        SteeringDirective(content="double-check the current task"),
+        SteeringDirective(content="show a lighter nudge", persist_to_model=False),
     ]
 
     mailbox.mark_idle()

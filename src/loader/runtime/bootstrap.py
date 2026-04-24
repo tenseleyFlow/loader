@@ -21,6 +21,7 @@ from .owner_metadata import build_runtime_owner_metadata
 from .permissions import PermissionConfigStatus, PermissionPolicy
 from .reasoning_service import RuntimeReasoningService
 from .session import ConversationSession
+from .steering import SteeringDirective
 
 
 class RuntimeBootstrapSource(Protocol):
@@ -48,7 +49,10 @@ class RuntimeBootstrapSource(Protocol):
     def queue_steering_message(self, message: str) -> None:
         """Queue one steering message for the runtime."""
 
-    def drain_steering_messages(self) -> list[str]:
+    def queue_ephemeral_steering_message(self, message: str) -> None:
+        """Queue one UI-only steering message for the runtime."""
+
+    def drain_steering_messages(self) -> list[SteeringDirective]:
         """Drain queued steering messages."""
 
     def refresh_capability_profile(self) -> None:
@@ -78,7 +82,8 @@ class RuntimeBootstrapView:
     _get_prompt_format: Callable[[], str | None]
     _get_prompt_sections: Callable[[], list[str]]
     _queue_steering_message: Callable[[str], None]
-    _drain_steering_messages: Callable[[], list[str]]
+    _queue_ephemeral_steering_message: Callable[[str], None]
+    _drain_steering_messages: Callable[[], list[SteeringDirective]]
     _refresh_capability_profile: Callable[[], None]
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -136,7 +141,12 @@ class RuntimeBootstrapView:
 
         self._queue_steering_message(message)
 
-    def drain_steering_messages(self) -> list[str]:
+    def queue_ephemeral_steering_message(self, message: str) -> None:
+        """Queue one UI-only steering message through the public shell callback."""
+
+        self._queue_ephemeral_steering_message(message)
+
+    def drain_steering_messages(self) -> list[SteeringDirective]:
         """Drain steering messages through the public shell callback."""
 
         return self._drain_steering_messages()
@@ -173,6 +183,7 @@ def build_runtime_bootstrap_source(source: RuntimeBootstrapSource | Any) -> Runt
         _get_prompt_format=lambda: source.prompt_format,
         _get_prompt_sections=lambda: list(source.prompt_sections),
         _queue_steering_message=source.queue_steering_message,
+        _queue_ephemeral_steering_message=source.queue_ephemeral_steering_message,
         _drain_steering_messages=source.drain_steering_messages,
         _refresh_capability_profile=source.refresh_capability_profile,
         metadata=build_runtime_owner_metadata(source),
@@ -234,6 +245,7 @@ def build_runtime_context(source: RuntimeBootstrapSource) -> RuntimeContext:
         set_workflow_mode_callback=_set_workflow_mode,
         drain_steering_messages_callback=source.drain_steering_messages,
         queue_steering_message_callback=source.queue_steering_message,
+        queue_ephemeral_steering_message_callback=source.queue_ephemeral_steering_message,
         refresh_capability_profile_callback=_refresh_capability_profile,
     )
     return context

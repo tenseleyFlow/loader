@@ -15,6 +15,7 @@ from .permissions import PermissionConfigStatus, PermissionPolicy
 from .reasoning_types import ActionVerification, ConfidenceAssessment
 from .recovery import RecoveryContext
 from .session import ConversationSession
+from .steering import SteeringDirective
 
 
 class ReasoningConfigProtocol(Protocol):
@@ -120,8 +121,9 @@ class RuntimeContext:
     prompt_format: str | None = None
     prompt_sections: list[str] = field(default_factory=list)
     set_workflow_mode_callback: Callable[[str], None] | None = None
-    drain_steering_messages_callback: Callable[[], list[str]] | None = None
+    drain_steering_messages_callback: Callable[[], list[SteeringDirective]] | None = None
     queue_steering_message_callback: Callable[[str], None] | None = None
+    queue_ephemeral_steering_message_callback: Callable[[str], None] | None = None
     refresh_capability_profile_callback: Callable[[], None] | None = None
 
     @property
@@ -157,7 +159,7 @@ class RuntimeContext:
         self.set_workflow_mode_callback(workflow_mode)
         self.workflow_mode = workflow_mode
 
-    def drain_steering_messages(self) -> list[str]:
+    def drain_steering_messages(self) -> list[SteeringDirective]:
         """Drain pending steering messages through the runtime control seam."""
 
         if self.drain_steering_messages_callback is None:
@@ -170,6 +172,15 @@ class RuntimeContext:
         if self.queue_steering_message_callback is None:
             return
         self.queue_steering_message_callback(message)
+
+    def queue_ephemeral_steering_message(self, message: str) -> None:
+        """Queue a UI-visible steering message without forcing model persistence."""
+
+        if self.queue_ephemeral_steering_message_callback is not None:
+            self.queue_ephemeral_steering_message_callback(message)
+            return
+        if self.queue_steering_message_callback is not None:
+            self.queue_steering_message_callback(message)
 
     def refresh_capability_profile(self) -> None:
         """Refresh the resolved capability profile through the runtime control seam."""

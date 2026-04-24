@@ -39,6 +39,7 @@ from ..runtime.public_shell import (
     stream_runtime_shell,
 )
 from ..runtime.safeguards import RuntimeSafeguards
+from ..runtime.steering import SteeringDirective
 from ..runtime.workflow import WorkflowMode
 from ..tools.base import ToolRegistry, create_default_registry
 
@@ -217,7 +218,12 @@ class Agent:
 
         self.steering.queue(message)
 
-    def drain_steering_messages(self) -> list[str]:
+    def queue_ephemeral_steering_message(self, message: str) -> None:
+        """Queue one UI-only runtime steering message."""
+
+        self.steering.queue_ephemeral(message)
+
+    def drain_steering_messages(self) -> list[SteeringDirective]:
         """Drain queued runtime steering messages."""
 
         return self.steering.drain()

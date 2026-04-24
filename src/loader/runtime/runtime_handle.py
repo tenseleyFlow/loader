@@ -32,6 +32,7 @@ from .public_shell import (
     set_runtime_shell_workflow_mode,
     stream_runtime_shell,
 )
+from .steering import SteeringDirective
 from .workflow import WorkflowMode
 
 
@@ -214,7 +215,12 @@ class RuntimeHandle:
 
         self.steering.queue(message)
 
-    def drain_steering_messages(self) -> list[str]:
+    def queue_ephemeral_steering_message(self, message: str) -> None:
+        """Queue one UI-only runtime steering message."""
+
+        self.steering.queue_ephemeral(message)
+
+    def drain_steering_messages(self) -> list[SteeringDirective]:
         """Drain queued runtime steering messages."""
 
         return self.steering.drain()

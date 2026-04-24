@@ -55,12 +55,14 @@ class TurnPreludeController:
         self.tracer.record("turn.iteration_started", iteration=iterations)
 
         steering_messages = self.context.drain_steering_messages()
-        for steering_message in steering_messages:
-            await emit(AgentEvent(type="steering", content=steering_message))
+        for directive in steering_messages:
+            await emit(AgentEvent(type="steering", content=directive.content))
+            if not directive.persist_to_model:
+                continue
             self.context.session.append(
                 Message(
                     role=Role.USER,
-                    content=f"[USER INTERRUPTION]: {steering_message}",
+                    content=f"[USER INTERRUPTION]: {directive.content}",
                 )
             )
 

@@ -1104,9 +1104,9 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
     ) -> ActionVerification:
         raise AssertionError("Verification should not run for this scenario")
 
-    reference = temp_dir / "fortran" / "index.html"
+    reference = temp_dir / "fortran" / "chapters" / "01-introduction.html"
     reference.parent.mkdir(parents=True)
-    reference.write_text("<h1>Fortran Beginner's Guide</h1>\n")
+    reference.write_text("<h1>Introduction</h1>\n<p>Guide cadence.</p>\n")
 
     context = build_context(
         temp_dir=temp_dir,
@@ -1149,7 +1149,7 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
         [
             tool_outcome(
                 tool_call=tool_call,
-                output="<h1>Fortran Beginner's Guide</h1>\n",
+                output="<h1>Introduction</h1>\n<p>Guide cadence.</p>\n",
                 is_error=False,
             )
         ]
@@ -1329,9 +1329,9 @@ async def test_tool_batch_runner_successful_reference_read_prioritizes_concrete_
     chapter_one.write_text("<html></html>\n")
     index_path = guide_root / "index.html"
 
-    reference = temp_dir / "Loader" / "guides" / "fortran" / "index.html"
+    reference = temp_dir / "Loader" / "guides" / "fortran" / "chapters" / "01-introduction.html"
     reference.parent.mkdir(parents=True, exist_ok=True)
-    reference.write_text("<h1>Fortran Beginner's Guide</h1>\n")
+    reference.write_text("<h1>Introduction</h1>\n<p>Guide cadence.</p>\n")
 
     implementation_plan = temp_dir / "implementation.md"
     implementation_plan.write_text(
@@ -1385,11 +1385,11 @@ async def test_tool_batch_runner_successful_reference_read_prioritizes_concrete_
         ],
     )
     tool_call = ToolCall(
-        id="read-reference-index",
+        id="read-reference-chapter",
         name="read",
         arguments={"file_path": str(reference)},
     )
-    read_output = "Observation [read]: Result: <h1>Fortran Beginner's Guide</h1>\n"
+    read_output = "Observation [read]: Result: <h1>Introduction</h1>\n<p>Guide cadence.</p>\n"
     executor = FakeExecutor(
         [
             ToolExecutionOutcome(
@@ -1798,9 +1798,9 @@ async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
     ) -> ActionVerification:
         raise AssertionError("Verification should not run for this scenario")
 
-    reference = temp_dir / "fortran" / "index.html"
+    reference = temp_dir / "fortran" / "chapters" / "01-introduction.html"
     reference.parent.mkdir(parents=True)
-    reference.write_text("<h1>Fortran Beginner's Guide</h1>\n")
+    reference.write_text("<h1>Introduction</h1>\n<p>Guide cadence.</p>\n")
 
     context = build_context(
         temp_dir=temp_dir,
@@ -1838,7 +1838,7 @@ async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
         [
             tool_outcome(
                 tool_call=tool_call,
-                output="<h1>Fortran Beginner's Guide</h1>\n",
+                output="<h1>Introduction</h1>\n<p>Guide cadence.</p>\n",
                 is_error=False,
             )
         ]

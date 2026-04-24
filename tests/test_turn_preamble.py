@@ -85,6 +85,47 @@ async def test_turn_preamble_drains_steering_without_prefill_hint(
 
 
 @pytest.mark.asyncio
+async def test_turn_preamble_keeps_ephemeral_steering_out_of_model_history(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    agent = Agent(
+        backend=backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+
+    prepared, events, capture = await _prepare_runtime(
+        runtime,
+        task="Create a README for the runtime controller.",
+    )
+    agent.messages.append(Message(role=Role.USER, content=prepared.task))
+    agent.queue_ephemeral_steering_message("Create 01-introduction.html now.")
+
+    decision = await runtime.turn_preamble.prepare_iteration(
+        task=prepared.task,
+        original_task=None,
+        iterations=1,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        on_user_question=None,
+        executor=prepared.executor,
+    )
+
+    assert not decision.should_continue
+    assert not any(
+        message.content == "[USER INTERRUPTION]: Create 01-introduction.html now."
+        for message in agent.session.messages
+    )
+    assert any(
+        event.type == "steering" and event.content == "Create 01-introduction.html now."
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_turn_preamble_skips_iteration_when_recovery_refreshes(
     temp_dir: Path,
 ) -> None:

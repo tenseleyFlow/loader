@@ -820,13 +820,13 @@ class ToolBatchRunner:
                     messages=list(getattr(self.context.session, "messages", []) or []),
                 )
                 if compact_handoff:
-                    self.context.queue_steering_message(
+                    self.context.queue_ephemeral_steering_message(
                         f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
                         f"`{tool_call.name}` result. {compact_handoff}"
                         " Do not reread reference material or spend the next turn on bookkeeping."
                     )
                     return
-            self.context.queue_steering_message(
+            self.context.queue_ephemeral_steering_message(
                 f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
                 f"`{tool_call.name}` result. One declared output artifact is still missing."
                 + _missing_artifact_resume_suffix(
@@ -851,7 +851,7 @@ class ToolBatchRunner:
                     "more reference material and perform the change now."
                 )
 
-        self.context.queue_steering_message(
+        self.context.queue_ephemeral_steering_message(
             f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
             f"`{tool_call.name}` result. Continue with the next pending item: "
             f"`{next_pending}` instead of rereading the same evidence.{mutation_suffix}"
@@ -944,7 +944,7 @@ class ToolBatchRunner:
                 messages=list(getattr(self.context.session, "messages", []) or []),
             )
             if compact_handoff:
-                self.context.queue_steering_message(
+                self.context.queue_ephemeral_steering_message(
                     f"Confirmed progress: {current_label} is now recorded. "
                     + compact_handoff
                     + " Do not reread reference material or spend the next turn on bookkeeping."
@@ -954,7 +954,7 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         ):
-            self.context.queue_steering_message(
+            self.context.queue_ephemeral_steering_message(
                 f"Confirmed progress: {current_label} is now recorded."
                 + _missing_artifact_resume_suffix(
                     missing_artifact,
@@ -964,7 +964,7 @@ class ToolBatchRunner:
                 + " No TodoWrite, no verification, no rereads until that artifact exists."
             )
             return
-        self.context.queue_steering_message(
+        self.context.queue_ephemeral_steering_message(
             f"Confirmed progress: {current_label} is now recorded."
             " One declared output artifact is still missing."
             + _missing_artifact_resume_suffix(
@@ -1020,9 +1020,9 @@ class ToolBatchRunner:
                         "Perform the mutation now instead of spending another turn on "
                         "planning, rereads, or verification."
                     )
-                    self.context.queue_steering_message(concrete_message)
+                    self.context.queue_ephemeral_steering_message(concrete_message)
                     return
-                self.context.queue_steering_message(
+                self.context.queue_ephemeral_steering_message(
                     "Todo tracking is updated. Continue with the next pending item: "
                     f"`{next_pending}`. Use the current output files as the source of "
                     "truth, and do not reopen reference materials unless one specific "
@@ -1040,7 +1040,7 @@ class ToolBatchRunner:
                     project_root=self.context.project_root,
                 )
             ):
-                self.context.queue_steering_message(
+                self.context.queue_ephemeral_steering_message(
                     "Todo tracking is updated. Continue with the next pending item: "
                     f"`{next_pending}`. Use the current output files as the source of "
                     "truth, and do not reopen reference materials unless one specific "
@@ -1063,7 +1063,7 @@ class ToolBatchRunner:
                     if verification_commands
                     else " Finish the targeted consistency pass without reopening reference materials."
                 )
-                self.context.queue_steering_message(
+                self.context.queue_ephemeral_steering_message(
                     "Todo tracking is updated. All explicitly planned artifacts now exist. "
                     f"Continue with the next pending item: `{next_pending}`. "
                     "Use the current output files as the source of truth, and do not restart "
@@ -1077,7 +1077,7 @@ class ToolBatchRunner:
                 if verification_commands
                 else " Finish the task using the files already on disk."
             )
-            self.context.queue_steering_message(
+            self.context.queue_ephemeral_steering_message(
                 "Todo tracking is updated. All explicitly planned artifacts now exist. "
                 "Do not restart discovery, reopen reference materials, or spend another turn "
                 "on TodoWrite alone."
@@ -1094,7 +1094,7 @@ class ToolBatchRunner:
             if next_pending
             else ""
         )
-        self.context.queue_steering_message(
+        self.context.queue_ephemeral_steering_message(
             "Todo tracking is updated. A declared output artifact is still missing."
             + next_pending_suffix
             + _missing_artifact_resume_suffix(
@@ -1151,7 +1151,7 @@ class ToolBatchRunner:
                 project_root=self.context.project_root,
             )
         ):
-            self.context.queue_steering_message(
+            self.context.queue_ephemeral_steering_message(
                 "Bookkeeping note is recorded. Continue with the next pending item: "
                 f"`{next_pending}`. Make your next response one concrete evidence-gathering "
                 "tool call that advances that step, not another bookkeeping-only turn."
@@ -1161,7 +1161,7 @@ class ToolBatchRunner:
             )
             return
 
-        self.context.queue_steering_message(
+        self.context.queue_ephemeral_steering_message(
             "Bookkeeping note is recorded. A declared output artifact is still missing."
             + _missing_artifact_resume_suffix(
                 missing_artifact,

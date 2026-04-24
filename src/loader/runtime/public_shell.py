@@ -24,6 +24,7 @@ from .permissions import PermissionConfigStatus, PermissionMode, PermissionPolic
 from .prompt_history import PromptSnapshot
 from .prompting import build_system_prompt_result
 from .session import ConversationSession
+from .steering import SteeringDirective
 
 
 @dataclass(slots=True)
@@ -70,7 +71,7 @@ class SteeringMailbox:
     """Small public-shell owner for steering and running-state bookkeeping."""
 
     def __init__(self) -> None:
-        self._pending: deque[str] = deque()
+        self._pending: deque[SteeringDirective] = deque()
         self._is_running = False
 
     @property
@@ -100,9 +101,14 @@ class SteeringMailbox:
     def queue(self, message: str) -> None:
         """Queue one steering message regardless of running state."""
 
-        self._pending.append(message)
+        self._pending.append(SteeringDirective(content=message, persist_to_model=True))
 
-    def drain(self) -> list[str]:
+    def queue_ephemeral(self, message: str) -> None:
+        """Queue one UI-only steering message regardless of running state."""
+
+        self._pending.append(SteeringDirective(content=message, persist_to_model=False))
+
+    def drain(self) -> list[SteeringDirective]:
         """Drain all pending steering messages in FIFO order."""
 
         drained = list(self._pending)
@@ -154,7 +160,10 @@ class RuntimeShellOwner(Protocol):
     def queue_steering_message(self, message: str) -> None:
         """Queue one steering message for the runtime."""
 
-    def drain_steering_messages(self) -> list[str]:
+    def queue_ephemeral_steering_message(self, message: str) -> None:
+        """Queue one UI-only steering message for the runtime."""
+
+    def drain_steering_messages(self) -> list[SteeringDirective]:
         """Drain queued steering messages."""
 
     def refresh_capability_profile(self) -> None:

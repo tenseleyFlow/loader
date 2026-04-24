@@ -391,6 +391,43 @@ async def test_turn_finalizer_records_skipped_verification_observation(
 
 
 @pytest.mark.asyncio
+async def test_turn_finalizer_accepts_noop_completion_with_task_restatement_todo(
+    temp_dir: Path,
+) -> None:
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    task = (
+        "Have a look at ~/Loader/guides/fortran/index.html, then "
+        "~/Loader/guides/fortran/chapters. The table of contents links in "
+        "index.html are inaccurate and the href’s are wrong. Let’s update the "
+        "links and their link texts to be correct."
+    )
+    dod = create_definition_of_done(task)
+    dod.pending_items = [task, "Complete the requested work"]
+    summary = TurnSummary(final_response="")
+
+    async def capture(event) -> None:
+        return None
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="The table of contents is already correct, so no edit is needed.",
+        emit=capture,
+        summary=summary,
+        executor=FakeExecutor([]),  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is False
+    assert result.reason_code == "non_mutating_response_accepted"
+
+
+@pytest.mark.asyncio
 async def test_turn_finalizer_records_passed_verification_observation(
     temp_dir: Path,
 ) -> None:
