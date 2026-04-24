@@ -1043,6 +1043,42 @@ def test_advance_todos_from_tool_call_does_not_complete_content_examination_from
     assert "Develop the main index.html file for the nginx guide" in dod.pending_items
 
 
+def test_advance_todos_from_tool_call_does_not_complete_deep_guide_study_from_root_index_read() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the existing fortran guide structure to understand the content organization and cadence",
+                "active_form": "Working on: First, examine the existing fortran guide structure to understand the content organization and cadence",
+                "status": "pending",
+            },
+            {
+                "content": "Develop the main index.html file for the nginx guide",
+                "active_form": "Working on: Develop the main index.html file for the nginx guide",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert (
+        advance_todos_from_tool_call(
+            dod,
+            ToolCall(
+                id="read-reference-index",
+                name="read",
+                arguments={"file_path": "~/Loader/guides/fortran/index.html"},
+            ),
+        )
+        is False
+    )
+    assert (
+        "First, examine the existing fortran guide structure to understand the content organization and cadence"
+        in dod.pending_items
+    )
+    assert "Develop the main index.html file for the nginx guide" in dod.pending_items
+
+
 def test_advance_todos_from_tool_call_does_not_complete_populate_step_from_reference_read() -> None:
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     sync_todos_to_definition_of_done(
