@@ -14,9 +14,11 @@ from .dod import (
     DefinitionOfDoneStore,
     VerificationEvidence,
     build_verification_summary,
+    collect_missing_declared_html_output_files,
     collect_planned_artifact_targets,
     derive_verification_commands,
     ensure_active_verification_attempt,
+    planned_artifact_target_satisfied,
     synthesize_todo_items,
 )
 from .events import AgentEvent, TurnSummary
@@ -1088,6 +1090,11 @@ def _build_verification_repair_guidance(
     project_root: Path,
 ) -> str:
     repair_targets = _extract_verification_repair_targets(dod.evidence)
+    missing_planned_outputs = _extract_verification_missing_planned_outputs(
+        dod,
+        project_root=project_root,
+        repair_targets=repair_targets,
+    )
     fixes = _extract_verification_repairs(
         dod.evidence,
         repair_targets=repair_targets,
@@ -1097,6 +1104,48 @@ def _build_verification_repair_guidance(
         repair_targets=repair_targets,
         project_root=project_root,
     )
+    if missing_planned_outputs:
+        missing_output_keys = {
+            str(path.resolve(strict=False)) for path in missing_planned_outputs
+        }
+        lines = ["Repair focus:"]
+        for path in missing_planned_outputs[:4]:
+            lines.append(
+                f"- Continue the declared output set by creating missing planned artifact `{path}`."
+            )
+        for target in repair_targets:
+            normalized_expected = str(
+                Path(target.expected_path).resolve(strict=False)
+            )
+            if normalized_expected not in missing_output_keys:
+                continue
+            lines.append(
+                f"- Existing file `{target.artifact_path}` already references "
+                f"`{target.failing_reference}` -> `{normalized_expected}`."
+            )
+        primary_missing = missing_planned_outputs[0]
+        lines.extend(
+            [
+                f"- Immediate next step: write `{primary_missing}`.",
+                "- Do not rewrite existing aggregate files to match the partial artifact "
+                "set while these declared outputs are still missing.",
+                *(
+                    [
+                        "- Use the existing artifact files as the source of truth while "
+                        "continuing the declared output set: "
+                        + ", ".join(f"`{path}`" for path in repair_source_paths[:6])
+                        + (", ..." if len(repair_source_paths) > 6 else "")
+                    ]
+                    if repair_source_paths
+                    else []
+                ),
+                "- After each new file write, continue with the next missing declared "
+                "output or rerun verification once the declared output set exists.",
+                "- Do not reread unrelated reference materials or restart discovery "
+                "while this repair target is unresolved.",
+            ]
+        )
+        return "\n".join(lines)
     if not fixes and not repair_targets:
         return (
             "Use the failed verification evidence directly, avoid rereading unrelated "
@@ -1188,11 +1237,36 @@ def _build_verification_failure_recovery_nudge(
     project_root: Path,
 ) -> str | None:
     repair_targets = _extract_verification_repair_targets(dod.evidence)
+    missing_planned_outputs = _extract_verification_missing_planned_outputs(
+        dod,
+        project_root=project_root,
+        repair_targets=repair_targets,
+    )
     repair_source_paths = _existing_repair_source_paths(
         dod,
         repair_targets=repair_targets,
         project_root=project_root,
     )
+    if missing_planned_outputs:
+        primary_missing = missing_planned_outputs[0]
+        source_hint = ""
+        if repair_source_paths:
+            preview = ", ".join(f"`{path}`" for path in repair_source_paths[:4])
+            if len(repair_source_paths) > 4:
+                preview += ", ..."
+            source_hint = (
+                " Use the generated files already on disk as the source of truth: "
+                f"{preview}."
+            )
+        return (
+            "Verification failed because the current artifact set already references "
+            "declared outputs that do not exist yet. "
+            "Do not rewrite the existing aggregate files to match the partial artifact set. "
+            "Your next response should be one concrete `write`-style tool call that creates "
+            f"`{primary_missing}`. "
+            "Continue one missing declared output at a time until the declared set exists."
+            f"{source_hint}"
+        )
     if repair_targets:
         primary_target = repair_targets[0]
         source_hint = ""
@@ -1286,6 +1360,53 @@ def _extract_verification_repair_targets(
                 seen.add(key)
                 targets.append(parsed)
     return targets
+
+
+def _extract_verification_missing_planned_outputs(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    repair_targets: list[VerificationRepairTarget],
+) -> list[Path]:
+    if not repair_targets:
+        return []
+
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=24,
+    )
+    missing_declared_outputs: set[str] = set()
+    for target, expect_directory in planned_targets:
+        normalized_target = target.resolve(strict=False)
+        if expect_directory:
+            for candidate in collect_missing_declared_html_output_files(
+                target=normalized_target,
+                project_root=project_root,
+            ):
+                missing_declared_outputs.add(str(candidate.resolve(strict=False)))
+            continue
+        if planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=False,
+            project_root=project_root,
+        ):
+            continue
+        missing_declared_outputs.add(str(normalized_target))
+
+    missing_paths: list[Path] = []
+    seen: set[str] = set()
+    for repair_target in repair_targets:
+        expected_path = Path(repair_target.expected_path).resolve(strict=False)
+        normalized_expected = str(expected_path)
+        if normalized_expected not in missing_declared_outputs:
+            continue
+        if normalized_expected in seen:
+            continue
+        seen.add(normalized_expected)
+        missing_paths.append(expected_path)
+    return missing_paths
 
 
 def _parse_missing_local_html_link(problem: str) -> VerificationRepairTarget | None:

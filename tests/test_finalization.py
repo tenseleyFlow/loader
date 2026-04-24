@@ -830,6 +830,117 @@ async def test_turn_finalizer_verification_failure_reentry_points_at_concrete_re
 
 
 @pytest.mark.asyncio
+async def test_turn_finalizer_verification_failure_reentry_prioritizes_missing_planned_outputs(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    context = build_context(temp_dir, session)
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    finalizer = TurnFinalizer(
+        context,
+        RuntimeTracer(),
+        DefinitionOfDoneStore(temp_dir),
+        set_workflow_mode=_noop_set_workflow_mode,
+    )
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True, exist_ok=True)
+    index = guide_root / "index.html"
+    first = chapters / "01-installation.html"
+    second = chapters / "02-configuration.html"
+    third = chapters / "03-basic-usage.html"
+    index.write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-installation.html">Installation</a>',
+                '<a href="chapters/02-configuration.html">Configuration</a>',
+                '<a href="chapters/03-basic-usage.html">Basic Usage</a>',
+            ]
+        )
+    )
+    first.write_text("<h1>Installation</h1>\n")
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index}`",
+                f"- `{first}`",
+                "",
+            ]
+        )
+    )
+    dod = create_definition_of_done("Create the nginx guide.")
+    dod.mutating_actions.append("write")
+    dod.touched_files.extend([str(index), str(first)])
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = ["python3 verify_links.py"]
+    summary = TurnSummary(final_response="")
+    verify_call = ToolCall(
+        id="verify-1-1",
+        name="bash",
+        arguments={"command": dod.verification_commands[0], "cwd": str(temp_dir)},
+    )
+    normalized_second = str(second.resolve(strict=False))
+    normalized_third = str(third.resolve(strict=False))
+    failure_output = (
+        "Missing local HTML links:\n"
+        f"{index}:chapters/02-configuration.html -> {second}\n"
+        f"{index}:chapters/03-basic-usage.html -> {third}\n"
+    )
+
+    async def capture(event) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "loader.runtime.finalization.derive_verification_commands",
+        lambda *args, **kwargs: [],
+    )
+
+    result = await finalizer.run_definition_of_done_gate(
+        dod=dod,
+        candidate_response="The guide is complete.",
+        emit=capture,
+        summary=summary,
+        executor=FakeExecutor(
+            [
+                tool_outcome(
+                    tool_call=verify_call,
+                    output=failure_output,
+                    is_error=True,
+                    exit_code=1,
+                    stdout=failure_output,
+                )
+            ]
+        ),  # type: ignore[arg-type]
+    )
+
+    assert result.should_continue is True
+    assert result.reason_code == "verification_failed_reentry"
+    assert queued_messages
+    assert normalized_second in queued_messages[-1]
+    assert "Do not rewrite the existing aggregate files" in queued_messages[-1]
+    assert session.messages[-1].content.startswith("[DEFINITION OF DONE CHECK FAILED]")
+    assert f"Immediate next step: write `{normalized_second}`." in session.messages[-1].content
+    assert (
+        f"creating missing planned artifact `{normalized_second}`"
+        in session.messages[-1].content
+    )
+    assert (
+        f"creating missing planned artifact `{normalized_third}`"
+        in session.messages[-1].content
+    )
+    assert f"Immediate next step: edit `{index}`." not in session.messages[-1].content
+    assert "Do not rewrite existing aggregate files" in session.messages[-1].content
+
+
+@pytest.mark.asyncio
 async def test_turn_finalizer_does_not_reverify_without_new_changes(
     temp_dir: Path,
 ) -> None:

@@ -51,7 +51,10 @@ def extract_active_repair_context(
 
             repair_lines.append(line)
             if not artifact_path:
-                match = re.search(r"Immediate next step: edit `([^`]+)`", line)
+                match = re.search(
+                    r"Immediate next step: (?:edit|write|patch|create|update|replace) `([^`]+)`",
+                    line,
+                )
                 if match:
                     artifact_path = normalize_repair_path(match.group(1))
 
