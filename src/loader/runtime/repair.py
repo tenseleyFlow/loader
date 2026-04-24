@@ -28,6 +28,7 @@ _SPECIAL_DOD_ITEMS = {
     "Collect verification evidence",
 }
 _LATE_STAGE_EMPTY_RETRY_EXTRA = 2
+_MULTI_FILE_OUTPUT_EMPTY_RETRY_EXTRA = 2
 _WORKING_NOTE_TOOL_NAMES = (
     "notepad_write_working",
     "notepad_append",
@@ -419,7 +420,10 @@ class ResponseRepairer:
         if completed_artifacts >= 3 and missing_artifacts > 0:
             return base_max_empty_retries + _LATE_STAGE_EMPTY_RETRY_EXTRA
         if self._has_concrete_next_output_step(dod):
-            return base_max_empty_retries + _LATE_STAGE_EMPTY_RETRY_EXTRA
+            extra_retries = _LATE_STAGE_EMPTY_RETRY_EXTRA
+            if self._has_confirmed_output_file_progress(dod):
+                extra_retries += _MULTI_FILE_OUTPUT_EMPTY_RETRY_EXTRA
+            return base_max_empty_retries + extra_retries
         return base_max_empty_retries
 
     def _should_compact_empty_retry_message(self, dod: DefinitionOfDone) -> bool:
@@ -482,6 +486,22 @@ class ResponseRepairer:
             messages=list(getattr(self.context.session, "messages", []) or []),
         )
         return next_output_file is not None
+
+    def _has_confirmed_output_file_progress(self, dod: DefinitionOfDone) -> bool:
+        return any(
+            not expect_directory
+            and planned_artifact_target_satisfied(
+                dod,
+                target=target,
+                expect_directory=False,
+                project_root=self.context.project_root,
+            )
+            for target, expect_directory in collect_planned_artifact_targets(
+                dod,
+                project_root=self.context.project_root,
+                max_paths=12,
+            )
+        )
 
     def _planned_artifact_progress_lines(self, dod: DefinitionOfDone) -> list[str]:
         targets = collect_planned_artifact_targets(
