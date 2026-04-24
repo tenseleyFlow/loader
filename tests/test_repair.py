@@ -692,8 +692,70 @@ def test_empty_response_retry_treats_develop_index_step_as_mutation_work(
         "Resume with this exact next step: continue `Develop the main index.html file with proper structure`"
         in decision.retry_message
     )
+    assert "Next missing planned artifact: `index.html`" in decision.retry_message
     assert "Prefer one `write(content=...)` call" in decision.retry_message
     assert "Make the next response one concrete evidence-gathering tool call" not in decision.retry_message
+
+
+def test_empty_response_retry_prefers_pending_index_over_broad_directory_headline(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.completed_items.extend(
+        [
+            "First, examine the existing Fortran guide structure to understand the format and depth",
+            "Create the new nginx guide directory structure",
+        ]
+    )
+    dod.pending_items.append("Develop the main index.html file with proper structure")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=4,
+        max_empty_retries=4,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Next missing planned artifact: `index.html`" in decision.retry_message
+    assert (
+        "Resume with this exact next step: continue `Develop the main index.html file with proper structure` "
+        "by creating `index.html`."
+        in decision.retry_message
+    )
+    assert "Next missing planned artifact: `chapters/`" not in decision.retry_message
 
 
 def test_empty_response_retry_prefers_output_index_over_reference_index_with_same_name(
@@ -809,7 +871,7 @@ def test_empty_response_retry_points_at_declared_child_file_within_incomplete_ou
 
     assert decision.should_continue is True
     assert decision.retry_message is not None
-    assert "Next missing planned artifact: `chapters/`" in decision.retry_message
+    assert "Next missing planned artifact: `introduction.html`" in decision.retry_message
     assert "Next declared output under `chapters/`: `introduction.html`" in decision.retry_message
     assert (
         "Resume with this exact next step: continue `Write the introduction chapter` "
@@ -1423,7 +1485,7 @@ def test_empty_response_retry_names_next_file_from_observed_sibling_directory(
 
     assert decision.should_continue is True
     assert decision.retry_message is not None
-    assert "Next missing planned artifact: `chapters/`" in decision.retry_message
+    assert "Next missing planned artifact: `01-introduction.html`" in decision.retry_message
     assert "Next observed output pattern under `chapters/`: `01-introduction.html`" in decision.retry_message
     assert (
         "Resume with this exact next step: continue `Write the introduction chapter` "

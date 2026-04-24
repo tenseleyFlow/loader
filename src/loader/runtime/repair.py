@@ -315,25 +315,10 @@ class ResponseRepairer:
                     "Confirmed completed work: " + "; ".join(completed[-2:])
                 )
 
+            preferred_missing_artifact = self._preferred_resume_missing_artifact(dod)
             next_pending = self._preferred_resume_pending_item(
                 dod,
-                missing_artifact=next(
-                    (
-                        artifact
-                        for artifact in collect_planned_artifact_targets(
-                            dod,
-                            project_root=self.context.project_root,
-                            max_paths=12,
-                        )
-                        if not planned_artifact_target_satisfied(
-                            dod,
-                            target=artifact[0],
-                            expect_directory=artifact[1],
-                            project_root=self.context.project_root,
-                        )
-                    ),
-                    None,
-                ),
+                missing_artifact=preferred_missing_artifact,
             )
             if next_pending:
                 progress_lines.append(f"Next pending item: {next_pending}")
@@ -507,6 +492,7 @@ class ResponseRepairer:
         if not targets:
             return []
 
+        preferred_missing_artifact = self._preferred_resume_missing_artifact(dod)
         missing_labels = [
             self._format_artifact_label(target, expect_directory=expect_directory)
             for target, expect_directory in targets
@@ -519,6 +505,14 @@ class ResponseRepairer:
         ]
         if not missing_labels:
             return []
+
+        if preferred_missing_artifact is not None:
+            preferred_label = self._format_artifact_label(
+                preferred_missing_artifact[0],
+                expect_directory=preferred_missing_artifact[1],
+            )
+            ordered_labels = [preferred_label, *missing_labels]
+            missing_labels = list(dict.fromkeys(ordered_labels))
 
         lines = [f"Next missing planned artifact: {missing_labels[0]}"]
         first_missing_target, first_missing_is_directory = next(
@@ -565,23 +559,7 @@ class ResponseRepairer:
         retry_number: int,
     ) -> list[str]:
         completed_artifacts, _ = self._planned_artifact_counts(dod)
-        next_missing_artifact = next(
-            (
-                artifact
-                for artifact in collect_planned_artifact_targets(
-                    dod,
-                    project_root=self.context.project_root,
-                    max_paths=12,
-                )
-                if not planned_artifact_target_satisfied(
-                    dod,
-                    target=artifact[0],
-                    expect_directory=artifact[1],
-                    project_root=self.context.project_root,
-                )
-            ),
-            None,
-        )
+        next_missing_artifact = self._preferred_resume_missing_artifact(dod)
         next_pending = self._preferred_resume_pending_item(
             dod,
             missing_artifact=next_missing_artifact,
@@ -803,6 +781,93 @@ class ResponseRepairer:
             (item for item in dod.pending_items if item not in _SPECIAL_DOD_ITEMS),
             None,
         )
+
+    def _preferred_resume_missing_artifact(
+        self,
+        dod: DefinitionOfDone,
+    ) -> tuple[Path, bool] | None:
+        planned_targets = collect_planned_artifact_targets(
+            dod,
+            project_root=self.context.project_root,
+            max_paths=12,
+        )
+        first_missing = next(
+            (
+                artifact
+                for artifact in planned_targets
+                if not planned_artifact_target_satisfied(
+                    dod,
+                    target=artifact[0],
+                    expect_directory=artifact[1],
+                    project_root=self.context.project_root,
+                )
+            ),
+            None,
+        )
+        if first_missing is None:
+            return None
+
+        next_pending = self._preferred_resume_pending_item(
+            dod,
+            missing_artifact=first_missing,
+        )
+        if next_pending is None:
+            return self._concretize_directory_missing_artifact(
+                dod,
+                first_missing,
+                planned_targets=planned_targets,
+            )
+
+        inferred_target = self._infer_pending_item_output_target(dod, next_pending)
+        if inferred_target is None or inferred_target.exists():
+            return self._concretize_directory_missing_artifact(
+                dod,
+                first_missing,
+                planned_targets=planned_targets,
+            )
+
+        normalized_target = inferred_target.expanduser().resolve(strict=False)
+        for planned_target, expect_directory in planned_targets:
+            normalized_planned = planned_target.expanduser().resolve(strict=False)
+            if expect_directory:
+                try:
+                    normalized_target.relative_to(normalized_planned)
+                except ValueError:
+                    continue
+                return normalized_target, False
+            if normalized_planned == normalized_target:
+                return normalized_target, False
+        return first_missing
+
+    def _concretize_directory_missing_artifact(
+        self,
+        dod: DefinitionOfDone,
+        missing_artifact: tuple[Path, bool],
+        *,
+        planned_targets: list[tuple[Path, bool]],
+    ) -> tuple[Path, bool]:
+        target, expect_directory = missing_artifact
+        if not expect_directory:
+            return missing_artifact
+        if any(
+            not expect_dir
+            and not planned_artifact_target_satisfied(
+                dod,
+                target=planned_target,
+                expect_directory=expect_dir,
+                project_root=self.context.project_root,
+            )
+            for planned_target, expect_dir in planned_targets
+        ):
+            return missing_artifact
+        next_output_file, _ = infer_next_output_file(
+            target=target,
+            project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
+        )
+        if next_output_file is None or next_output_file.exists():
+            return missing_artifact
+        return next_output_file, False
 
     @staticmethod
     def _format_artifact_label(path: Path, *, expect_directory: bool) -> str:
