@@ -828,12 +828,25 @@ def test_advance_todos_from_tool_call_tracks_plan_progress() -> None:
         in dod.completed_items
     )
 
-    assert advance_todos_from_tool_call(
+    assert not advance_todos_from_tool_call(
         dod,
         ToolCall(
             id="glob-chapters",
             name="glob",
             arguments={"path": "/tmp/fortran/chapters", "pattern": "*.html"},
+        ),
+    )
+    assert (
+        "List and read all HTML files in the chapters directory to extract chapter information"
+        in dod.pending_items
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="read-chapter",
+            name="read",
+            arguments={"file_path": "/tmp/fortran/chapters/01-introduction.html"},
         ),
     )
     assert (
@@ -844,9 +857,9 @@ def test_advance_todos_from_tool_call_tracks_plan_progress() -> None:
     assert advance_todos_from_tool_call(
         dod,
         ToolCall(
-            id="read-chapter",
+            id="read-second-chapter",
             name="read",
-            arguments={"file_path": "/tmp/fortran/chapters/01-introduction.html"},
+            arguments={"file_path": "/tmp/fortran/chapters/02-setup.html"},
         ),
     )
     assert "Parse chapter titles from each HTML file" in dod.completed_items
@@ -1075,6 +1088,42 @@ def test_advance_todos_from_tool_call_does_not_complete_content_examination_from
         in dod.pending_items
     )
     assert "Develop the main index.html file for the nginx guide" in dod.pending_items
+
+
+def test_advance_todos_from_tool_call_does_not_complete_format_study_from_shallow_glob() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the existing fortran guide structure to understand the format",
+                "active_form": "Working on: First, examine the existing fortran guide structure to understand the format",
+                "status": "pending",
+            },
+            {
+                "content": "Create the main index.html file for nginx guide",
+                "active_form": "Working on: Create the main index.html file for nginx guide",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert (
+        advance_todos_from_tool_call(
+            dod,
+            ToolCall(
+                id="glob-reference-root",
+                name="glob",
+                arguments={"path": "~/Loader/guides/fortran", "pattern": "**"},
+            ),
+        )
+        is False
+    )
+    assert (
+        "First, examine the existing fortran guide structure to understand the format"
+        in dod.pending_items
+    )
+    assert "Create the main index.html file for nginx guide" in dod.pending_items
 
 
 def test_advance_todos_from_tool_call_does_not_complete_deep_guide_study_from_root_index_read() -> None:

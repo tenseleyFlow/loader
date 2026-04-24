@@ -189,6 +189,7 @@ _ARTIFACT_SET_COMPLETION_HINTS = (
 )
 _CONTENT_EVIDENCE_HINTS = (
     "content",
+    "format",
     "cadence",
     "depth",
     "writing style",
@@ -1340,6 +1341,11 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
             score += 1
     elif name in {"glob", "grep"}:
         if _todo_requires_content_level_evidence(text):
+            return 0
+        if _contains_any(text, _PARSE_STEP_HINTS) and not (
+            _contains_any(text, _SEARCH_STEP_HINTS)
+            or _contains_any(text, _READ_STEP_HINTS)
+        ):
             return 0
         if not (
             _contains_any(text, _SEARCH_STEP_HINTS)
