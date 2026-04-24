@@ -1093,13 +1093,19 @@ def _extract_file_change_path_literals(lines: list[str]) -> list[str]:
     paths: list[str] = []
     seen: set[str] = set()
     directory_stack: list[tuple[int, str]] = []
+    read_only_stack: list[int] = []
 
     for line in lines:
-        if _line_describes_read_only_file_change(line):
-            continue
         indent = len(line) - len(line.lstrip(" "))
+        while read_only_stack and indent <= read_only_stack[-1]:
+            read_only_stack.pop()
         while directory_stack and indent <= directory_stack[-1][0]:
             directory_stack.pop()
+        if _line_describes_read_only_file_change(line):
+            read_only_stack.append(indent)
+            continue
+        if read_only_stack:
+            continue
 
         backticked = re.findall(r"`([^`]+)`", line)
         if backticked:
