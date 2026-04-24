@@ -1106,6 +1106,13 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
+        resume_target = _preferred_resume_target_path(
+            dod,
+            next_pending=next_pending,
+            missing_artifact=missing_artifact,
+            project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
+        )
         resume_suffix = _pending_item_resume_suffix(
             dod,
             next_pending=next_pending,
@@ -1113,14 +1120,32 @@ class ToolBatchRunner:
             project_root=self.context.project_root,
             messages=list(getattr(self.context.session, "messages", []) or []),
         )
+        use_persistent_handoff = _should_use_persistent_missing_artifact_handoff(
+            dod,
+            project_root=self.context.project_root,
+        )
         queue_message = (
             self.context.queue_steering_message
-            if _should_use_persistent_missing_artifact_handoff(
-                dod,
-                project_root=self.context.project_root,
-            )
+            if use_persistent_handoff
             else self.context.queue_ephemeral_steering_message
         )
+        if (
+            use_persistent_handoff
+            and resume_target is not None
+            and resume_target.suffix
+        ):
+            compact_resume = _compact_missing_artifact_handoff(
+                (resume_target, False),
+                project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
+            )
+            if compact_resume:
+                queue_message(
+                    f"Confirmed progress: {current_label} is now recorded. "
+                    + compact_resume
+                    + " Do not reread reference material or spend the next turn on bookkeeping."
+                )
+                return
         todo_refresh = _todo_refresh_guidance(
             dod,
             project_root=self.context.project_root,
