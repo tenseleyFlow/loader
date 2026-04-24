@@ -1871,6 +1871,106 @@ async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_after_mkdir(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    nginx_root = temp_dir / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{nginx_root / 'index.html'}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create the nginx directory structure",
+                "active_form": "Creating the nginx directory structure",
+                "status": "pending",
+            },
+            {
+                "content": "Develop the main index.html file with proper structure",
+                "active_form": "Developing the main index.html file with proper structure",
+                "status": "pending",
+            },
+        ],
+    )
+
+    tool_call = ToolCall(
+        id="mkdir-nginx",
+        name="bash",
+        arguments={"command": f"mkdir -p {chapters}"},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Resume by creating `index.html` now." in message
+    assert "Resume by creating the next output file under `chapters/` now." not in message
+
+
+@pytest.mark.asyncio
 async def test_duplicate_observation_nudge_prioritizes_missing_artifact_over_review(
     temp_dir: Path,
 ) -> None:

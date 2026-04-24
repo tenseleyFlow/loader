@@ -912,6 +912,17 @@ class ToolBatchRunner:
         )
         if missing_artifact is None:
             return
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=missing_artifact,
+        )
+        missing_artifact = _prefer_missing_artifact_for_pending_item(
+            dod,
+            missing_artifact=missing_artifact,
+            next_pending=next_pending,
+            project_root=self.context.project_root,
+        )
 
         current_label = _current_mutation_label(tool_call)
         todo_refresh = _todo_refresh_guidance(
@@ -1230,6 +1241,42 @@ def _next_missing_planned_artifact(
         if next_output_file is not None and not next_output_file.exists():
             return next_output_file, False
     return None
+
+
+def _prefer_missing_artifact_for_pending_item(
+    dod: DefinitionOfDone,
+    *,
+    missing_artifact: tuple[Path, bool] | None,
+    next_pending: str | None,
+    project_root: Path,
+) -> tuple[Path, bool] | None:
+    if missing_artifact is None or not next_pending:
+        return missing_artifact
+
+    inferred_target = infer_pending_todo_output_target(
+        dod,
+        next_pending,
+        project_root=project_root,
+    )
+    if inferred_target is None or inferred_target.exists():
+        return missing_artifact
+
+    normalized_target = inferred_target.expanduser().resolve(strict=False)
+    for planned_target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        normalized_planned = planned_target.expanduser().resolve(strict=False)
+        if expect_directory:
+            try:
+                normalized_target.relative_to(normalized_planned)
+            except ValueError:
+                continue
+            return normalized_target, False
+        if normalized_planned == normalized_target:
+            return normalized_target, False
+    return missing_artifact
 
 
 def _late_stage_missing_artifact_build(
