@@ -383,9 +383,11 @@ class ResponseRepairer:
         if dod is None:
             return base_max_empty_retries
         completed_artifacts, missing_artifacts = self._planned_artifact_counts(dod)
-        if completed_artifacts < 3 or missing_artifacts == 0:
-            return base_max_empty_retries
-        return base_max_empty_retries + _LATE_STAGE_EMPTY_RETRY_EXTRA
+        if completed_artifacts >= 3 and missing_artifacts > 0:
+            return base_max_empty_retries + _LATE_STAGE_EMPTY_RETRY_EXTRA
+        if self._has_concrete_next_output_step(dod):
+            return base_max_empty_retries + _LATE_STAGE_EMPTY_RETRY_EXTRA
+        return base_max_empty_retries
 
     def _should_compact_empty_retry_message(self, dod: DefinitionOfDone) -> bool:
         completed_artifacts, missing_artifacts = self._planned_artifact_counts(dod)

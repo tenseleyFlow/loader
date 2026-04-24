@@ -450,6 +450,52 @@ def test_empty_response_retry_budget_extends_for_late_stage_multi_artifact_progr
     assert "Follow the same one-file-at-a-time mutation pattern" in decision.retry_message
 
 
+def test_empty_response_retry_budget_extends_when_concrete_next_output_is_known(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'index.html'}`",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters'}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.append("Develop the main index.html file for the nginx guide")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=3,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "retry 3/4" in decision.retry_message
+    assert "Next missing planned artifact: `index.html`" in decision.retry_message
+    assert (
+        "Resume with this exact next step: continue `Develop the main index.html file for the nginx guide` "
+        "by creating `index.html`."
+        in decision.retry_message
+    )
+
+
 def test_empty_response_retry_uses_compact_prompt_after_substantial_progress(
     temp_dir: Path,
 ) -> None:
