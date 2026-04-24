@@ -927,18 +927,18 @@ def infer_pending_todo_output_target(
         project_root=root,
         max_paths=12,
     )
+    planned_files = [
+        target
+        for target, expect_directory in planned_targets
+        if not expect_directory
+    ]
+    planned_directories = [
+        target
+        for target, expect_directory in planned_targets
+        if expect_directory
+    ]
 
     if candidates:
-        planned_files = [
-            target
-            for target, expect_directory in planned_targets
-            if not expect_directory
-        ]
-        planned_directories = [
-            target
-            for target, expect_directory in planned_targets
-            if expect_directory
-        ]
         touched_paths = [
             Path(path)
             for path in dod.touched_files
@@ -978,6 +978,16 @@ def infer_pending_todo_output_target(
 
             for directory in planned_directories:
                 return directory / candidate.name
+
+    if target_label and _contains_any(target_label, _BROAD_SETUP_HINTS):
+        for directory in planned_directories:
+            if not planned_artifact_target_satisfied(
+                dod=dod,
+                target=directory,
+                expect_directory=True,
+                project_root=root,
+            ):
+                return directory
 
     if not target_label:
         return None

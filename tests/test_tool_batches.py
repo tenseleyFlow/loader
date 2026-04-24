@@ -1122,6 +1122,21 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
     reference = temp_dir / "fortran" / "chapters" / "01-introduction.html"
     reference.parent.mkdir(parents=True)
     reference.write_text("<h1>Introduction</h1>\n<p>Guide cadence.</p>\n")
+    nginx_root = temp_dir / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{nginx_root / 'index.html'}`",
+                "",
+            ]
+        )
+    )
 
     context = build_context(
         temp_dir=temp_dir,
@@ -1137,6 +1152,7 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
     context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create an equally thorough nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
     sync_todos_to_definition_of_done(
         dod,
         [
@@ -1197,9 +1213,11 @@ async def test_tool_batch_runner_queues_next_pending_todo_after_discovery_progre
         for message in persistent_messages
     )
     assert any(
-        "stop gathering more reference material and perform the change now" in message
+        "Resume by creating `chapters/` now." in message
         for message in persistent_messages
     )
+    assert all("01-introduction.html" not in message for message in persistent_messages)
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio

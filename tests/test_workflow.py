@@ -18,6 +18,7 @@ from loader.runtime.workflow import (
     effective_pending_todo_items,
     enrich_clarify_brief_with_grounding,
     extract_verification_commands_from_markdown,
+    infer_pending_todo_output_target,
     merge_refreshed_todos_with_existing_scope,
     preserve_task_grounded_acceptance_criteria,
     reconcile_aggregate_completion_steps,
@@ -972,6 +973,36 @@ def test_advance_todos_from_tool_call_tracks_bash_directory_creation_progress() 
     )
     assert "Create the nginx directory structure" in dod.completed_items
     assert "Create index.html for nginx guide" in dod.pending_items
+
+
+def test_infer_pending_todo_output_target_maps_broad_setup_to_planned_directory(
+    tmp_path: Path,
+) -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    nginx_root = tmp_path / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{nginx_root / 'index.html'}`",
+                "",
+            ]
+        )
+    )
+    dod.implementation_plan = str(implementation_plan)
+
+    target = infer_pending_todo_output_target(
+        dod,
+        "Create the nginx directory structure",
+        project_root=tmp_path,
+    )
+
+    assert target == chapters.resolve(strict=False)
 
 
 def test_advance_todos_from_tool_call_does_not_complete_content_study_from_root_index_read() -> None:

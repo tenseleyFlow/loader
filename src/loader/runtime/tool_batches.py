@@ -372,8 +372,10 @@ class ToolBatchRunner:
         if next_pending:
             mutation_suffix = ""
             if _todo_is_mutation_step(next_pending):
-                mutation_suffix = _missing_artifact_resume_suffix(
-                    missing_artifact,
+                mutation_suffix = _pending_item_resume_suffix(
+                    dod,
+                    next_pending=next_pending,
+                    missing_artifact=missing_artifact,
                     project_root=self.context.project_root,
                     messages=list(getattr(self.context.session, "messages", []) or []),
                 )
@@ -840,8 +842,10 @@ class ToolBatchRunner:
 
         mutation_suffix = ""
         if _todo_is_mutation_step(next_pending):
-            mutation_suffix = _missing_artifact_resume_suffix(
-                missing_artifact,
+            mutation_suffix = _pending_item_resume_suffix(
+                dod,
+                next_pending=next_pending,
+                missing_artifact=missing_artifact,
                 project_root=self.context.project_root,
                 messages=list(getattr(self.context.session, "messages", []) or []),
             )
@@ -1385,39 +1389,86 @@ def _missing_artifact_resume_suffix(
         return ""
 
     target, expect_directory = missing_artifact
+    return _resume_suffix_for_target(
+        target,
+        expect_directory=expect_directory,
+        project_root=project_root,
+        messages=messages,
+    )
+
+
+def _pending_item_resume_suffix(
+    dod: DefinitionOfDone,
+    *,
+    next_pending: str | None,
+    missing_artifact: tuple[Path, bool] | None,
+    project_root: Path,
+    messages: list[Any] | None = None,
+) -> str:
+    if next_pending:
+        pending_target = infer_pending_todo_output_target(
+            dod,
+            next_pending,
+            project_root=project_root,
+        )
+        if pending_target is not None and not pending_target.exists():
+            normalized_target = pending_target.expanduser().resolve(strict=False)
+            return _resume_suffix_for_target(
+                normalized_target,
+                expect_directory=not bool(normalized_target.suffix),
+                project_root=project_root,
+                messages=messages,
+                allow_inferred_child=False,
+            )
+    return _missing_artifact_resume_suffix(
+        missing_artifact,
+        project_root=project_root,
+        messages=messages,
+    )
+
+
+def _resume_suffix_for_target(
+    target: Path,
+    *,
+    expect_directory: bool,
+    project_root: Path,
+    messages: list[Any] | None = None,
+    allow_inferred_child: bool = True,
+) -> str:
     label = target.name or str(target)
     if expect_directory and not label.endswith("/"):
         label += "/"
     if expect_directory:
-        next_output_file, next_output_source = infer_next_output_file(
-            target=target,
-            project_root=project_root,
-            messages=list(messages or []),
-        )
-        if next_output_file is not None:
-            guidance_origin = (
-                f"It is the next missing declared output under `{label}`."
-                if next_output_source == "declared"
-                else (
-                    "It mirrors the observed filename pattern from another "
-                    f"`{label}` directory you already inspected."
+        if allow_inferred_child:
+            next_output_file, next_output_source = infer_next_output_file(
+                target=target,
+                project_root=project_root,
+                messages=list(messages or []),
+            )
+            if next_output_file is not None:
+                guidance_origin = (
+                    f"It is the next missing declared output under `{label}`."
+                    if next_output_source == "declared"
+                    else (
+                        "It mirrors the observed filename pattern from another "
+                        f"`{label}` directory you already inspected."
+                    )
                 )
-            )
-            guidance = (
-                f" Resume by creating `{next_output_file.name}` now. {guidance_origin} "
-                f"Prefer one `write` call for "
-                f"`{next_output_file}` instead of more rereads."
-            )
-            if not next_output_file.parent.exists():
+                guidance = (
+                    f" Resume by creating `{next_output_file.name}` now. {guidance_origin} "
+                    f"Prefer one `write` call for "
+                    f"`{next_output_file}` instead of more rereads."
+                )
+                if not next_output_file.parent.exists():
+                    guidance += (
+                        " The `write` tool can create that file's parent directories automatically,"
+                        " so do the write in one step instead of stopping for a separate mkdir."
+                    )
                 guidance += (
-                    " The `write` tool can create that file's parent directories automatically,"
-                    " so do the write in one step instead of stopping for a separate mkdir."
+                    " Make your next response the concrete mutation tool call itself, not another"
+                    " bookkeeping-only turn."
                 )
-            guidance += (
-                " Make your next response the concrete mutation tool call itself, not another"
-                " bookkeeping-only turn."
-            )
-            return guidance
+                return guidance
         if target.is_dir():
             return (
                 f" Resume by creating the next output file under `{label}` now. Prefer one "
