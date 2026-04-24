@@ -39,36 +39,23 @@ _UNSET = object()
 _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD = 240
 
 
-def _request_text_line_count(value: str) -> int:
-    """Count lines for one request-projected text payload."""
-
-    if not value:
-        return 0
-    return value.count("\n") + 1
-
-
-def _project_request_tool_call(tool_call: ToolCall) -> ToolCall:
+def _project_request_tool_call(tool_call: ToolCall) -> ToolCall | None:
     """Project one historical tool call into a lighter request-time form."""
 
     arguments = dict(tool_call.arguments)
     if tool_call.name == "write":
         content = arguments.get("content")
         if isinstance(content, str) and len(content) > _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD:
-            arguments.pop("content", None)
-            arguments["content_chars"] = len(content)
-            arguments["content_lines"] = _request_text_line_count(content)
+            return None
     elif tool_call.name == "edit":
         for key in ("old_string", "new_string"):
             value = arguments.get(key)
             if isinstance(value, str) and len(value) > _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD:
-                arguments.pop(key, None)
-                arguments[f"{key}_chars"] = len(value)
-                arguments[f"{key}_lines"] = _request_text_line_count(value)
+                return None
     elif tool_call.name == "patch":
         hunks = arguments.get("hunks")
         if isinstance(hunks, list) and hunks:
-            arguments.pop("hunks", None)
-            arguments["hunk_count"] = len(hunks)
+            return None
     return ToolCall(
         id=tool_call.id,
         name=tool_call.name,
@@ -81,7 +68,11 @@ def _project_request_message(message: Message) -> Message:
 
     if message.role is not Role.ASSISTANT or not message.tool_calls:
         return message
-    projected_tool_calls = [_project_request_tool_call(tool_call) for tool_call in message.tool_calls]
+    projected_tool_calls = [
+        projected
+        for tool_call in message.tool_calls
+        if (projected := _project_request_tool_call(tool_call)) is not None
+    ]
     if projected_tool_calls == message.tool_calls:
         return message
     return Message(

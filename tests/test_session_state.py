@@ -159,7 +159,7 @@ def test_session_compaction_persists_summary_and_recent_messages(temp_dir: Path)
     ]
 
 
-def test_build_request_messages_trims_large_mutation_payloads_from_history(
+def test_build_request_messages_omits_large_mutation_tool_calls_from_history(
     temp_dir: Path,
 ) -> None:
     large_html = "<html>" + ("x" * 400) + "</html>"
@@ -199,14 +199,8 @@ def test_build_request_messages_trims_large_mutation_payloads_from_history(
 
     request_messages = session.build_request_messages()
 
-    assert request_messages[2].tool_calls[0].arguments["file_path"].endswith("index.html")
-    assert "content" not in request_messages[2].tool_calls[0].arguments
-    assert request_messages[2].tool_calls[0].arguments["content_chars"] == len(large_html)
-    assert request_messages[2].tool_calls[0].arguments["content_lines"] == 1
-    assert "old_string" not in request_messages[2].tool_calls[1].arguments
-    assert "new_string" not in request_messages[2].tool_calls[1].arguments
-    assert request_messages[2].tool_calls[1].arguments["old_string_chars"] == len(old_block)
-    assert request_messages[2].tool_calls[1].arguments["new_string_chars"] == len(new_block)
+    assert request_messages[2].tool_calls == []
+    assert request_messages[2].content == "I'll write the first files now."
     assert session.messages[1].tool_calls[0].arguments["content"] == large_html
     assert session.messages[1].tool_calls[1].arguments["old_string"] == old_block
     assert session.messages[1].tool_calls[1].arguments["new_string"] == new_block
