@@ -200,15 +200,13 @@ def test_build_request_messages_trims_large_mutation_payloads_from_history(
     request_messages = session.build_request_messages()
 
     assert request_messages[2].tool_calls[0].arguments["file_path"].endswith("index.html")
-    assert request_messages[2].tool_calls[0].arguments["content"].startswith(
-        "[trimmed write content:"
-    )
-    assert request_messages[2].tool_calls[1].arguments["old_string"].startswith(
-        "[trimmed old_string:"
-    )
-    assert request_messages[2].tool_calls[1].arguments["new_string"].startswith(
-        "[trimmed new_string:"
-    )
+    assert "content" not in request_messages[2].tool_calls[0].arguments
+    assert request_messages[2].tool_calls[0].arguments["content_chars"] == len(large_html)
+    assert request_messages[2].tool_calls[0].arguments["content_lines"] == 1
+    assert "old_string" not in request_messages[2].tool_calls[1].arguments
+    assert "new_string" not in request_messages[2].tool_calls[1].arguments
+    assert request_messages[2].tool_calls[1].arguments["old_string_chars"] == len(old_block)
+    assert request_messages[2].tool_calls[1].arguments["new_string_chars"] == len(new_block)
     assert session.messages[1].tool_calls[0].arguments["content"] == large_html
     assert session.messages[1].tool_calls[1].arguments["old_string"] == old_block
     assert session.messages[1].tool_calls[1].arguments["new_string"] == new_block

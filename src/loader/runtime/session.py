@@ -36,24 +36,15 @@ SESSION_VERSION = 11
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
-_REQUEST_TOOL_PAYLOAD_PREVIEW_CHARS = 120
 _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD = 240
 
 
-def _collapse_request_preview(text: str, *, limit: int = _REQUEST_TOOL_PAYLOAD_PREVIEW_CHARS) -> str:
-    """Normalize one tool payload preview for request-time context."""
+def _request_text_line_count(value: str) -> int:
+    """Count lines for one request-projected text payload."""
 
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= limit:
-        return collapsed
-    return collapsed[: max(0, limit - 3)].rstrip() + "..."
-
-
-def _summarize_request_string_argument(label: str, value: str) -> str:
-    """Summarize one large string argument for model-request history."""
-
-    preview = _collapse_request_preview(value)
-    return f"[trimmed {label}: {len(value)} chars | preview: {preview}]"
+    if not value:
+        return 0
+    return value.count("\n") + 1
 
 
 def _project_request_tool_call(tool_call: ToolCall) -> ToolCall:
@@ -63,19 +54,21 @@ def _project_request_tool_call(tool_call: ToolCall) -> ToolCall:
     if tool_call.name == "write":
         content = arguments.get("content")
         if isinstance(content, str) and len(content) > _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD:
-            arguments["content"] = _summarize_request_string_argument(
-                "write content",
-                content,
-            )
+            arguments.pop("content", None)
+            arguments["content_chars"] = len(content)
+            arguments["content_lines"] = _request_text_line_count(content)
     elif tool_call.name == "edit":
         for key in ("old_string", "new_string"):
             value = arguments.get(key)
             if isinstance(value, str) and len(value) > _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD:
-                arguments[key] = _summarize_request_string_argument(key, value)
+                arguments.pop(key, None)
+                arguments[f"{key}_chars"] = len(value)
+                arguments[f"{key}_lines"] = _request_text_line_count(value)
     elif tool_call.name == "patch":
         hunks = arguments.get("hunks")
         if isinstance(hunks, list) and hunks:
-            arguments["hunks"] = f"[trimmed patch payload: {len(hunks)} hunks]"
+            arguments.pop("hunks", None)
+            arguments["hunk_count"] = len(hunks)
     return ToolCall(
         id=tool_call.id,
         name=tool_call.name,
