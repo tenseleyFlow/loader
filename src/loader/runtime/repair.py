@@ -389,7 +389,13 @@ class ResponseRepairer:
 
     def _should_compact_empty_retry_message(self, dod: DefinitionOfDone) -> bool:
         completed_artifacts, missing_artifacts = self._planned_artifact_counts(dod)
-        return completed_artifacts >= 3 and missing_artifacts > 0
+        if completed_artifacts >= 3:
+            return missing_artifacts > 0
+        if completed_artifacts < 1:
+            return False
+        if self._latest_working_note():
+            return False
+        return self._has_concrete_next_output_step(dod)
 
     def _planned_artifact_counts(self, dod: DefinitionOfDone) -> tuple[int, int]:
         completed = 0
@@ -409,6 +415,42 @@ class ResponseRepairer:
             else:
                 missing += 1
         return completed, missing
+
+    def _has_concrete_next_output_step(self, dod: DefinitionOfDone) -> bool:
+        next_missing_artifact = next(
+            (
+                artifact
+                for artifact in collect_planned_artifact_targets(
+                    dod,
+                    project_root=self.context.project_root,
+                    max_paths=12,
+                )
+                if not planned_artifact_target_satisfied(
+                    dod,
+                    target=artifact[0],
+                    expect_directory=artifact[1],
+                    project_root=self.context.project_root,
+                )
+            ),
+            None,
+        )
+        next_pending = self._preferred_resume_pending_item(
+            dod,
+            missing_artifact=next_missing_artifact,
+        )
+        if next_pending and self._infer_pending_item_output_target(dod, next_pending):
+            return True
+        if next_missing_artifact is None:
+            return False
+        target, expect_directory = next_missing_artifact
+        if not expect_directory:
+            return True
+        next_output_file, _ = infer_next_output_file(
+            target=target,
+            project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
+        )
+        return next_output_file is not None
 
     def _planned_artifact_progress_lines(self, dod: DefinitionOfDone) -> list[str]:
         targets = collect_planned_artifact_targets(
