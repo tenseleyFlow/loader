@@ -326,6 +326,69 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
     assert "Do not restart discovery unless one specific missing fact blocks this step." in decision.retry_message
 
 
+def test_empty_response_retry_uses_directory_creation_for_setup_targets(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters_path = guide_root / "chapters"
+    index_path = guide_root / "index.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters_path}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.extend(
+        [
+            "Create the nginx directory structure",
+            "Create the main index.html file for nginx guide",
+        ]
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        "Resume with this exact next step: continue `Create the nginx directory structure` "
+        "by creating `chapters/`."
+        in decision.retry_message
+    )
+    assert (
+        f"Prefer one concrete directory-creation step for `{chapters_path}` before more research."
+        in decision.retry_message
+    )
+    expected_command = f"mkdir -p {chapters_path.resolve(strict=False)}"
+    assert (
+        f'Emit this tool shape now: `bash(command="{expected_command}")`.'
+        in decision.retry_message
+    )
+    assert f'write(file_path="{chapters_path.resolve(strict=False)}"' not in decision.retry_message
+
+
 def test_empty_response_retry_recovers_blocked_empty_file_path_to_concrete_target(
     temp_dir: Path,
 ) -> None:

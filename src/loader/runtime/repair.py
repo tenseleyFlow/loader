@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -691,9 +692,10 @@ class ResponseRepairer:
             else None
         )
         if next_pending and inferred_pending_target is not None:
+            inferred_is_directory = not bool(inferred_pending_target.suffix)
             inferred_label = self._format_artifact_label(
                 inferred_pending_target,
-                expect_directory=False,
+                expect_directory=inferred_is_directory,
             )
             outline_label = infer_output_outline_label(
                 dod,
@@ -705,15 +707,23 @@ class ResponseRepairer:
                 "Resume with this exact next step: continue "
                 f"`{next_pending}` by creating {inferred_label}."
             ]
-            lines.append(
-                f"Prefer one `write(content=...)` call for `{inferred_pending_target}` before more research."
-            )
-            lines.append(
-                self._mutation_tool_scaffold(
-                    inferred_pending_target,
-                    tool_name="write",
+            if inferred_is_directory:
+                lines.append(
+                    f"Prefer one concrete directory-creation step for `{inferred_pending_target}` before more research."
                 )
-            )
+                lines.append(
+                    self._directory_creation_scaffold(inferred_pending_target)
+                )
+            else:
+                lines.append(
+                    f"Prefer one `write(content=...)` call for `{inferred_pending_target}` before more research."
+                )
+                lines.append(
+                    self._mutation_tool_scaffold(
+                        inferred_pending_target,
+                        tool_name="write",
+                    )
+                )
             if outline_label:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
@@ -1070,6 +1080,11 @@ class ResponseRepairer:
         else:
             signature = f"write(file_path={normalized_path}, content=\"...\")"
         return f"Emit this tool shape now: `{signature}`."
+
+    @staticmethod
+    def _directory_creation_scaffold(path: Path) -> str:
+        command = f"mkdir -p {shlex.quote(str(path.expanduser().resolve(strict=False)))}"
+        return f"Emit this tool shape now: `bash(command={json.dumps(command)})`."
 
 
 def _todo_is_mutation_step(label: str) -> bool:
