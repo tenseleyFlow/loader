@@ -391,10 +391,6 @@ class ResponseRepairer:
         completed_artifacts, missing_artifacts = self._planned_artifact_counts(dod)
         if completed_artifacts >= 3:
             return missing_artifacts > 0
-        if completed_artifacts < 1:
-            return False
-        if self._latest_working_note():
-            return False
         return self._has_concrete_next_output_step(dod)
 
     def _planned_artifact_counts(self, dod: DefinitionOfDone) -> tuple[int, int]:

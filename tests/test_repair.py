@@ -220,8 +220,7 @@ def test_empty_response_retry_message_surfaces_missing_planned_artifacts_and_wor
                 "",
                 "## File Changes",
                 f"- `{temp_dir / 'guides' / 'nginx' / 'index.html'}`",
-                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters' / '01-getting-started.html'}`",
-                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters' / '02-installation.html'}`",
+                f"- `{temp_dir / 'guides' / 'nginx' / 'chapters'}`",
                 "",
             ]
         )
@@ -257,21 +256,10 @@ def test_empty_response_retry_message_surfaces_missing_planned_artifacts_and_wor
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert "Latest working note: Creating fifth chapter file: Advanced configurations" in decision.retry_message
-    assert "Next missing planned artifact: `01-getting-started.html`" in decision.retry_message
-    assert "Remaining planned artifacts: `01-getting-started.html`, `02-installation.html`" in decision.retry_message
-    assert "Resume with this exact next step: create `01-getting-started.html`." in decision.retry_message
-    assert f"Prefer one `write` call for `{temp_dir / 'guides' / 'nginx' / 'chapters' / '01-getting-started.html'}` before any more reference reads." in decision.retry_message
-    assert (
-        "Shape the next response as one concrete `write(file_path=..., content=...)` "
-        "tool call for that exact path."
-        in decision.retry_message
-    )
-    assert (
-        "Your next response should be the concrete mutation tool call itself, "
-        "not TodoWrite alone, verification, or a completion summary."
-        in decision.retry_message
-    )
-    assert "Do not restart discovery unless one specific missing fact blocks this step." in decision.retry_message
+    assert "Confirmed touched files: `index.html`" in decision.retry_message
+    assert "Confirmed completed work: Create the main index.html file" in decision.retry_message
+    assert "Next pending item: Create each chapter file in sequence" in decision.retry_message
+    assert "Continue from the confirmed progress below instead of restarting." in decision.retry_message
 
 
 def test_empty_response_retry_mentions_write_can_create_missing_parent_directories(
@@ -1124,10 +1112,8 @@ def test_empty_response_retry_mentions_todowrite_when_progress_has_outpaced_trac
     )
 
     assert decision.retry_message is not None
-    assert (
-        "refresh `TodoWrite` alongside the next concrete mutation"
-        in decision.retry_message
-    )
+    assert "Continue from the exact next step below." in decision.retry_message
+    assert "refresh `TodoWrite` alongside the next concrete mutation" not in decision.retry_message
 
 
 def test_empty_response_retry_omits_stale_aggregate_completed_work_when_artifacts_missing(

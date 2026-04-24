@@ -3472,6 +3472,106 @@ async def test_tool_batch_runner_working_note_prefers_declared_output_gap_over_s
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_glob_handoff_stays_compact_before_first_output_write(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    fortran_root = temp_dir / "Loader" / "guides" / "fortran"
+    chapters_dir = fortran_root / "chapters"
+    chapters_dir.mkdir(parents=True)
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{temp_dir / 'Loader' / 'guides' / 'nginx' / 'index.html'}`",
+                f"- `{temp_dir / 'Loader' / 'guides' / 'nginx' / 'chapters'}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.extend(
+        [
+            "First, examine the existing fortran guide structure and content",
+            "Create the nginx directory structure",
+            "Develop the main index.html file for nginx guide",
+        ]
+    )
+
+    tool_call = ToolCall(
+        id="glob-1",
+        name="glob",
+        arguments={"pattern": "**", "path": str(fortran_root)},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output=f"{fortran_root}\n{chapters_dir}",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Confirmed progress:" in message
+    assert "Next step: create `index.html`." in message
+    assert (
+        f"Prefer one `write` call for `{temp_dir / 'Loader' / 'guides' / 'nginx' / 'index.html'}` now."
+        in message
+    )
+    assert "One declared output artifact is still missing." not in message
+    assert "Do not reread reference material or spend the next turn on bookkeeping." in message
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_hands_off_noop_toc_edit_when_file_is_already_valid(
     temp_dir: Path,
 ) -> None:

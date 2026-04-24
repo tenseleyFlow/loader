@@ -795,12 +795,29 @@ class ToolBatchRunner:
             project_root=self.context.project_root,
             missing_artifact=missing_artifact,
         )
+        has_artifact_progress = _has_confirmed_artifact_progress(
+            dod,
+            project_root=self.context.project_root,
+        )
         if not completed_label or not next_pending or next_pending == completed_label:
             return
         if _should_prioritize_missing_artifact(
             next_pending=next_pending,
             missing_artifact=missing_artifact,
         ):
+            if not has_artifact_progress:
+                compact_handoff = _compact_missing_artifact_handoff(
+                    missing_artifact,
+                    project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
+                )
+                if compact_handoff:
+                    self.context.queue_steering_message(
+                        f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
+                        f"`{tool_call.name}` result. {compact_handoff}"
+                        " Do not reread reference material or spend the next turn on bookkeeping."
+                    )
+                    return
             self.context.queue_steering_message(
                 f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
                 f"`{tool_call.name}` result. One declared output artifact is still missing."
@@ -1284,6 +1301,59 @@ def _missing_artifact_resume_suffix(
         " Make your next response the concrete mutation tool call itself, not another"
         " bookkeeping-only turn."
     )
+    return guidance
+
+
+def _compact_missing_artifact_handoff(
+    missing_artifact: tuple[Path, bool] | None,
+    *,
+    project_root: Path,
+    messages: list[Any] | None = None,
+) -> str:
+    """Build a shorter first-mutation handoff once the next output target is known."""
+
+    if missing_artifact is None:
+        return ""
+
+    target, expect_directory = missing_artifact
+    label = target.name or str(target)
+    if expect_directory and not label.endswith("/"):
+        label += "/"
+    if expect_directory:
+        next_output_file, _ = infer_next_output_file(
+            target=target,
+            project_root=project_root,
+            messages=list(messages or []),
+        )
+        if next_output_file is None:
+            if target.is_dir():
+                return (
+                    f"Next step: create the next output file under `{label}`. Prefer one "
+                    f"concrete `write` call inside `{target}` now."
+                )
+            return (
+                f"Next step: create `{label}`. Prefer one concrete directory-creation step "
+                f"for `{target}` now."
+            )
+        guidance = (
+            f"Next step: create `{next_output_file.name}`. Prefer one `write` call for "
+            f"`{next_output_file}` now."
+        )
+        if not next_output_file.parent.exists():
+            guidance += (
+                " The `write` tool can create that file's parent directories automatically."
+            )
+        guidance += " Make your next response the concrete mutation tool call itself."
+        return guidance
+
+    guidance = (
+        f"Next step: create `{label}`. Prefer one `write` call for `{target}` now."
+    )
+    if not target.parent.exists():
+        guidance += (
+            " The `write` tool can create that file's parent directories automatically."
+        )
+    guidance += " Make your next response the concrete mutation tool call itself."
     return guidance
 
 
