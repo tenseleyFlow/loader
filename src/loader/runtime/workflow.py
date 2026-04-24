@@ -54,6 +54,7 @@ __all__ = [
     "effective_pending_todo_items",
     "enrich_clarify_brief_with_grounding",
     "extract_verification_commands_from_markdown",
+    "infer_output_outline_label",
     "infer_pending_todo_output_target",
     "load_brief",
     "load_planning_artifacts",
@@ -1004,6 +1005,43 @@ def infer_pending_todo_output_target(
         return None
     matches.sort(key=lambda item: (item[0], item[1], str(item[2])), reverse=True)
     return matches[0][2]
+
+
+def infer_output_outline_label(
+    dod,
+    target_path: Path | str,
+    *,
+    project_root: Path | None = None,
+    todo_label: str | None = None,
+) -> str | None:
+    """Infer the existing outline/link label for one concrete output target."""
+
+    root = project_root or Path.cwd()
+    target = Path(target_path).expanduser().resolve(strict=False)
+    normalized_todo = _normalize_pending_output_label(todo_label or "")
+    best_match: tuple[int, int, str] | None = None
+
+    for html_file in _pending_item_html_sources(
+        dod,
+        project_root=root,
+    ):
+        try:
+            content = html_file.read_text()
+        except OSError:
+            continue
+        for href, link_text in _iter_local_html_links(content):
+            resolved = (html_file.parent / href).resolve(strict=False)
+            if resolved != target:
+                continue
+            normalized_label = _normalize_pending_output_label(link_text)
+            score = _pending_output_link_match_score(normalized_todo, normalized_label)
+            candidate = (score, len(link_text.strip()), link_text.strip())
+            if best_match is None or candidate > best_match:
+                best_match = candidate
+
+    if best_match is None:
+        return None
+    return best_match[2]
 
 
 def _select_best_pending_output_path(

@@ -1081,6 +1081,11 @@ def test_empty_response_retry_maps_title_style_todo_to_html_graph_target(
         "before more research."
         in decision.retry_message
     )
+    assert (
+        "Use the existing outline label `Chapter 2: Installation and Setup` for that file "
+        "so it matches the current guide structure."
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_reminds_model_to_resend_real_write_payload(

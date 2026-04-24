@@ -17,6 +17,7 @@ from .dod import (
 from .parsing import parse_tool_calls
 from .recovery import detect_missing_mutation_payload
 from .workflow import (
+    infer_output_outline_label,
     infer_pending_todo_output_target,
     preferred_pending_todo_item,
     reconcile_aggregate_completion_steps,
@@ -621,6 +622,12 @@ class ResponseRepairer:
                 inferred_pending_target,
                 expect_directory=False,
             )
+            outline_label = infer_output_outline_label(
+                dod,
+                inferred_pending_target,
+                project_root=self.context.project_root,
+                todo_label=next_pending,
+            )
             lines = [
                 "Resume with this exact next step: continue "
                 f"`{next_pending}` by creating {inferred_label}."
@@ -628,6 +635,10 @@ class ResponseRepairer:
             lines.append(
                 f"Prefer one `write(content=...)` call for `{inferred_pending_target}` before more research."
             )
+            if outline_label:
+                lines.append(
+                    f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
+                )
             if completed_artifacts >= 2:
                 lines.append(
                     "Follow the same one-file-at-a-time mutation pattern that already "
@@ -672,6 +683,12 @@ class ResponseRepairer:
                         next_output_file,
                         expect_directory=False,
                     )
+                    outline_label = infer_output_outline_label(
+                        dod,
+                        next_output_file,
+                        project_root=self.context.project_root,
+                        todo_label=next_pending or "",
+                    )
                     if next_pending and _todo_is_mutation_step(next_pending):
                         lines = [
                             "Resume with this exact next step: continue "
@@ -693,6 +710,10 @@ class ResponseRepairer:
                     lines.append(
                         f"Prefer one `write` call for `{next_output_file}` before more research."
                     )
+                    if outline_label:
+                        lines.append(
+                            f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
+                        )
                     if not next_output_file.parent.exists():
                         lines.append(
                             "The `write` tool can create that file's parent directories "
