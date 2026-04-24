@@ -801,7 +801,7 @@ class ToolBatchRunner:
             project_root=self.context.project_root,
             missing_artifact=missing_artifact,
         )
-        has_artifact_progress = _has_confirmed_artifact_progress(
+        has_file_artifact_progress = _has_confirmed_file_artifact_progress(
             dod,
             project_root=self.context.project_root,
         )
@@ -813,7 +813,7 @@ class ToolBatchRunner:
             missing_artifact=missing_artifact,
             project_root=self.context.project_root,
         ):
-            if not has_artifact_progress:
+            if not has_file_artifact_progress:
                 compact_handoff = _compact_missing_artifact_handoff(
                     missing_artifact,
                     project_root=self.context.project_root,
@@ -929,10 +929,27 @@ class ToolBatchRunner:
         )
 
         current_label = _current_mutation_label(tool_call)
+        has_file_artifact_progress = _has_confirmed_file_artifact_progress(
+            dod,
+            project_root=self.context.project_root,
+        )
         todo_refresh = _todo_refresh_guidance(
             dod,
             project_root=self.context.project_root,
         )
+        if not has_file_artifact_progress:
+            compact_handoff = _compact_missing_artifact_handoff(
+                missing_artifact,
+                project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
+            )
+            if compact_handoff:
+                self.context.queue_steering_message(
+                    f"Confirmed progress: {current_label} is now recorded. "
+                    + compact_handoff
+                    + " Do not reread reference material or spend the next turn on bookkeeping."
+                )
+                return
         if _late_stage_missing_artifact_build(
             dod,
             project_root=self.context.project_root,
@@ -1327,6 +1344,32 @@ def _has_confirmed_artifact_progress(
     return bool(dod.touched_files)
 
 
+def _has_confirmed_file_artifact_progress(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> bool:
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if expect_directory:
+            continue
+        if planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=False,
+            project_root=project_root,
+        ):
+            return True
+    return any(
+        Path(path).expanduser().resolve(strict=False).suffix
+        for path in dod.touched_files
+        if str(path).strip()
+    )
+
+
 def _missing_artifact_resume_suffix(
     missing_artifact: tuple[Path, bool] | None,
     *,
@@ -1429,8 +1472,8 @@ def _compact_missing_artifact_handoff(
                 f"for `{target}` now."
             )
         guidance = (
-            f"Next step: create `{next_output_file.name}`. Prefer one `write` call for "
-            f"`{next_output_file}` now."
+            f"Next step: create `{next_output_file.name}`. Prefer one "
+            f"`write(file_path=..., content=...)` call for `{next_output_file}` now."
         )
         if not next_output_file.parent.exists():
             guidance += (
@@ -1440,7 +1483,8 @@ def _compact_missing_artifact_handoff(
         return guidance
 
     guidance = (
-        f"Next step: create `{label}`. Prefer one `write` call for `{target}` now."
+        f"Next step: create `{label}`. Prefer one "
+        f"`write(file_path=..., content=...)` call for `{target}` now."
     )
     if not target.parent.exists():
         guidance += (

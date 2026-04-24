@@ -1966,7 +1966,13 @@ async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_af
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Resume by creating `index.html` now." in message
+    assert "Next step: create `index.html`." in message
+    assert (
+        f"Prefer one `write(file_path=..., content=...)` call for `{(nginx_root / 'index.html').resolve(strict=False)}` now."
+        in message
+    )
+    assert "One declared output artifact is still missing." not in message
+    assert "Do not reread reference material or spend the next turn on bookkeeping." in message
     assert "Resume by creating the next output file under `chapters/` now." not in message
 
 
