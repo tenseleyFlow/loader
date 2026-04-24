@@ -820,13 +820,13 @@ class ToolBatchRunner:
                     messages=list(getattr(self.context.session, "messages", []) or []),
                 )
                 if compact_handoff:
-                    self.context.queue_ephemeral_steering_message(
+                    self.context.queue_steering_message(
                         f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
                         f"`{tool_call.name}` result. {compact_handoff}"
                         " Do not reread reference material or spend the next turn on bookkeeping."
                     )
                     return
-            self.context.queue_ephemeral_steering_message(
+            self.context.queue_steering_message(
                 f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
                 f"`{tool_call.name}` result. One declared output artifact is still missing."
                 + _missing_artifact_resume_suffix(
@@ -851,7 +851,7 @@ class ToolBatchRunner:
                     "more reference material and perform the change now."
                 )
 
-        self.context.queue_ephemeral_steering_message(
+        self.context.queue_steering_message(
             f"Confirmed progress: `{completed_label}` is now satisfied by the successful "
             f"`{tool_call.name}` result. Continue with the next pending item: "
             f"`{next_pending}` instead of rereading the same evidence.{mutation_suffix}"

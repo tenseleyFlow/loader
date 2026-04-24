@@ -1871,6 +1871,97 @@ async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_discovery_completion_handoff_stays_persistent(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    reference = temp_dir / "fortran" / "chapters" / "01-introduction.html"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("<h1>Introduction</h1>\n<p>Guide cadence.</p>\n")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the existing fortran guide structure and content",
+                "active_form": "Working on: First, examine the existing fortran guide structure and content",
+                "status": "pending",
+            },
+            {
+                "content": "Create the nginx directory structure",
+                "active_form": "Working on: Create the nginx directory structure",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="read-reference",
+        name="read",
+        arguments={"file_path": str(reference)},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="<h1>Introduction</h1>\n<p>Guide cadence.</p>\n",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert persistent_messages
+    assert any(
+        "Continue with the next pending item: `Create the nginx directory structure`"
+        in message
+        for message in persistent_messages
+    )
+    assert ephemeral_messages == []
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_missing_artifact_nudge_prefers_pending_index_after_mkdir(
     temp_dir: Path,
 ) -> None:
