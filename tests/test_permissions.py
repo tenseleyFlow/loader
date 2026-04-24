@@ -1441,6 +1441,62 @@ async def test_late_reference_drift_hook_allows_reads_inside_planned_artifact_se
 
 
 @pytest.mark.asyncio
+async def test_late_reference_drift_hook_blocks_reference_reopen_after_study_and_first_output(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    dod_store = DefinitionOfDoneStore(temp_dir)
+    dod = create_definition_of_done("Create a multi-file guide from a reference")
+    dod.status = "in_progress"
+    dod.completed_items = [
+        "First, examine the existing reference guide structure to understand the format and cadence",
+    ]
+    plan_path = temp_dir / "implementation.md"
+    plan_path.write_text(
+        "# File Changes\n"
+        "- `guide/index.html`\n"
+        "- `guide/chapters/01-getting-started.html`\n"
+        "- `guide/chapters/02-installation.html`\n"
+    )
+    dod.implementation_plan = str(plan_path)
+    guide_dir = temp_dir / "guide" / "chapters"
+    guide_dir.mkdir(parents=True, exist_ok=True)
+    (temp_dir / "guide" / "index.html").write_text("index")
+    dod_path = dod_store.save(dod)
+    session = FakeSession(active_dod_path=str(dod_path), messages=[])
+    hook = LateReferenceDriftHook(
+        dod_store=dod_store,
+        project_root=temp_dir,
+        session=session,
+    )
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="read-reference",
+                name="read",
+                arguments={"file_path": str(temp_dir / "reference" / "index.html")},
+            ),
+            tool=registry.get("read"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.decision == HookDecision.DENY
+    assert result.terminal_state == "blocked"
+    assert result.message is not None
+    assert "late reference drift" in result.message
+    assert "01-getting-started.html" in result.message
+
+
+@pytest.mark.asyncio
 async def test_late_reference_drift_hook_blocks_reference_reads_after_artifacts_exist(
     temp_dir: Path,
 ) -> None:

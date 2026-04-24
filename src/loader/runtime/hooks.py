@@ -819,6 +819,15 @@ class LateReferenceDriftHook(BaseToolHook):
 
     _MIN_COMPLETED_FILES = 3
     _MAX_COMPLETED_SCOPE_OBSERVATIONS = 4
+    _REFERENCE_STUDY_HINTS = (
+        "examine",
+        "inspect",
+        "study",
+        "cadence",
+        "format",
+        "structure",
+        "reference",
+    )
 
     def __init__(self, *, dod_store: DefinitionOfDoneStore, project_root: Path, session: Any) -> None:
         self.dod_store = dod_store
@@ -943,9 +952,21 @@ class LateReferenceDriftHook(BaseToolHook):
 
         if not missing_label:
             return None
-        if completed_files < self._MIN_COMPLETED_FILES:
+        minimum_completed_files = self._MIN_COMPLETED_FILES
+        if completed_files >= 1 and self._reference_study_completed(dod):
+            minimum_completed_files = 1
+        if completed_files < minimum_completed_files:
             return None
         return missing_label, tuple(planned_roots)
+
+    def _reference_study_completed(self, dod) -> bool:
+        for item in dod.completed_items:
+            text = str(item).strip().lower()
+            if not text:
+                continue
+            if any(hint in text for hint in self._REFERENCE_STUDY_HINTS):
+                return True
+        return False
 
     async def post_tool_use(self, context: HookContext) -> HookResult:
         if context.tool_call.name in _MUTATION_TOOLS:
