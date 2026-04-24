@@ -1106,9 +1106,19 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
+        resume_suffix = _pending_item_resume_suffix(
+            dod,
+            next_pending=next_pending,
+            missing_artifact=missing_artifact,
+            project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
+        )
         queue_message = (
             self.context.queue_steering_message
-            if not has_file_artifact_progress
+            if _should_use_persistent_missing_artifact_handoff(
+                dod,
+                project_root=self.context.project_root,
+            )
             else self.context.queue_ephemeral_steering_message
         )
         todo_refresh = _todo_refresh_guidance(
@@ -1134,22 +1144,14 @@ class ToolBatchRunner:
         ):
             queue_message(
                 f"Confirmed progress: {current_label} is now recorded."
-                + _missing_artifact_resume_suffix(
-                    missing_artifact,
-                    project_root=self.context.project_root,
-                    messages=list(getattr(self.context.session, "messages", []) or []),
-                )
+                + resume_suffix
                 + " No TodoWrite, no verification, no rereads until that artifact exists."
             )
             return
         queue_message(
             f"Confirmed progress: {current_label} is now recorded."
             " One declared output artifact is still missing."
-            + _missing_artifact_resume_suffix(
-                missing_artifact,
-                project_root=self.context.project_root,
-                messages=list(getattr(self.context.session, "messages", []) or []),
-            )
+            + resume_suffix
             + todo_refresh
             + " Do not move to verification, final confirmation, or TodoWrite-only "
             "bookkeeping until that artifact exists."
@@ -1527,6 +1529,15 @@ def _has_confirmed_file_artifact_progress(
     *,
     project_root: Path,
 ) -> bool:
+    return _confirmed_file_artifact_count(dod, project_root=project_root) > 0
+
+
+def _confirmed_file_artifact_count(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> int:
+    count = 0
     for target, expect_directory in collect_planned_artifact_targets(
         dod,
         project_root=project_root,
@@ -1540,12 +1551,59 @@ def _has_confirmed_file_artifact_progress(
             expect_directory=False,
             project_root=project_root,
         ):
-            return True
-    return any(
-        Path(path).expanduser().resolve(strict=False).suffix
+            count += 1
+    if count:
+        return count
+    return sum(
+        1
         for path in dod.touched_files
         if str(path).strip()
+        and Path(path).expanduser().resolve(strict=False).suffix
     )
+
+
+def _should_use_persistent_missing_artifact_handoff(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> bool:
+    return _confirmed_file_artifact_count(
+        dod,
+        project_root=project_root,
+    ) < 2
+
+
+def _next_missing_planned_file_within_directory(
+    dod: DefinitionOfDone,
+    *,
+    target: Path,
+    project_root: Path,
+) -> Path | None:
+    normalized_target = target.expanduser().resolve(strict=False)
+    if normalized_target.suffix:
+        return None
+
+    for planned_target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if expect_directory:
+            continue
+        normalized_planned = planned_target.expanduser().resolve(strict=False)
+        try:
+            normalized_planned.relative_to(normalized_target)
+        except ValueError:
+            continue
+        if planned_artifact_target_satisfied(
+            dod,
+            target=normalized_planned,
+            expect_directory=False,
+            project_root=project_root,
+        ):
+            continue
+        return normalized_planned
+    return None
 
 
 def _missing_artifact_resume_suffix(
@@ -1589,6 +1647,21 @@ def _pending_item_resume_suffix(
                 messages=messages,
                 allow_inferred_child=False,
             )
+    if missing_artifact is not None and missing_artifact[1]:
+        next_planned_file = _next_missing_planned_file_within_directory(
+            dod,
+            target=missing_artifact[0],
+            project_root=project_root,
+        )
+        if next_planned_file is not None:
+            parent_label = missing_artifact[0].name or str(missing_artifact[0])
+            return (
+                f" Resume by creating `{next_planned_file.name}` now."
+                f" It is the next missing declared output under `{parent_label}/`."
+                f" Prefer one `write` call for `{next_planned_file}` instead of more rereads."
+                " Make your next response the concrete mutation tool call itself, not another"
+                " bookkeeping-only turn."
+            )
     return _missing_artifact_resume_suffix(
         missing_artifact,
         project_root=project_root,
@@ -1620,6 +1693,14 @@ def _preferred_resume_target_path(
     normalized_target = target.expanduser().resolve(strict=False)
     if not expect_directory:
         return normalized_target
+
+    next_planned_file = _next_missing_planned_file_within_directory(
+        dod,
+        target=normalized_target,
+        project_root=project_root,
+    )
+    if next_planned_file is not None:
+        return next_planned_file.expanduser().resolve(strict=False)
 
     next_output_file, _ = infer_next_output_file(
         target=normalized_target,
