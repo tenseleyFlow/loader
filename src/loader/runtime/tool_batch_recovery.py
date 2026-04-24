@@ -17,7 +17,12 @@ from .compaction import (
 from .context import RuntimeContext
 from .events import AgentEvent
 from .executor import ToolExecutionOutcome
-from .recovery import RecoveryContext, format_failure_message, format_recovery_prompt
+from .recovery import (
+    RecoveryContext,
+    detect_missing_mutation_payload,
+    format_failure_message,
+    format_recovery_prompt,
+)
 from .repair_focus import ActiveRepairContext, extract_active_repair_context
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -233,7 +238,64 @@ class ToolBatchRecoveryController:
         target_excerpt_lines = self._target_excerpt_lines(tool_call)
         if target_excerpt_lines:
             lines.extend(["", "## CURRENT TARGET EXCERPT", *target_excerpt_lines])
+        payload_fix_lines = self._missing_payload_fix_lines(tool_call, outcome)
+        if payload_fix_lines:
+            lines.extend(["", "## PAYLOAD FORMAT FIX", *payload_fix_lines])
         return "\n".join(lines)
+
+    def _missing_payload_fix_lines(
+        self,
+        tool_call: ToolCall,
+        outcome: ToolExecutionOutcome,
+    ) -> list[str]:
+        fix = detect_missing_mutation_payload(
+            tool_call.name,
+            tool_call.arguments,
+            outcome.result_output,
+        )
+        if fix is None:
+            return []
+
+        target = fix["file_path"]
+        invalid_fields = ", ".join(f"`{field}`" for field in fix["invalid_fields"])
+        required_fields = "`, `".join(fix["required_fields"])
+        if tool_call.name == "write":
+            target_line = (
+                f"- The failed call for `{target}` omitted the required `content` payload."
+                if target
+                else "- The failed call omitted the required `content` payload."
+            )
+            return [
+                target_line,
+                f"- {invalid_fields} are summary counters, not valid write inputs.",
+                "- Resend one concrete `write(file_path=..., content='...')` call now instead of rereading more files.",
+            ]
+
+        if tool_call.name == "edit":
+            target_line = (
+                f"- The failed call for `{target}` omitted the required `{required_fields}` payload."
+                if target
+                else f"- The failed call omitted the required `{required_fields}` payload."
+            )
+            return [
+                target_line,
+                f"- {invalid_fields} are summary counters, not valid edit inputs.",
+                "- Resend one concrete `edit(file_path=..., old_string='...', new_string='...')` call now instead of rereading more files.",
+            ]
+
+        if tool_call.name == "patch":
+            target_line = (
+                f"- The failed call for `{target}` omitted the required patch body."
+                if target
+                else "- The failed call omitted the required patch body."
+            )
+            return [
+                target_line,
+                f"- {invalid_fields} are summary counters, not valid patch inputs.",
+                "- Resend one concrete `patch(file_path=..., patch='...')` or `patch(..., hunks=[...])` call now instead of rereading more files.",
+            ]
+
+        return []
 
     def _preferred_focus_path(
         self,

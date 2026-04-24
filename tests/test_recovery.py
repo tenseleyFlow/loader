@@ -38,6 +38,12 @@ class TestCategorizeError:
     def test_invalid_arguments(self):
         assert categorize_error("Invalid argument: path") == ErrorCategory.INVALID_ARGUMENTS
         assert categorize_error("Missing required parameter") == ErrorCategory.INVALID_ARGUMENTS
+        assert (
+            categorize_error(
+                "WriteTool.execute() missing 1 required positional argument: 'content'"
+            )
+            == ErrorCategory.INVALID_ARGUMENTS
+        )
 
     def test_network_error(self):
         assert categorize_error("Network unreachable") == ErrorCategory.NETWORK_ERROR
@@ -131,6 +137,20 @@ class TestGetRecoveryHints:
         assert "edit/patch/write" in hints.lower()
         assert "index.html" in hints
 
+    def test_write_metadata_only_hint_requests_real_content_payload(self):
+        hints = get_recovery_hints(
+            ErrorCategory.INVALID_ARGUMENTS,
+            "write",
+            {
+                "file_path": "~/Loader/guides/nginx/index.html",
+                "content_chars": 1354,
+                "content_lines": 30,
+            },
+        )
+        assert "content='...'" in hints
+        assert "content_chars" in hints
+        assert "index.html" in hints
+
 
 class TestFormatRecoveryPrompt:
     """Tests for recovery prompt formatting."""
@@ -168,6 +188,40 @@ class TestFormatRecoveryPrompt:
         )
 
         assert "edit/patch/write" in prompt.lower()
+        assert "index.html" in prompt
+
+    def test_format_recovery_prompt_for_metadata_only_write_requests_real_payload(self):
+        ctx = RecoveryContext(
+            original_tool="write",
+            original_args={
+                "file_path": "~/Loader/guides/nginx/index.html",
+                "content_chars": 1354,
+                "content_lines": 30,
+            },
+        )
+        ctx.add_attempt(
+            "write",
+            {
+                "file_path": "~/Loader/guides/nginx/index.html",
+                "content_chars": 1354,
+                "content_lines": 30,
+            },
+            "WriteTool.execute() missing 1 required positional argument: 'content'",
+        )
+
+        prompt = format_recovery_prompt(
+            ctx,
+            "write",
+            {
+                "file_path": "~/Loader/guides/nginx/index.html",
+                "content_chars": 1354,
+                "content_lines": 30,
+            },
+            "WriteTool.execute() missing 1 required positional argument: 'content'",
+        )
+
+        assert "content='...'" in prompt
+        assert "content_chars" in prompt
         assert "index.html" in prompt
 
 

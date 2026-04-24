@@ -15,6 +15,7 @@ from .dod import (
     planned_artifact_target_satisfied,
 )
 from .parsing import parse_tool_calls
+from .recovery import detect_missing_mutation_payload
 from .workflow import (
     infer_pending_todo_output_target,
     preferred_pending_todo_item,
@@ -251,6 +252,7 @@ class ResponseRepairer:
         if dod is not None and self._should_compact_empty_retry_message(dod):
             compact_lines: list[str] = []
             compact_lines.extend(self._planned_artifact_progress_lines(dod)[:2])
+            compact_lines.extend(self._payload_retry_lines())
             compact_lines.extend(
                 self._next_step_resume_lines(
                     dod,
@@ -285,6 +287,7 @@ class ResponseRepairer:
 
             planned_lines = self._planned_artifact_progress_lines(dod)
             progress_lines.extend(planned_lines)
+            progress_lines.extend(self._payload_retry_lines())
             progress_lines.extend(
                 self._next_step_resume_lines(
                     dod,
@@ -359,6 +362,51 @@ class ResponseRepairer:
                 "Respond directly to the task or call tools if needed. Do not return an empty response.",
             ]
         )
+
+    def _payload_retry_lines(self) -> list[str]:
+        recovery_context = self.context.recovery_context
+        if recovery_context is None or not recovery_context.attempts:
+            return []
+        attempt = recovery_context.attempts[-1]
+        fix = detect_missing_mutation_payload(
+            attempt.tool_name,
+            attempt.arguments,
+            attempt.error,
+        )
+        if fix is None:
+            return []
+
+        target = fix["file_path"]
+        invalid = ", ".join(f"`{field}`" for field in fix["invalid_fields"])
+        if attempt.tool_name == "write":
+            target_line = (
+                f"Last tool failure: resend `write` for `{target}` with real `content`, not just summary fields."
+                if target
+                else "Last tool failure: resend `write` with real `content`, not just summary fields."
+            )
+            return [
+                target_line,
+                f"Do not use {invalid} in place of the actual file body.",
+            ]
+        if attempt.tool_name == "edit":
+            return [
+                (
+                    f"Last tool failure: resend `edit` for `{target}` with the real text payload."
+                    if target
+                    else "Last tool failure: resend `edit` with the real text payload."
+                ),
+                f"Do not use {invalid} in place of `old_string`/`new_string`.",
+            ]
+        if attempt.tool_name == "patch":
+            return [
+                (
+                    f"Last tool failure: resend `patch` for `{target}` with real patch text or structured hunks."
+                    if target
+                    else "Last tool failure: resend `patch` with real patch text or structured hunks."
+                ),
+                f"Do not use {invalid} in place of the real patch payload.",
+            ]
+        return []
 
     def _todo_refresh_retry_line(self, dod: DefinitionOfDone) -> str | None:
         non_special_pending = [

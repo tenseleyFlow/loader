@@ -523,10 +523,88 @@ def categorize_error(error_message: str) -> ErrorCategory:
     ):
         return ErrorCategory.INVALID_ARGUMENTS
 
+    if any(
+        token in error_lower
+        for token in [
+            "required positional argument",
+            "missing 1 required",
+            "missing required positional",
+            "empty content",
+        ]
+    ):
+        return ErrorCategory.INVALID_ARGUMENTS
+
     if any(token in error_lower for token in ["network", "unreachable", "dns", "getaddrinfo"]):
         return ErrorCategory.NETWORK_ERROR
 
     return ErrorCategory.UNKNOWN
+
+
+def detect_missing_mutation_payload(
+    tool_name: str,
+    args: dict[str, Any] | None,
+    error: str,
+) -> dict[str, Any] | None:
+    """Detect metadata-only mutation calls missing their real text payload."""
+
+    arguments = dict(args or {})
+    error_lower = error.lower()
+    if error and not any(
+        token in error_lower
+        for token in [
+            "required positional argument",
+            "missing 1 required",
+            "missing required",
+            "empty content",
+            "validation warning",
+        ]
+    ):
+        return None
+
+    file_path = str(arguments.get("file_path") or arguments.get("path") or "").strip()
+
+    if tool_name == "write":
+        invalid_fields = [
+            field for field in ("content_chars", "content_lines") if field in arguments
+        ]
+        if "content" not in arguments and invalid_fields:
+            return {
+                "required_fields": ["content"],
+                "invalid_fields": invalid_fields,
+                "file_path": file_path,
+            }
+
+    if tool_name == "edit":
+        missing_fields = [
+            field for field in ("old_string", "new_string") if field not in arguments
+        ]
+        invalid_fields = [
+            field
+            for field in (
+                "old_string_chars",
+                "old_string_lines",
+                "new_string_chars",
+                "new_string_lines",
+            )
+            if field in arguments
+        ]
+        if missing_fields and invalid_fields:
+            return {
+                "required_fields": missing_fields,
+                "invalid_fields": invalid_fields,
+                "file_path": file_path,
+            }
+
+    if tool_name == "patch":
+        invalid_fields = [field for field in ("hunk_count",) if field in arguments]
+        if "patch" not in arguments and "hunks" not in arguments and invalid_fields:
+            return {
+                "required_fields": ["patch or hunks"],
+                "invalid_fields": invalid_fields,
+                "file_path": file_path,
+            }
+
+    return None
 
 
 def get_recovery_hints(
@@ -687,6 +765,45 @@ def get_recovery_hints(
             "Reuse the evidence you already gathered and apply the file change directly",
             "If the exact replacement span is unclear, read just the target file and then edit it",
         ] + category_hints
+
+    payload_fix = detect_missing_mutation_payload(tool_name, args, "")
+    if payload_fix is not None:
+        required = ", ".join(payload_fix["required_fields"])
+        invalid = ", ".join(payload_fix["invalid_fields"])
+        target = payload_fix["file_path"]
+        if tool_name == "write":
+            category_hints = [
+                (
+                    f"Resend the mutation as `write(file_path=..., content='...')` "
+                    f"for `{target}` with the real file body"
+                    if target
+                    else "Resend the mutation as `write(file_path=..., content='...')` with the real file body"
+                ),
+                (
+                    f"`{invalid}` are summary fields, not valid write inputs; provide `{required}` instead"
+                ),
+                "Do not reread reference files first unless one specific fact still blocks the write",
+            ]
+        elif tool_name == "edit":
+            category_hints = [
+                (
+                    f"Resend the mutation for `{target}` with the real `{required}` text payload"
+                    if target
+                    else f"Resend the mutation with the real `{required}` text payload"
+                ),
+                f"`{invalid}` are summary fields, not valid edit inputs; provide `{required}` instead",
+                "Do not reread reference files first unless one specific exact replacement span is still unknown",
+            ]
+        elif tool_name == "patch":
+            category_hints = [
+                (
+                    f"Resend the mutation for `{target}` with real `patch` text or structured `hunks`"
+                    if target
+                    else "Resend the mutation with real `patch` text or structured `hunks`"
+                ),
+                f"`{invalid}` are summary fields, not valid patch inputs; provide `{required}` instead",
+                "Do not reread reference files first unless one specific edit span is still unknown",
+            ]
 
     return "\n".join(f"- {hint}" for hint in category_hints)
 

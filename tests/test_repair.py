@@ -14,6 +14,7 @@ from loader.runtime.permissions import (
     build_permission_policy,
     load_permission_rules,
 )
+from loader.runtime.recovery import RecoveryContext
 from loader.runtime.repair import ResponseRepairer
 from loader.tools.base import create_default_registry
 from tests.helpers.runtime_harness import ScriptedBackend
@@ -963,6 +964,77 @@ def test_empty_response_retry_maps_title_style_todo_to_html_graph_target(
         "before more research."
         in decision.retry_message
     )
+
+
+def test_empty_response_retry_reminds_model_to_resend_real_write_payload(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    chapter_one = chapters / "01-introduction.html"
+    chapter_one.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{guide_root / 'index.html'}`",
+                f"- `{chapters / '01-introduction.html'}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(chapter_one))
+    dod.completed_items.append("Create first chapter file (01-introduction.html)")
+    dod.pending_items.append("Develop the main index.html file for the nginx guide")
+
+    recovery_context = RecoveryContext(
+        original_tool="write",
+        original_args={
+            "file_path": "~/Loader/guides/nginx/index.html",
+            "content_chars": 1354,
+            "content_lines": 30,
+        },
+    )
+    recovery_context.add_attempt(
+        "write",
+        {
+            "file_path": "~/Loader/guides/nginx/index.html",
+            "content_chars": 1354,
+            "content_lines": 30,
+        },
+        "WriteTool.execute() missing 1 required positional argument: 'content'",
+    )
+    context.recovery_context = recovery_context
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=2,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "resend `write`" in decision.retry_message
+    assert "content_chars" in decision.retry_message
+    assert "index.html" in decision.retry_message
 
 
 def test_empty_response_retry_uses_compact_prompt_after_early_progress_with_concrete_next_file(

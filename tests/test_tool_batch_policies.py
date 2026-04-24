@@ -884,6 +884,69 @@ async def test_tool_batch_recovery_controller_uses_generic_loop_guidance(
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_recovery_controller_surfaces_missing_write_payload_fix(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence should not run here")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run here")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(
+                role=Role.USER,
+                content="Create ~/Loader/guides/nginx/index.html",
+            )
+        ],
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    controller = ToolBatchRecoveryController(context)
+    tool_call = ToolCall(
+        id="write-metadata-only",
+        name="write",
+        arguments={
+            "file_path": "~/Loader/guides/nginx/index.html",
+            "content_chars": 1354,
+            "content_lines": 30,
+        },
+    )
+    outcome = tool_outcome(
+        tool_call=tool_call,
+        output=(
+            "[Validation warning] Writing empty content to file\n"
+            "Tool execution error: WriteTool.execute() missing 1 required "
+            "positional argument: 'content'"
+        ),
+        is_error=True,
+    )
+
+    follow_up = await controller.build_follow_up(
+        tool_call=tool_call,
+        outcome=outcome,
+        emit=lambda event: _noop_emit(event),
+    )
+
+    assert follow_up is not None
+    assert "## PAYLOAD FORMAT FIX" in follow_up.content
+    assert "content_chars" in follow_up.content
+    assert "write(file_path=..., content='...')" in follow_up.content
+    assert "index.html" in follow_up.content
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_recovery_controller_resets_context_for_unrelated_failures(
     temp_dir: Path,
 ) -> None:
