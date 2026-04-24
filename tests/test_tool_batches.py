@@ -688,7 +688,7 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
 
     assert len(queued_messages) == 1
     assert "Reuse the earlier observation instead of repeating it." in queued_messages[0]
-    assert "Continue with the next pending item: `Create the remaining chapter files`." in queued_messages[0]
+    assert "A declared output artifact is still missing." in queued_messages[0]
     assert "Resume by creating `04-variables.html` now." in queued_messages[0]
     assert f"Prefer one `write` call for `{temp_dir / 'chapters' / '04-variables.html'}` instead of more rereads." in queued_messages[0]
 
@@ -1304,6 +1304,139 @@ async def test_tool_batch_runner_duplicate_reference_read_prefers_next_pending_t
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_successful_reference_read_prioritizes_concrete_missing_artifact(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "Loader" / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    chapter_one = chapters / "01-introduction.html"
+    chapter_one.write_text("<html></html>\n")
+    index_path = guide_root / "index.html"
+
+    reference = temp_dir / "Loader" / "guides" / "fortran" / "index.html"
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    reference.write_text("<h1>Fortran Beginner's Guide</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapters / '02-installation.html'}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(chapter_one))
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Examine the existing Fortran guide structure to understand the format and cadence",
+                "active_form": "Working on: Examine the existing Fortran guide structure to understand the format and cadence",
+                "status": "pending",
+            },
+            {
+                "content": "Create each chapter file with appropriate content",
+                "active_form": "Working on: Create each chapter file with appropriate content",
+                "status": "pending",
+            },
+            {
+                "content": "Ensure all files follow the same structure and style as the Fortran guide",
+                "active_form": "Working on: Ensure all files follow the same structure and style as the Fortran guide",
+                "status": "pending",
+            },
+        ],
+    )
+    tool_call = ToolCall(
+        id="read-reference-index",
+        name="read",
+        arguments={"file_path": str(reference)},
+    )
+    read_output = "Observation [read]: Result: <h1>Fortran Beginner's Guide</h1>\n"
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.EXECUTED,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=read_output,
+                    result_content=read_output,
+                ),
+                event_content=read_output,
+                is_error=False,
+                result_output=read_output,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    assert any(
+        "Confirmed progress: `Examine the existing Fortran guide structure to understand the format and cadence`"
+        in message
+        for message in queued_messages
+    )
+    assert any("Resume by creating `index.html` now." in message for message in queued_messages)
+    assert not any(
+        "Continue with the next pending item: `Create each chapter file with appropriate content`"
+        in message
+        for message in queued_messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_duplicate_read_ignores_unplanned_expansion_after_plan_complete(
     temp_dir: Path,
 ) -> None:
@@ -1808,8 +1941,10 @@ async def test_duplicate_observation_nudge_prioritizes_missing_artifact_over_rev
         ],
     )
     assert tool_batches_should_prioritize_missing_artifact(
+        dod=dod,
         next_pending=dod.pending_items[0],
         missing_artifact=(chapters / "06-ssl-configuration.html", False),
+        project_root=temp_dir,
     )
 
     tool_call = ToolCall(

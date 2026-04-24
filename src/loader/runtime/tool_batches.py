@@ -350,8 +350,10 @@ class ToolBatchRunner:
             max_items=2,
         )
         if _should_prioritize_missing_artifact(
+            dod=dod,
             next_pending=next_pending,
             missing_artifact=missing_artifact,
+            project_root=self.context.project_root,
         ):
             prefix = "Reuse the earlier observation instead of repeating it. "
             if confirmed_facts:
@@ -802,8 +804,10 @@ class ToolBatchRunner:
         if not completed_label or not next_pending or next_pending == completed_label:
             return
         if _should_prioritize_missing_artifact(
+            dod=dod,
             next_pending=next_pending,
             missing_artifact=missing_artifact,
+            project_root=self.context.project_root,
         ):
             if not has_artifact_progress:
                 compact_handoff = _compact_missing_artifact_handoff(
@@ -1102,6 +1106,7 @@ class ToolBatchRunner:
             and not _todo_is_mutation_step(next_pending)
             and not _todo_is_consistency_review_step(next_pending)
             and not _should_prioritize_missing_artifact(
+                dod=dod,
                 next_pending=next_pending,
                 missing_artifact=(
                     missing_artifact
@@ -1111,6 +1116,7 @@ class ToolBatchRunner:
                     )
                     else None
                 ),
+                project_root=self.context.project_root,
             )
         ):
             self.context.queue_steering_message(
@@ -1143,16 +1149,52 @@ def _todo_is_consistency_review_step(item: str) -> bool:
 
 def _should_prioritize_missing_artifact(
     *,
+    dod: DefinitionOfDone,
     next_pending: str | None,
     missing_artifact: tuple[Path, bool] | None,
+    project_root: Path,
 ) -> bool:
     if missing_artifact is None:
         return False
     if not next_pending:
         return True
+    if _pending_todo_conflicts_with_missing_artifact(
+        dod,
+        item=next_pending,
+        missing_artifact=missing_artifact,
+        project_root=project_root,
+    ):
+        return True
     if _todo_is_consistency_review_step(next_pending):
         return True
     return not _todo_is_mutation_step(next_pending)
+
+
+def _pending_todo_conflicts_with_missing_artifact(
+    dod: DefinitionOfDone,
+    *,
+    item: str,
+    missing_artifact: tuple[Path, bool],
+    project_root: Path,
+) -> bool:
+    text = item.strip().lower()
+    if not text or item in _TODO_NUDGE_EXCLUDED_ITEMS:
+        return False
+
+    target, expect_directory = missing_artifact
+    inferred_target = infer_pending_todo_output_target(
+        dod,
+        item,
+        project_root=project_root,
+    )
+    if inferred_target is None:
+        return not expect_directory and _todo_is_mutation_step(item)
+
+    inferred_target = inferred_target.resolve(strict=False)
+    target = target.resolve(strict=False)
+    if expect_directory:
+        return target != inferred_target and target not in inferred_target.parents
+    return inferred_target != target
 
 
 def _next_missing_planned_artifact(

@@ -1024,6 +1024,42 @@ def test_advance_todos_from_tool_call_does_not_complete_linking_step_from_glob()
     assert "Link all chapters together properly in the index file" in dod.pending_items
 
 
+def test_advance_todos_from_tool_call_does_not_complete_aggregate_style_step_from_reference_read() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create each chapter file with appropriate content",
+                "active_form": "Working on: Create each chapter file with appropriate content",
+                "status": "pending",
+            },
+            {
+                "content": "Ensure all files follow the same structure and style as the Fortran guide",
+                "active_form": "Working on: Ensure all files follow the same structure and style as the Fortran guide",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert (
+        advance_todos_from_tool_call(
+            dod,
+            ToolCall(
+                id="read-reference-index",
+                name="read",
+                arguments={"file_path": "~/Loader/guides/fortran/index.html"},
+            ),
+        )
+        is False
+    )
+    assert "Create each chapter file with appropriate content" in dod.pending_items
+    assert (
+        "Ensure all files follow the same structure and style as the Fortran guide"
+        in dod.pending_items
+    )
+
+
 def test_sync_todos_to_definition_of_done_keeps_linking_step_pending_while_artifacts_missing(
     temp_dir: Path,
 ) -> None:

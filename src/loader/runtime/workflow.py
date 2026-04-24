@@ -181,6 +181,10 @@ _ARTIFACT_SET_COMPLETION_HINTS = (
     "formatted",
     "formatting",
     "review",
+    "style",
+    "same style",
+    "same structure",
+    "follow the same",
 )
 _BROAD_SETUP_HINTS = (
     "directory structure",
@@ -1228,6 +1232,17 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
     if (
         is_discovery_tool
         and _contains_any(text, _MUTATION_STEP_HINTS)
+        and not (
+            _contains_any(text, _READ_STEP_HINTS)
+            or _contains_any(text, _SEARCH_STEP_HINTS)
+            or _contains_any(text, _PARSE_STEP_HINTS)
+            or _contains_any(text, _VERIFY_STEP_HINTS)
+        )
+    ):
+        return 0
+    if (
+        is_discovery_tool
+        and _todo_requires_complete_artifact_set(text)
         and not (
             _contains_any(text, _READ_STEP_HINTS)
             or _contains_any(text, _SEARCH_STEP_HINTS)
