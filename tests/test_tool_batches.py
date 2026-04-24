@@ -4602,6 +4602,56 @@ def test_tool_batch_runner_blocked_completed_artifact_scope_nudge_prefers_verifi
     assert "Do not reopen earlier reference materials." in queued[0]
 
 
+def test_tool_batch_runner_blocked_html_declared_target_nudge_uses_closest_declared_target(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    runner._queue_blocked_html_declared_target_nudge(
+        ToolCall(
+            id="write-ch1",
+            name="write",
+            arguments={"file_path": str(temp_dir / "guide" / "chapters" / "01-introduction.html")},
+        ),
+        (
+            "[Blocked - HTML page introduces new local targets outside the current declared artifact set] "
+            "Suggestion: Keep non-root HTML pages within the root-declared local-link set and avoid "
+            "introducing new sibling targets that the guide root does not declare, for example fix: 02-setup.html. "
+            "Already-declared local targets include: chapters/01-introduction.html, chapters/02-installation.html, "
+            "chapters/03-configuration.html. Closest declared local targets include: chapters/02-installation.html"
+        ),
+    )
+
+    assert queued
+    assert str(temp_dir / "guide" / "chapters" / "01-introduction.html") in queued[0]
+    assert "`chapters/02-installation.html`" in queued[0]
+    assert "same file now" in queued[0]
+
+
 @pytest.mark.asyncio
 async def test_tool_batch_runner_blocked_empty_file_path_nudges_concrete_next_artifact(
     temp_dir: Path,

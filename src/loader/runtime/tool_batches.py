@@ -285,6 +285,10 @@ class ToolBatchRunner:
                     outcome.event_content,
                     dod=dod,
                 )
+                self._queue_blocked_html_declared_target_nudge(
+                    tool_call,
+                    outcome.event_content,
+                )
                 self._queue_blocked_active_repair_nudge(outcome.event_content)
                 self._queue_blocked_active_repair_mutation_nudge(outcome.event_content)
                 self._queue_blocked_completed_artifact_scope_nudge(
@@ -684,6 +688,56 @@ class ToolBatchRunner:
             "mutation instead of retrying the same no-op edit. "
             "Do not reopen unrelated reference materials while this concrete repair target is unresolved."
         )
+
+    def _queue_blocked_html_declared_target_nudge(
+        self,
+        tool_call: ToolCall,
+        event_content: str,
+    ) -> None:
+        """Steer blocked HTML graph edits back to the root-declared local targets."""
+
+        if tool_call.name not in {"write", "edit", "patch"}:
+            return
+        if "HTML page introduces new local targets outside the current declared artifact set" not in event_content:
+            return
+
+        target = str(
+            tool_call.arguments.get("file_path")
+            or tool_call.arguments.get("path")
+            or ""
+        ).strip()
+        if not target:
+            return
+
+        closest_targets = _extract_blocked_html_target_list(
+            event_content,
+            "Closest declared local targets include:",
+        )
+        declared_targets = _extract_blocked_html_target_list(
+            event_content,
+            "Already-declared local targets include:",
+        )
+
+        guidance = (
+            "That HTML mutation introduced sibling targets outside the current declared local-link set. "
+            f"Stay on `{target}`."
+        )
+        if closest_targets:
+            guidance += (
+                " Replace the invented hrefs with the closest declared target(s): "
+                + ", ".join(f"`{candidate}`" for candidate in closest_targets[:3])
+                + "."
+            )
+        elif declared_targets:
+            guidance += (
+                " Keep local links within the declared target set, for example: "
+                + ", ".join(f"`{candidate}`" for candidate in declared_targets[:3])
+                + "."
+            )
+        guidance += (
+            " Resend one concrete mutation for that same file now instead of rereading the reference guide."
+        )
+        self.context.queue_steering_message(guidance)
 
     def _queue_blocked_invalid_mutation_nudge(
         self,
@@ -1585,6 +1639,16 @@ def _invalid_mutation_call_shape(tool_name: str) -> str:
     if tool_name == "patch":
         return "`patch(file_path=..., patch='...')` or `patch(..., hunks=[...])`"
     return f"`{tool_name}(...)`"
+
+
+def _extract_blocked_html_target_list(event_content: str, marker: str) -> list[str]:
+    if marker not in event_content:
+        return []
+    tail = event_content.split(marker, 1)[1].strip()
+    target_text = tail.split(". ", 1)[0].strip()
+    if not target_text:
+        return []
+    return [item.strip() for item in target_text.split(",") if item.strip()]
 
 
 def _resume_suffix_for_target(
