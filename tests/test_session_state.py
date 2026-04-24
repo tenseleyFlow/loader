@@ -159,6 +159,61 @@ def test_session_compaction_persists_summary_and_recent_messages(temp_dir: Path)
     ]
 
 
+def test_build_request_messages_trims_large_mutation_payloads_from_history(
+    temp_dir: Path,
+) -> None:
+    large_html = "<html>" + ("x" * 400) + "</html>"
+    old_block = "old\n" * 120
+    new_block = "new\n" * 120
+    session = ConversationSession(
+        system_message_factory=_dummy_system,
+        few_shot_factory=_dummy_few_shots,
+        project_root=temp_dir,
+        messages=[
+            Message(role=Role.USER, content="Create the guide."),
+            Message(
+                role=Role.ASSISTANT,
+                content="I'll write the first files now.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(temp_dir / "guides" / "nginx" / "index.html"),
+                            "content": large_html,
+                        },
+                    ),
+                    ToolCall(
+                        id="edit-1",
+                        name="edit",
+                        arguments={
+                            "file_path": str(temp_dir / "README.md"),
+                            "old_string": old_block,
+                            "new_string": new_block,
+                        },
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    request_messages = session.build_request_messages()
+
+    assert request_messages[2].tool_calls[0].arguments["file_path"].endswith("index.html")
+    assert request_messages[2].tool_calls[0].arguments["content"].startswith(
+        "[trimmed write content:"
+    )
+    assert request_messages[2].tool_calls[1].arguments["old_string"].startswith(
+        "[trimmed old_string:"
+    )
+    assert request_messages[2].tool_calls[1].arguments["new_string"].startswith(
+        "[trimmed new_string:"
+    )
+    assert session.messages[1].tool_calls[0].arguments["content"] == large_html
+    assert session.messages[1].tool_calls[1].arguments["old_string"] == old_block
+    assert session.messages[1].tool_calls[1].arguments["new_string"] == new_block
+
+
 def test_session_persists_permission_policy_metadata(temp_dir: Path) -> None:
     session = ConversationSession(
         system_message_factory=_dummy_system,

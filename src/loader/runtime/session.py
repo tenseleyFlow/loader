@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..llm.base import Message
+from ..llm.base import Message, Role, ToolCall
 from .compaction import (
     DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     DEFAULT_COMPACTION_KEEP_LAST_MESSAGES,
@@ -36,6 +36,67 @@ SESSION_VERSION = 11
 DEFAULT_ROTATE_AFTER_BYTES = 256 * 1024
 MAX_ROTATED_FILES = 3
 _UNSET = object()
+_REQUEST_TOOL_PAYLOAD_PREVIEW_CHARS = 120
+_REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD = 240
+
+
+def _collapse_request_preview(text: str, *, limit: int = _REQUEST_TOOL_PAYLOAD_PREVIEW_CHARS) -> str:
+    """Normalize one tool payload preview for request-time context."""
+
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _summarize_request_string_argument(label: str, value: str) -> str:
+    """Summarize one large string argument for model-request history."""
+
+    preview = _collapse_request_preview(value)
+    return f"[trimmed {label}: {len(value)} chars | preview: {preview}]"
+
+
+def _project_request_tool_call(tool_call: ToolCall) -> ToolCall:
+    """Project one historical tool call into a lighter request-time form."""
+
+    arguments = dict(tool_call.arguments)
+    if tool_call.name == "write":
+        content = arguments.get("content")
+        if isinstance(content, str) and len(content) > _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD:
+            arguments["content"] = _summarize_request_string_argument(
+                "write content",
+                content,
+            )
+    elif tool_call.name == "edit":
+        for key in ("old_string", "new_string"):
+            value = arguments.get(key)
+            if isinstance(value, str) and len(value) > _REQUEST_TOOL_PAYLOAD_SUMMARY_THRESHOLD:
+                arguments[key] = _summarize_request_string_argument(key, value)
+    elif tool_call.name == "patch":
+        hunks = arguments.get("hunks")
+        if isinstance(hunks, list) and hunks:
+            arguments["hunks"] = f"[trimmed patch payload: {len(hunks)} hunks]"
+    return ToolCall(
+        id=tool_call.id,
+        name=tool_call.name,
+        arguments=arguments,
+    )
+
+
+def _project_request_message(message: Message) -> Message:
+    """Project one persisted message into request-time context."""
+
+    if message.role is not Role.ASSISTANT or not message.tool_calls:
+        return message
+    projected_tool_calls = [_project_request_tool_call(tool_call) for tool_call in message.tool_calls]
+    if projected_tool_calls == message.tool_calls:
+        return message
+    return Message(
+        role=message.role,
+        content=message.content,
+        tool_calls=projected_tool_calls,
+        tool_results=list(message.tool_results),
+    )
 
 
 def _utc_now() -> str:
@@ -532,7 +593,9 @@ class ConversationSession:
         request_messages = [self.system_message_factory()]
         if len(self.messages) <= 2:
             request_messages.extend(self.few_shot_factory())
-        request_messages.extend(self.messages)
+        request_messages.extend(
+            _project_request_message(message) for message in self.messages
+        )
 
         from .logging import get_runtime_logger
         rlog = get_runtime_logger()
