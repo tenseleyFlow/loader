@@ -308,22 +308,22 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        "Resume with this exact next step: continue `Write main index.html for nginx guide` "
-        "by creating `index.html`."
+        "Resume with this exact next step: create `index.html`."
         in decision.retry_message
     )
     assert (
-        f"Prefer one `write(content=...)` call for `{index_path}` before more research."
+        f"Prefer one `write` call for `{index_path}` before any more reference reads."
+        in decision.retry_message
+    )
+    assert (
+        "The `write` tool can create that file's parent directories automatically, so do the write in one step instead of stopping for a separate mkdir."
         in decision.retry_message
     )
     assert (
         f'Emit this tool shape now: `write(file_path="{index_path.resolve(strict=False)}", content="...")`.'
         in decision.retry_message
     )
-    assert (
-        "Do not restart discovery unless one specific missing fact blocks that file write."
-        in decision.retry_message
-    )
+    assert "Do not restart discovery unless one specific missing fact blocks this step." in decision.retry_message
 
 
 def test_empty_response_retry_recovers_blocked_empty_file_path_to_concrete_target(

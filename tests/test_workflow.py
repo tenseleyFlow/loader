@@ -20,6 +20,7 @@ from loader.runtime.workflow import (
     extract_verification_commands_from_markdown,
     infer_pending_todo_output_target,
     merge_refreshed_todos_with_existing_scope,
+    preferred_pending_todo_item,
     preserve_task_grounded_acceptance_criteria,
     reconcile_aggregate_completion_steps,
     sync_todos_to_definition_of_done,
@@ -1016,6 +1017,42 @@ def test_infer_pending_todo_output_target_maps_broad_setup_to_planned_directory(
     )
 
     assert target == chapters.resolve(strict=False)
+
+
+def test_preferred_pending_todo_item_keeps_setup_step_when_missing_file_parent_absent(
+    tmp_path: Path,
+) -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    nginx_root = tmp_path / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    index_path = nginx_root / "index.html"
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Create the nginx directory structure",
+        "Create the main index.html file for nginx guide",
+        "Complete the requested work",
+    ]
+
+    preferred = preferred_pending_todo_item(
+        dod,
+        project_root=tmp_path,
+        missing_artifact=(index_path.resolve(strict=False), False),
+    )
+
+    assert preferred == "Create the nginx directory structure"
 
 
 def test_advance_todos_from_tool_call_does_not_complete_content_study_from_root_index_read() -> None:

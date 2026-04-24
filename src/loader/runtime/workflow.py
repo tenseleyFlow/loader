@@ -1515,7 +1515,7 @@ def _todo_is_subsumed_by_concrete_missing_artifact(
     target, expect_directory = missing_artifact
     if _contains_any(text, _BROAD_SETUP_HINTS):
         if not expect_directory:
-            return True
+            return target.parent.exists()
         return target.is_dir()
     return False
 
