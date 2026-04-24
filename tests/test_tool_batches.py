@@ -4030,6 +4030,86 @@ async def test_tool_batch_runner_marks_verification_planned_after_new_mutation(
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_does_not_mark_verification_planned_after_setup_only_mkdir(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    nginx_root = temp_dir / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{nginx_root / 'index.html'}`",
+                "",
+            ]
+        )
+    )
+
+    tool_call = ToolCall(
+        id="mkdir-1",
+        name="bash",
+        arguments={"command": f"mkdir -p {chapters}"},
+    )
+    executor = FakeExecutor(
+        [tool_outcome(tool_call=tool_call, output="", is_error=False)]
+    )
+    summary = TurnSummary(final_response="")
+    dod = create_definition_of_done("Create an equally thorough nginx guide with chapters.")
+    dod.implementation_plan = str(implementation_plan)
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert dod.last_verification_result is None
+    assert "Collect verification evidence" not in dod.pending_items
+    assert not any(
+        entry.reason_code == "verification_planned" for entry in summary.workflow_timeline
+    )
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_marks_passed_verification_stale_after_new_mutation(
     temp_dir: Path,
 ) -> None:

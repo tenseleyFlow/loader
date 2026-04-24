@@ -698,7 +698,11 @@ class ToolBatchRunner:
                 dod=dod,
                 tool_call=tool_call,
             )
-        elif is_mutating:
+        elif is_mutating and _should_plan_verification_for_tool_call(
+            dod,
+            tool_call=tool_call,
+            project_root=self.context.project_root,
+        ):
             _mark_verification_planned(
                 context=self.context,
                 summary=summary,
@@ -1507,6 +1511,38 @@ def _mark_verification_stale(
 def _todo_is_mutation_step(label: str) -> bool:
     lowered = label.lower()
     return any(token in lowered for token in _MUTATION_TODO_HINTS)
+
+
+def _should_plan_verification_for_tool_call(
+    dod: DefinitionOfDone,
+    *,
+    tool_call: ToolCall,
+    project_root: Path,
+) -> bool:
+    if tool_call.name in {"write", "edit", "patch"}:
+        return True
+    if tool_call.name != "bash":
+        return False
+    if any(
+        Path(path).expanduser().resolve(strict=False).suffix
+        for path in dod.touched_files
+        if str(path).strip()
+    ):
+        return True
+    return any(
+        not expect_directory
+        and planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=False,
+            project_root=project_root,
+        )
+        for target, expect_directory in collect_planned_artifact_targets(
+            dod,
+            project_root=project_root,
+            max_paths=12,
+        )
+    )
 
 
 def _mark_verification_planned(
