@@ -261,6 +261,46 @@ def test_derive_verification_commands_adds_html_guide_quality_check_for_thorough
     assert any("HTML guide content quality issues:" in command for command in commands)
 
 
+def test_derive_verification_commands_flags_insufficient_pages_for_broad_thorough_guide(
+    tmp_path: Path,
+) -> None:
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text("<html></html>\n")
+    (chapters / "01-introduction.html").write_text("<h1>Intro</h1>\n")
+
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide / 'index.html'}`",
+                f"- `{chapters}/` (directory for chapter files)",
+                "",
+                "## Execution Order",
+                "- Create chapter files with appropriate content",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done(
+        "Create an equally thorough multi-page HTML guide with chapter files."
+    )
+    dod.implementation_plan = str(implementation_plan)
+
+    commands = derive_verification_commands(
+        dod,
+        project_root=tmp_path,
+        task_statement=dod.task_statement,
+        supplement_existing=True,
+    )
+
+    assert any("insufficient HTML page count" in command for command in commands)
+
+
 def test_collect_planned_artifact_targets_ignores_prose_path_fragments_in_refreshed_plan(
     tmp_path: Path,
 ) -> None:
@@ -386,6 +426,42 @@ def test_all_planned_artifacts_exist_requires_file_contents_for_planned_output_d
     dod = create_definition_of_done("Create a multi-file guide with chapters.")
     dod.implementation_plan = str(implementation_plan)
     dod.completed_items = ["Create chapter files with appropriate content"]
+
+    assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
+
+
+def test_all_planned_artifacts_exist_stays_false_for_substantive_guide_with_only_one_chapter(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{tmp_path / 'guide' / 'index.html'}`",
+                f"- `{tmp_path / 'guide' / 'chapters'}/` (directory for chapter files)",
+                "",
+                "## Execution Order",
+                "- Create chapter files with appropriate content",
+            ]
+        )
+    )
+
+    guide_root = tmp_path / "guide"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    (guide_root / "index.html").write_text("<html></html>\n")
+    (chapters / "01-introduction.html").write_text("<h1>Intro</h1>\n")
+
+    dod = create_definition_of_done("Create an equally thorough guide with chapters.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.completed_items = ["Create chapter files with appropriate content"]
+    dod.touched_files = [
+        str(guide_root / "index.html"),
+        str(chapters / "01-introduction.html"),
+    ]
 
     assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
 

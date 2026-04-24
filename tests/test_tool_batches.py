@@ -3607,7 +3607,7 @@ async def test_tool_batch_runner_working_note_prefers_declared_output_gap_over_s
 
 
 @pytest.mark.asyncio
-async def test_tool_batch_runner_glob_handoff_stays_compact_before_first_output_write(
+async def test_tool_batch_runner_shallow_glob_does_not_handoff_before_content_read(
     temp_dir: Path,
 ) -> None:
     async def assess_confidence(
@@ -3694,16 +3694,7 @@ async def test_tool_batch_runner_glob_handoff_stays_compact_before_first_output_
         consecutive_errors=0,
     )
 
-    assert queued_messages
-    message = queued_messages[-1]
-    assert "Confirmed progress:" in message
-    assert "Next step: create `index.html`." in message
-    assert (
-        f"Prefer one `write` call for `{temp_dir / 'Loader' / 'guides' / 'nginx' / 'index.html'}` now."
-        in message
-    )
-    assert "One declared output artifact is still missing." not in message
-    assert "Do not reread reference material or spend the next turn on bookkeeping." in message
+    assert queued_messages == []
 
 
 @pytest.mark.asyncio

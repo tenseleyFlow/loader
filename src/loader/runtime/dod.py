@@ -96,6 +96,7 @@ _MUTATING_FILE_CHANGE_HINTS = (
     "develop",
     "developing",
 )
+_MINIMUM_SUBSTANTIVE_HTML_GUIDE_PAGES = 4
 
 
 @dataclass
@@ -629,10 +630,28 @@ def _derive_multi_page_html_quality_command(
     project_root: Path,
     task_statement: str,
 ) -> str | None:
-    html_paths = _multi_page_html_quality_paths(dod, project_root=project_root)
-    if len(html_paths) < 4:
-        return None
     if not _task_requires_substantive_html_guide_quality(task_statement):
+        return None
+    html_paths = _multi_page_html_quality_paths(dod, project_root=project_root)
+    requires_multiple_pages = _requires_multiple_html_pages(
+        dod,
+        project_root=project_root,
+    )
+    if requires_multiple_pages and len(html_paths) < _MINIMUM_SUBSTANTIVE_HTML_GUIDE_PAGES:
+        return "\n".join(
+            [
+                "python3 - <<'PY'",
+                f"minimum_pages = {_MINIMUM_SUBSTANTIVE_HTML_GUIDE_PAGES}",
+                f"found_pages = {len(html_paths)}",
+                "print('HTML guide content quality issues:')",
+                "print(",
+                "    f'insufficient HTML page count ({found_pages} files, expected at least {minimum_pages})'",
+                ")",
+                "raise SystemExit(1)",
+                "PY",
+            ]
+        )
+    if len(html_paths) < _MINIMUM_SUBSTANTIVE_HTML_GUIDE_PAGES:
         return None
 
     path_literals = ", ".join(repr(str(path)) for path in html_paths)
@@ -743,6 +762,11 @@ def all_planned_artifacts_exist(
             project_root=project_root,
         )
         for target, expect_directory in targets
+    ):
+        return False
+    if _substantive_multi_page_html_guide_is_incomplete(
+        dod,
+        project_root=project_root,
     ):
         return False
     return not _planned_html_outputs_have_missing_local_links(
@@ -928,13 +952,34 @@ def _multi_page_html_quality_paths(
         project_root=project_root,
         max_paths=24,
     )
-    planned_html = [
-        target
-        for target, expect_directory in planned_targets
-        if not expect_directory and target.suffix.lower() in {".html", ".htm"}
-    ]
-    if planned_html:
-        return planned_html
+    paths: list[Path] = []
+    seen: set[str] = set()
+
+    for target, expect_directory in planned_targets:
+        if expect_directory:
+            if not target.exists():
+                continue
+            try:
+                discovered = sorted(path for path in target.rglob("*.html") if path.is_file())
+            except OSError:
+                continue
+            for path in discovered:
+                key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                paths.append(path)
+            continue
+        if target.suffix.lower() not in {".html", ".htm"} or not target.exists():
+            continue
+        key = str(target)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(target)
+
+    if paths:
+        return paths
 
     touched_html = []
     for path_str in dod.touched_files:
@@ -943,6 +988,52 @@ def _multi_page_html_quality_paths(
         if effective_path.suffix.lower() in {".html", ".htm"}:
             touched_html.append(effective_path)
     return list(dict.fromkeys(touched_html))
+
+
+def _requires_multiple_html_pages(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> bool:
+    planned_targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=24,
+    )
+    if any(
+        expect_directory
+        and planned_directory_requires_generated_files(
+            dod,
+            target=target,
+            project_root=project_root,
+        )
+        for target, expect_directory in planned_targets
+    ):
+        return True
+
+    planned_html = [
+        target
+        for target, expect_directory in planned_targets
+        if not expect_directory and target.suffix.lower() in {".html", ".htm"}
+    ]
+    if len(planned_html) > 1:
+        return True
+
+    lowered = dod.task_statement.lower()
+    return "chapter" in lowered or "chapters" in lowered
+
+
+def _substantive_multi_page_html_guide_is_incomplete(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> bool:
+    if not _task_requires_substantive_html_guide_quality(dod.task_statement):
+        return False
+    if not _requires_multiple_html_pages(dod, project_root=project_root):
+        return False
+    html_paths = _multi_page_html_quality_paths(dod, project_root=project_root)
+    return len(html_paths) < _MINIMUM_SUBSTANTIVE_HTML_GUIDE_PAGES
 
 
 def _task_requires_substantive_html_guide_quality(task_statement: str) -> bool:
@@ -957,8 +1048,9 @@ def _task_requires_substantive_html_guide_quality(task_statement: str) -> bool:
             "detailed",
             "equally",
             "cadence",
-            "chapter",
-            "chapters",
+            "depth",
+            "same structure",
+            "same style",
         )
     )
 
