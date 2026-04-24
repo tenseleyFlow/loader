@@ -29,6 +29,7 @@ from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .executor import ToolExecutionState, ToolExecutor
 from .logging import get_runtime_logger
 from .policy_timeline import append_verification_timeline_entry
+from .recovery import RecoveryContext, detect_missing_mutation_payload
 from .repair_focus import extract_active_repair_context
 from .safeguard_services import extract_shell_text_rewrite_target
 from .tool_batch_checks import ToolBatchConfidenceGate, ToolBatchVerificationGate
@@ -279,6 +280,11 @@ class ToolBatchRunner:
             if outcome.state == ToolExecutionState.DUPLICATE:
                 self._queue_duplicate_observation_nudge(tool_call, dod=dod)
             elif outcome.state == ToolExecutionState.BLOCKED:
+                self._queue_blocked_invalid_mutation_nudge(
+                    tool_call,
+                    outcome.event_content,
+                    dod=dod,
+                )
                 self._queue_blocked_active_repair_nudge(outcome.event_content)
                 self._queue_blocked_active_repair_mutation_nudge(outcome.event_content)
                 self._queue_blocked_completed_artifact_scope_nudge(
@@ -678,6 +684,115 @@ class ToolBatchRunner:
             "mutation instead of retrying the same no-op edit. "
             "Do not reopen unrelated reference materials while this concrete repair target is unresolved."
         )
+
+    def _queue_blocked_invalid_mutation_nudge(
+        self,
+        tool_call: ToolCall,
+        event_content: str,
+        *,
+        dod: DefinitionOfDone,
+    ) -> None:
+        """Recover blocked mutations that omitted a real target path or text payload."""
+
+        fix = detect_missing_mutation_payload(
+            tool_call.name,
+            tool_call.arguments,
+            event_content,
+        )
+        if fix is None:
+            return
+
+        self._record_blocked_invalid_mutation_attempt(tool_call, event_content)
+
+        messages = list(getattr(self.context.session, "messages", []) or [])
+        missing_artifact = _next_missing_planned_artifact(
+            dod,
+            project_root=self.context.project_root,
+            messages=messages,
+        )
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+            missing_artifact=missing_artifact,
+        )
+        missing_artifact = _prefer_missing_artifact_for_pending_item(
+            dod,
+            missing_artifact=missing_artifact,
+            next_pending=next_pending,
+            project_root=self.context.project_root,
+        )
+        resume_target = _preferred_resume_target_path(
+            dod,
+            next_pending=next_pending,
+            missing_artifact=missing_artifact,
+            project_root=self.context.project_root,
+            messages=messages,
+        )
+        resume_suffix = _pending_item_resume_suffix(
+            dod,
+            next_pending=next_pending,
+            missing_artifact=missing_artifact,
+            project_root=self.context.project_root,
+            messages=messages,
+        )
+        target_label = f"`{resume_target.name or str(resume_target)}`" if resume_target else ""
+
+        if fix.get("kind") == "missing_target":
+            prefix = f"That `{tool_call.name}` call did not provide a valid `file_path`."
+            if target_label:
+                prefix += f" Stay on {target_label}."
+            self.context.queue_steering_message(
+                prefix
+                + resume_suffix
+                + " Resend one concrete "
+                + _invalid_mutation_call_shape(tool_call.name)
+                + " now instead of another working note, reread, or empty response."
+            )
+            return
+
+        invalid_fields = ", ".join(f"`{field}`" for field in fix["invalid_fields"])
+        prefix = f"That `{tool_call.name}` call omitted the real text payload."
+        if invalid_fields:
+            prefix += f" {invalid_fields} are summary fields, not valid mutation inputs."
+        if target_label:
+            prefix += f" Stay on {target_label}."
+        self.context.queue_steering_message(
+            prefix
+            + resume_suffix
+            + " Resend one concrete "
+            + _invalid_mutation_call_shape(tool_call.name)
+            + " now instead of rereading more files."
+        )
+
+    def _record_blocked_invalid_mutation_attempt(
+        self,
+        tool_call: ToolCall,
+        error: str,
+    ) -> None:
+        """Seed recovery state from blocked malformed mutations for later retry guidance."""
+
+        recovery_context = self.context.recovery_context
+        if recovery_context is None or not recovery_context.is_related_failure(
+            tool_call.name,
+            tool_call.arguments,
+            error,
+        ):
+            recovery_context = RecoveryContext(
+                original_tool=tool_call.name,
+                original_args=tool_call.arguments,
+                max_retries=self.context.config.max_recovery_attempts,
+            )
+            self.context.recovery_context = recovery_context
+
+        if not recovery_context.is_similar_attempt(
+            tool_call.name,
+            tool_call.arguments,
+        ):
+            recovery_context.add_attempt(
+                tool_call.name,
+                tool_call.arguments,
+                error,
+            )
 
     async def _record_successful_execution(
         self,
@@ -1425,6 +1540,51 @@ def _pending_item_resume_suffix(
         project_root=project_root,
         messages=messages,
     )
+
+
+def _preferred_resume_target_path(
+    dod: DefinitionOfDone,
+    *,
+    next_pending: str | None,
+    missing_artifact: tuple[Path, bool] | None,
+    project_root: Path,
+    messages: list[Any] | None = None,
+) -> Path | None:
+    if next_pending:
+        pending_target = infer_pending_todo_output_target(
+            dod,
+            next_pending,
+            project_root=project_root,
+        )
+        if pending_target is not None and not pending_target.exists():
+            return pending_target.expanduser().resolve(strict=False)
+
+    if missing_artifact is None:
+        return None
+
+    target, expect_directory = missing_artifact
+    normalized_target = target.expanduser().resolve(strict=False)
+    if not expect_directory:
+        return normalized_target
+
+    next_output_file, _ = infer_next_output_file(
+        target=normalized_target,
+        project_root=project_root,
+        messages=list(messages or []),
+    )
+    if next_output_file is not None:
+        return next_output_file.expanduser().resolve(strict=False)
+    return normalized_target
+
+
+def _invalid_mutation_call_shape(tool_name: str) -> str:
+    if tool_name == "write":
+        return "`write(file_path=..., content=...)`"
+    if tool_name == "edit":
+        return "`edit(file_path=..., old_string=..., new_string=...)`"
+    if tool_name == "patch":
+        return "`patch(file_path=..., patch='...')` or `patch(..., hunks=[...])`"
+    return f"`{tool_name}(...)`"
 
 
 def _resume_suffix_for_target(

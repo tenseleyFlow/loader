@@ -4600,3 +4600,110 @@ def test_tool_batch_runner_blocked_completed_artifact_scope_nudge_prefers_verifi
     assert "All explicitly planned artifacts already exist." in queued[0]
     assert "Verify all guide files are linked and complete" in queued[0]
     assert "Do not reopen earlier reference materials." in queued[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_blocked_empty_file_path_nudges_concrete_next_artifact(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>Intro</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="write-2",
+        name="write",
+        arguments={"file_path": "", "content": "<html></html>\n"},
+    )
+    blocked_message = "[Blocked - Empty file path] Suggestion: Provide a valid file path"
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.BLOCKED,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=blocked_message,
+                    result_content=blocked_message,
+                    is_error=True,
+                ),
+                event_content=blocked_message,
+                is_error=True,
+                result_output=blocked_message,
+            )
+        ]
+    )
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+    dod.pending_items.append("Creating Chapter 2: Installation and Setup")
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=TurnSummary(final_response=""),
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued
+    assert "did not provide a valid `file_path`" in queued[0]
+    assert "Resume by creating `02-installation.html` now." in queued[0]
+    assert (
+        f"Prefer one `write` call for `{chapter_two}` instead of more rereads."
+        in queued[0]
+    )
+    assert context.recovery_context is not None
+    assert context.recovery_context.attempts[-1].error == blocked_message

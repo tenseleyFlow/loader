@@ -322,6 +322,71 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
     )
 
 
+def test_empty_response_retry_recovers_blocked_empty_file_path_to_concrete_target(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    first_chapter = chapters / "01-introduction.html"
+    second_chapter = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    first_chapter.write_text("<h1>Intro</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index_path}`",
+                f"- `{first_chapter}`",
+                f"- `{second_chapter}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(first_chapter)])
+    dod.pending_items.append("Creating Chapter 2: Installation and Setup")
+
+    context.recovery_context = RecoveryContext(
+        original_tool="write",
+        original_args={"file_path": "", "content": "<html></html>\n"},
+    )
+    context.recovery_context.add_attempt(
+        "write",
+        {"file_path": "", "content": "<html></html>\n"},
+        "Empty file path",
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        f"Last tool failure: resend `write` for `{second_chapter}` with a valid `file_path` and real `content`."
+        in decision.retry_message
+    )
+    assert "Do not leave `file_path` empty" in decision.retry_message
+
+
 def test_empty_response_retry_respects_discovery_first_pending_step(
     temp_dir: Path,
 ) -> None:

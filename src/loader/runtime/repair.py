@@ -254,7 +254,7 @@ class ResponseRepairer:
         if dod is not None and self._should_compact_empty_retry_message(dod):
             compact_lines: list[str] = []
             compact_lines.extend(self._planned_artifact_progress_lines(dod)[:2])
-            compact_lines.extend(self._payload_retry_lines())
+            compact_lines.extend(self._payload_retry_lines(dod))
             compact_lines.extend(
                 self._next_step_resume_lines(
                     dod,
@@ -289,7 +289,7 @@ class ResponseRepairer:
 
             planned_lines = self._planned_artifact_progress_lines(dod)
             progress_lines.extend(planned_lines)
-            progress_lines.extend(self._payload_retry_lines())
+            progress_lines.extend(self._payload_retry_lines(dod))
             progress_lines.extend(
                 self._next_step_resume_lines(
                     dod,
@@ -350,7 +350,7 @@ class ResponseRepairer:
             ]
         )
 
-    def _payload_retry_lines(self) -> list[str]:
+    def _payload_retry_lines(self, dod: DefinitionOfDone | None) -> list[str]:
         recovery_context = self.context.recovery_context
         if recovery_context is None or not recovery_context.attempts:
             return []
@@ -363,8 +363,39 @@ class ResponseRepairer:
         if fix is None:
             return []
 
-        target = fix["file_path"]
+        target = fix["file_path"] or self._preferred_retry_target(dod)
         invalid = ", ".join(f"`{field}`" for field in fix["invalid_fields"])
+        if fix.get("kind") == "missing_target":
+            if attempt.tool_name == "write":
+                target_line = (
+                    f"Last tool failure: resend `write` for `{target}` with a valid `file_path` and real `content`."
+                    if target
+                    else "Last tool failure: resend `write` with a valid `file_path` and real `content`."
+                )
+                return [
+                    target_line,
+                    "Do not leave `file_path` empty; point it at the concrete next output file.",
+                ]
+            if attempt.tool_name == "edit":
+                target_line = (
+                    f"Last tool failure: resend `edit` for `{target}` with a valid `file_path` plus real `old_string`/`new_string`."
+                    if target
+                    else "Last tool failure: resend `edit` with a valid `file_path` plus real `old_string`/`new_string`."
+                )
+                return [
+                    target_line,
+                    "Do not leave `file_path` empty; point it at the concrete file you already know needs the edit.",
+                ]
+            if attempt.tool_name == "patch":
+                target_line = (
+                    f"Last tool failure: resend `patch` for `{target}` with a valid `file_path` and real patch text or `hunks`."
+                    if target
+                    else "Last tool failure: resend `patch` with a valid `file_path` and real patch text or `hunks`."
+                )
+                return [
+                    target_line,
+                    "Do not leave `file_path` empty; point it at the concrete file you already know needs the patch.",
+                ]
         if attempt.tool_name == "write":
             target_line = (
                 f"Last tool failure: resend `write` for `{target}` with real `content`, not just summary fields."
@@ -879,6 +910,36 @@ class ResponseRepairer:
             if normalized_planned == normalized_target:
                 return normalized_target, False
         return first_missing
+
+    def _preferred_retry_target(self, dod: DefinitionOfDone | None) -> str:
+        if dod is None:
+            return ""
+
+        missing_artifact = self._preferred_resume_missing_artifact(dod)
+        next_pending = self._preferred_resume_pending_item(
+            dod,
+            missing_artifact=missing_artifact,
+        )
+        if next_pending:
+            pending_target = self._infer_pending_item_output_target(dod, next_pending)
+            if pending_target is not None and not pending_target.exists():
+                return str(pending_target)
+
+        if missing_artifact is None:
+            return ""
+
+        target, expect_directory = missing_artifact
+        if not expect_directory:
+            return str(target)
+
+        next_output_file, _ = infer_next_output_file(
+            target=target,
+            project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
+        )
+        if next_output_file is not None:
+            return str(next_output_file)
+        return str(target)
 
     def _concretize_directory_missing_artifact(
         self,

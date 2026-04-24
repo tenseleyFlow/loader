@@ -545,7 +545,7 @@ def detect_missing_mutation_payload(
     args: dict[str, Any] | None,
     error: str,
 ) -> dict[str, Any] | None:
-    """Detect metadata-only mutation calls missing their real text payload."""
+    """Detect invalid mutation calls missing their real payload or target path."""
 
     arguments = dict(args or {})
     error_lower = error.lower()
@@ -557,11 +557,38 @@ def detect_missing_mutation_payload(
             "missing required",
             "empty content",
             "validation warning",
+            "empty file path",
+            "valid file path",
+            "missing file path",
         ]
     ):
         return None
 
     file_path = str(arguments.get("file_path") or arguments.get("path") or "").strip()
+    missing_target = tool_name in {"write", "edit", "patch"} and (
+        "empty file path" in error_lower
+        or "valid file path" in error_lower
+        or "missing file path" in error_lower
+        or (
+            any(
+                token in error_lower
+                for token in [
+                    "required positional argument",
+                    "missing 1 required",
+                    "missing required",
+                ]
+            )
+            and "file_path" in error_lower
+        )
+    )
+
+    if missing_target:
+        return {
+            "kind": "missing_target",
+            "required_fields": ["file_path"],
+            "invalid_fields": [],
+            "file_path": file_path,
+        }
 
     if tool_name == "write":
         invalid_fields = [
@@ -569,6 +596,7 @@ def detect_missing_mutation_payload(
         ]
         if "content" not in arguments and invalid_fields:
             return {
+                "kind": "missing_payload",
                 "required_fields": ["content"],
                 "invalid_fields": invalid_fields,
                 "file_path": file_path,
@@ -590,6 +618,7 @@ def detect_missing_mutation_payload(
         ]
         if missing_fields and invalid_fields:
             return {
+                "kind": "missing_payload",
                 "required_fields": missing_fields,
                 "invalid_fields": invalid_fields,
                 "file_path": file_path,
@@ -599,6 +628,7 @@ def detect_missing_mutation_payload(
         invalid_fields = [field for field in ("hunk_count",) if field in arguments]
         if "patch" not in arguments and "hunks" not in arguments and invalid_fields:
             return {
+                "kind": "missing_payload",
                 "required_fields": ["patch or hunks"],
                 "invalid_fields": invalid_fields,
                 "file_path": file_path,
@@ -771,7 +801,41 @@ def get_recovery_hints(
         required = ", ".join(payload_fix["required_fields"])
         invalid = ", ".join(payload_fix["invalid_fields"])
         target = payload_fix["file_path"]
-        if tool_name == "write":
+        if payload_fix.get("kind") == "missing_target":
+            if tool_name == "write":
+                category_hints = [
+                    (
+                        f"Resend the mutation as `write(file_path=..., content='...')` "
+                        f"for `{target}` with a real file path"
+                        if target
+                        else "Resend the mutation as `write(file_path=..., content='...')` with a real file path"
+                    ),
+                    "Do not leave `file_path` empty or pointed at an unknown target",
+                    "Do not reread reference files first unless one specific fact still blocks the write target",
+                ]
+            elif tool_name == "edit":
+                category_hints = [
+                    (
+                        f"Resend the mutation as `edit(file_path=..., old_string='...', new_string='...')` "
+                        f"for `{target}` with a real file path"
+                        if target
+                        else "Resend the mutation as `edit(file_path=..., old_string='...', new_string='...')` with a real file path"
+                    ),
+                    "Do not leave `file_path` empty or pointed at an unknown target",
+                    "Do not reread reference files first unless one specific exact replacement span is still unknown",
+                ]
+            elif tool_name == "patch":
+                category_hints = [
+                    (
+                        f"Resend the mutation as `patch(file_path=..., patch='...')` "
+                        f"for `{target}` with a real file path"
+                        if target
+                        else "Resend the mutation as `patch(file_path=..., patch='...')` with a real file path"
+                    ),
+                    "Do not leave `file_path` empty or pointed at an unknown target",
+                    "Do not reread reference files first unless one specific edit span is still unknown",
+                ]
+        elif tool_name == "write":
             category_hints = [
                 (
                     f"Resend the mutation as `write(file_path=..., content='...')` "

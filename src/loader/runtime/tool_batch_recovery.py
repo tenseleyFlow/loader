@@ -259,6 +259,40 @@ class ToolBatchRecoveryController:
         target = fix["file_path"]
         invalid_fields = ", ".join(f"`{field}`" for field in fix["invalid_fields"])
         required_fields = "`, `".join(fix["required_fields"])
+        if fix.get("kind") == "missing_target":
+            if tool_call.name == "write":
+                target_line = (
+                    f"- The failed call for `{target}` omitted a valid `file_path`."
+                    if target
+                    else "- The failed call omitted a valid `file_path`."
+                )
+                return [
+                    target_line,
+                    "- Resend one concrete `write(file_path=..., content='...')` call now instead of rereading more files.",
+                ]
+
+            if tool_call.name == "edit":
+                target_line = (
+                    f"- The failed call for `{target}` omitted a valid `file_path`."
+                    if target
+                    else "- The failed call omitted a valid `file_path`."
+                )
+                return [
+                    target_line,
+                    "- Resend one concrete `edit(file_path=..., old_string='...', new_string='...')` call now instead of rereading more files.",
+                ]
+
+            if tool_call.name == "patch":
+                target_line = (
+                    f"- The failed call for `{target}` omitted a valid `file_path`."
+                    if target
+                    else "- The failed call omitted a valid `file_path`."
+                )
+                return [
+                    target_line,
+                    "- Resend one concrete `patch(file_path=..., patch='...')` or `patch(..., hunks=[...])` call now instead of rereading more files.",
+                ]
+
         if tool_call.name == "write":
             target_line = (
                 f"- The failed call for `{target}` omitted the required `content` payload."
