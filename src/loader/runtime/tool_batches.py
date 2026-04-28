@@ -1231,9 +1231,9 @@ class ToolBatchRunner:
                         "Perform the mutation now instead of spending another turn on "
                         "planning, rereads, or verification."
                     )
-                    self.context.queue_ephemeral_steering_message(concrete_message)
+                    self.context.queue_steering_message(concrete_message)
                     return
-                self.context.queue_ephemeral_steering_message(
+                self.context.queue_steering_message(
                     "Todo tracking is updated. Continue with the next pending item: "
                     f"`{next_pending}`. Use the current output files as the source of "
                     "truth, and do not reopen reference materials unless one specific "
@@ -1305,7 +1305,7 @@ class ToolBatchRunner:
             if next_pending
             else ""
         )
-        self.context.queue_ephemeral_steering_message(
+        self.context.queue_steering_message(
             "Todo tracking is updated. A declared output artifact is still missing."
             + next_pending_suffix
             + _missing_artifact_resume_suffix(

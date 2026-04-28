@@ -2288,8 +2288,10 @@ async def test_duplicate_observation_nudge_prioritizes_missing_artifact_over_rev
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -2322,8 +2324,8 @@ async def test_duplicate_observation_nudge_prioritizes_missing_artifact_over_rev
     )
     runner._queue_duplicate_observation_nudge(tool_call, dod=dod)  # type: ignore[attr-defined]
 
-    assert queued_messages
-    message = queued_messages[-1]
+    assert persistent_messages
+    message = persistent_messages[-1]
     assert "06-ssl-configuration.html" in message
     assert "Do not switch into review or consistency-check mode" in message
     assert (
@@ -2385,8 +2387,10 @@ async def test_tool_batch_runner_hands_off_to_verification_once_planned_artifact
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -2440,15 +2444,15 @@ async def test_tool_batch_runner_hands_off_to_verification_once_planned_artifact
 
     assert any(
         "All explicitly planned artifacts now exist." in message
-        for message in queued_messages
+        for message in persistent_messages
     )
     assert any(
         "Ensure all files are properly linked and formatted consistently" in message
-        for message in queued_messages
+        for message in persistent_messages
     )
     assert any(
         "Move to verification once no specific mismatch remains." in message
-        for message in queued_messages
+        for message in persistent_messages
     )
 
 
@@ -2503,8 +2507,10 @@ async def test_tool_batch_runner_mutation_handoff_points_at_next_missing_artifac
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -2552,8 +2558,8 @@ async def test_tool_batch_runner_mutation_handoff_points_at_next_missing_artifac
         consecutive_errors=0,
     )
 
-    assert queued_messages
-    message = queued_messages[-1]
+    assert persistent_messages
+    message = persistent_messages[-1]
     assert "Next step: create `01-getting-started.html`." in message
     assert (
         f"Prefer one `write(file_path=..., content=...)` call for `{chapter_one.resolve(strict=False)}` now."
@@ -2626,8 +2632,10 @@ async def test_tool_batch_runner_large_plan_does_not_claim_completion_early(
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a thorough nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -2681,11 +2689,11 @@ async def test_tool_batch_runner_large_plan_does_not_claim_completion_early(
 
     assert any(
         "Resume by creating `06-performance-tuning.html` now." in message
-        for message in queued_messages
+        for message in ephemeral_messages
     )
     assert not any(
         "All explicitly planned artifacts now exist." in message
-        for message in queued_messages
+        for message in ephemeral_messages
     )
 
 
@@ -2747,8 +2755,10 @@ async def test_tool_batch_runner_uses_compact_missing_artifact_nudge_after_subst
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a thorough nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -2802,8 +2812,8 @@ async def test_tool_batch_runner_uses_compact_missing_artifact_nudge_after_subst
         consecutive_errors=0,
     )
 
-    assert queued_messages
-    message = queued_messages[-1]
+    assert ephemeral_messages
+    message = ephemeral_messages[-1]
     assert "Resume by creating `05-advanced-features.html` now." in message
     assert "No TodoWrite, no verification, no rereads until that artifact exists." in message
     assert "refresh `TodoWrite`" not in message
@@ -2863,8 +2873,10 @@ async def test_tool_batch_runner_todowrite_with_missing_artifact_requeues_exact_
         verify_action=verify_action,
         auto_recover=False,
     )
-    queued_messages: list[str] = []
-    context.queue_steering_message_callback = queued_messages.append
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
     dod = create_definition_of_done("Create a multi-file nginx guide.")
     dod.implementation_plan = str(implementation_plan)
@@ -2942,12 +2954,13 @@ async def test_tool_batch_runner_todowrite_with_missing_artifact_requeues_exact_
         consecutive_errors=0,
     )
 
-    assert queued_messages
-    message = queued_messages[-1]
+    assert persistent_messages
+    message = persistent_messages[-1]
     assert "Todo tracking is updated. A declared output artifact is still missing." in message
     assert "Resume by creating `02-installation.html` now." in message
     assert "refresh `TodoWrite`" in message
     assert "Do not spend the next turn on TodoWrite alone" in message
+    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
