@@ -973,6 +973,12 @@ class ToolBatchRunner:
             project_root=self.context.project_root,
             missing_artifact=missing_artifact,
         )
+        missing_artifact = _prefer_missing_artifact_for_pending_item(
+            dod,
+            missing_artifact=missing_artifact,
+            next_pending=next_pending,
+            project_root=self.context.project_root,
+        )
         has_file_artifact_progress = _has_confirmed_file_artifact_progress(
             dod,
             project_root=self.context.project_root,
@@ -1505,6 +1511,8 @@ def _prefer_missing_artifact_for_pending_item(
         max_paths=12,
     ):
         normalized_planned = planned_target.expanduser().resolve(strict=False)
+        if expect_directory and normalized_planned == normalized_target:
+            return normalized_target, True
         if expect_directory:
             try:
                 normalized_target.relative_to(normalized_planned)
