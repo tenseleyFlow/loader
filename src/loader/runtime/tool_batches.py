@@ -1130,6 +1130,9 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
+        session_messages = list(getattr(self.context.session, "messages", []) or [])
+        if use_persistent_handoff and _recent_recovery_prompt(session_messages):
+            use_persistent_handoff = False
         queue_message = (
             self.context.queue_steering_message
             if use_persistent_handoff
@@ -1143,7 +1146,7 @@ class ToolBatchRunner:
             compact_resume = _compact_missing_artifact_handoff(
                 (resume_target, False),
                 project_root=self.context.project_root,
-                messages=list(getattr(self.context.session, "messages", []) or []),
+                messages=session_messages,
             )
             if compact_resume:
                 queue_message(
@@ -1160,7 +1163,7 @@ class ToolBatchRunner:
             compact_handoff = _compact_missing_artifact_handoff(
                 missing_artifact,
                 project_root=self.context.project_root,
-                messages=list(getattr(self.context.session, "messages", []) or []),
+                messages=session_messages,
             )
             if compact_handoff:
                 queue_message(
@@ -1194,10 +1197,11 @@ class ToolBatchRunner:
         *,
         dod: DefinitionOfDone,
     ) -> None:
+        session_messages = list(getattr(self.context.session, "messages", []) or [])
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
-            messages=list(getattr(self.context.session, "messages", []) or []),
+            messages=session_messages,
         )
         next_pending = preferred_pending_todo_item(
             dod,
@@ -1311,7 +1315,7 @@ class ToolBatchRunner:
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
-                messages=list(getattr(self.context.session, "messages", []) or []),
+                messages=session_messages,
             )
             + todo_refresh
             + " Do not spend the next turn on TodoWrite alone, bookkeeping notes, "
@@ -1327,10 +1331,11 @@ class ToolBatchRunner:
         if tool_call.name not in _BOOKKEEPING_NOTE_TOOL_NAMES:
             return
 
+        session_messages = list(getattr(self.context.session, "messages", []) or [])
         missing_artifact = _next_missing_planned_artifact(
             dod,
             project_root=self.context.project_root,
-            messages=list(getattr(self.context.session, "messages", []) or []),
+            messages=session_messages,
         )
         if missing_artifact is None:
             return
@@ -1377,7 +1382,7 @@ class ToolBatchRunner:
             + _missing_artifact_resume_suffix(
                 missing_artifact,
                 project_root=self.context.project_root,
-                messages=list(getattr(self.context.session, "messages", []) or []),
+                messages=session_messages,
             )
             + todo_refresh
             + " Do not spend the next turn on additional notes, rediscovery, "
@@ -2131,6 +2136,21 @@ def _is_pure_directory_creation_tool_call(tool_call: ToolCall) -> bool:
     except ValueError:
         return False
     return bool(parts) and parts[0] == "mkdir"
+
+
+def _recent_recovery_prompt(messages: list[Any]) -> bool:
+    for message in reversed(messages[-4:]):
+        role = getattr(message, "role", None)
+        if getattr(role, "value", role) != "user":
+            continue
+        content = getattr(message, "content", "")
+        if not isinstance(content, str):
+            continue
+        if content.startswith("[EMPTY ASSISTANT RESPONSE]"):
+            return True
+        if content.startswith("[CONTINUE CURRENT STEP]"):
+            return True
+    return False
 
 
 def _tool_call_label(tool_call: ToolCall) -> str:
