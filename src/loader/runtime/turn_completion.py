@@ -261,18 +261,43 @@ class TurnCompletionController:
                     finalize_reason_summary=continuation_decision.decision_summary,
                 )
 
-        progress_intent_prompt = _build_in_progress_continuation_prompt(
+        progress_messages = list(getattr(self.context.session, "messages", []) or [])
+        progress_intent = _build_in_progress_continuation(
             content=content,
             dod=dod,
             project_root=self.context.project_root,
-            messages=list(getattr(self.context.session, "messages", []) or []),
+            messages=progress_messages,
         )
-        if progress_intent_prompt:
+        if progress_intent is not None:
             assistant_message = Message(role=Role.ASSISTANT, content=response_content)
             self.context.session.append(assistant_message)
             summary.assistant_messages.append(assistant_message)
+            if progress_intent.target is not None and continuation_count == 0:
+                self._append_completion_trace_entry(
+                    summary=summary,
+                    stage="continuation_check",
+                    outcome="continue",
+                    decision_code="in_progress_transition_continue",
+                    decision_summary=(
+                        "continued to let the assistant finish the concrete next "
+                        "planned step without interrupting it yet"
+                    ),
+                )
+                self._record_completion_decision(
+                    summary=summary,
+                    decision_code="in_progress_transition_continue",
+                    decision_summary=(
+                        "continued to let the assistant finish the concrete next "
+                        "planned step without interrupting it yet"
+                    ),
+                )
+                return TurnCompletionDecision(
+                    action=TurnCompletionAction.CONTINUE,
+                    continuation_count=continuation_count + 1,
+                )
+
             self.context.session.append(
-                Message(role=Role.USER, content=progress_intent_prompt)
+                Message(role=Role.USER, content=progress_intent.prompt)
             )
             self._append_completion_trace_entry(
                 summary=summary,
@@ -355,13 +380,19 @@ class TurnCompletionController:
         )
 
 
-def _build_in_progress_continuation_prompt(
+@dataclass(frozen=True, slots=True)
+class InProgressContinuation:
+    prompt: str
+    target: Path | None
+
+
+def _build_in_progress_continuation(
     *,
     content: str,
     dod: DefinitionOfDone,
     project_root: Path,
     messages: list[object],
-) -> str | None:
+) -> InProgressContinuation | None:
     if not _looks_like_progress_intent(content):
         return None
 
@@ -386,18 +417,24 @@ def _build_in_progress_continuation_prompt(
         messages=messages,
     )
     if target is not None:
-        return (
-            "[CONTINUE CURRENT STEP]\n"
-            "You just described the next planned step, but the concrete output is not on disk yet. "
-            f"Respond with one concrete `write` or `edit`-style tool call that creates or updates `{target}` now. "
-            "Do not summarize, verify, or restart discovery first."
+        return InProgressContinuation(
+            prompt=(
+                "[CONTINUE CURRENT STEP]\n"
+                "You just described the next planned step, but the concrete output is not on disk yet. "
+                f"Respond with one concrete `write` or `edit`-style tool call that creates or updates `{target}` now. "
+                "Do not summarize, verify, or restart discovery first."
+            ),
+            target=target,
         )
 
     if next_pending:
-        return (
-            "[CONTINUE CURRENT STEP]\n"
-            "You just described the next planned step, but it has not been executed yet. "
-            f"Continue with `{next_pending}` now by emitting one concrete tool call instead of another narration, summary, or verification claim."
+        return InProgressContinuation(
+            prompt=(
+                "[CONTINUE CURRENT STEP]\n"
+                "You just described the next planned step, but it has not been executed yet. "
+                f"Continue with `{next_pending}` now by emitting one concrete tool call instead of another narration, summary, or verification claim."
+            ),
+            target=None,
         )
     return None
 

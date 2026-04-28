@@ -362,14 +362,96 @@ async def test_turn_completion_continues_progress_intent_without_dod_gate_spam(
     assert decision.continuation_count == 1
     assert prepared.summary.completion_decision_code == "in_progress_transition_continue"
     assert prepared.summary.assistant_messages[-1].content == content
-    assert agent.session.messages[-1].role.value == "user"
-    assert agent.session.messages[-1].content.startswith("[CONTINUE CURRENT STEP]")
-    assert "02-installation.html" in agent.session.messages[-1].content
+    assert agent.session.messages[-1].role.value == "assistant"
     assert not any(
         message.role.value == "user"
         and message.content.startswith("[PLANNED ARTIFACTS STILL MISSING]")
         for message in agent.session.messages
     )
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_interrupts_repeated_concrete_progress_narration(
+    temp_dir: Path,
+) -> None:
+    backend = ScriptedBackend()
+    config = non_streaming_config()
+    config.reasoning.completion_check = False
+    agent = Agent(
+        backend=backend,
+        config=config,
+        project_root=temp_dir,
+    )
+    runtime = ConversationRuntime(agent)
+    events = []
+
+    async def capture(event) -> None:
+        events.append(event)
+
+    prepared = await runtime.turn_preparation.prepare(
+        task=(
+            "Create a multi-file nginx guide under ~/Loader/guides/nginx "
+            "with an index and chapter files."
+        ),
+        emit=capture,
+        requested_mode="execute",
+        original_task=None,
+        on_user_question=None,
+    )
+    await runtime.phase_tracker.enter(
+        TurnPhase.ASSISTANT,
+        capture,
+        detail="Requesting assistant response",
+        reason_code="request_assistant_response",
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "# Implementation Plan\n\n"
+        "## File Changes\n\n"
+        "1. Create main index.html file:\n"
+        f"   - `{temp_dir / 'index.html'}`\n\n"
+        "2. Create chapter files:\n"
+        f"   - `{temp_dir / 'chapters' / '01-introduction.html'}`\n"
+        f"   - `{temp_dir / 'chapters' / '02-installation.html'}`\n"
+    )
+    chapters_dir = temp_dir / "chapters"
+    chapters_dir.mkdir()
+    (temp_dir / "index.html").write_text("<h1>NGINX Guide</h1>\n")
+    (chapters_dir / "01-introduction.html").write_text("<h1>Intro</h1>\n")
+
+    prepared.definition_of_done.implementation_plan = str(implementation_plan)
+    prepared.definition_of_done.mutating_actions.append("write")
+    prepared.definition_of_done.touched_files.extend(
+        [
+            str(temp_dir / "index.html"),
+            str(chapters_dir / "01-introduction.html"),
+        ]
+    )
+    prepared.definition_of_done.pending_items.append("Create chapter files for nginx guide")
+
+    content = "Now I'll create the second chapter file for the nginx guide."
+    decision = await runtime.turn_completion.handle_text_response(
+        content=content,
+        response_content=content,
+        task=prepared.task,
+        effective_task=prepared.effective_task,
+        iterations=1,
+        max_iterations=agent.config.max_iterations,
+        actions_taken=[],
+        continuation_count=1,
+        dod=prepared.definition_of_done,
+        emit=capture,
+        summary=prepared.summary,
+        executor=prepared.executor,
+        rollback_plan=prepared.rollback_plan,
+    )
+
+    assert decision.action == TurnCompletionAction.CONTINUE
+    assert decision.continuation_count == 2
+    assert agent.session.messages[-1].role.value == "user"
+    assert agent.session.messages[-1].content.startswith("[CONTINUE CURRENT STEP]")
+    assert "02-installation.html" in agent.session.messages[-1].content
 
 
 @pytest.mark.asyncio
