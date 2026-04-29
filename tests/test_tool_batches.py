@@ -2145,7 +2145,7 @@ async def test_tool_batch_runner_discovery_completion_handoff_stays_persistent(
 
 
 @pytest.mark.asyncio
-async def test_tool_batch_runner_missing_artifact_nudge_stays_quiet_after_setup_mkdir(
+async def test_tool_batch_runner_missing_artifact_nudge_names_next_file_after_setup_mkdir(
     temp_dir: Path,
 ) -> None:
     async def assess_confidence(
@@ -2240,7 +2240,11 @@ async def test_tool_batch_runner_missing_artifact_nudge_stays_quiet_after_setup_
         consecutive_errors=0,
     )
 
-    assert persistent_messages == []
+    assert persistent_messages
+    message = persistent_messages[-1]
+    assert "Directory setup is complete." in message
+    assert "Continue with the next pending item: `Develop the main index.html file with proper structure`." in message
+    assert "Resume by creating `index.html` now." in message
     assert ephemeral_messages == []
 
 

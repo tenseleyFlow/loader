@@ -62,6 +62,12 @@ _TODO_NUDGE_EXCLUDED_ITEMS = {
 _MUTATION_TODO_HINTS = (
     "create",
     "creating",
+    "develop",
+    "developing",
+    "populate",
+    "populating",
+    "build",
+    "building",
     "update",
     "updating",
     "edit",
@@ -1113,11 +1119,6 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
-        if (
-            not has_file_artifact_progress
-            and _is_pure_directory_creation_tool_call(tool_call)
-        ):
-            return
         resume_target = _preferred_resume_target_path(
             dod,
             next_pending=next_pending,
@@ -1132,6 +1133,22 @@ class ToolBatchRunner:
             project_root=self.context.project_root,
             messages=list(getattr(self.context.session, "messages", []) or []),
         )
+        if (
+            not has_file_artifact_progress
+            and _is_pure_directory_creation_tool_call(tool_call)
+        ):
+            if (
+                next_pending
+                and _todo_is_mutation_step(next_pending)
+                and resume_target is not None
+                and resume_target.suffix
+            ):
+                self.context.queue_steering_message(
+                    f"Directory setup is complete. Continue with the next pending item: `{next_pending}`."
+                    + resume_suffix
+                    + " Do not reread older reference files before that mutation."
+                )
+            return
         use_persistent_handoff = _should_use_persistent_missing_artifact_handoff(
             dod,
             project_root=self.context.project_root,
