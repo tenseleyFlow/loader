@@ -3506,10 +3506,148 @@ async def test_tool_batch_runner_todowrite_with_existing_output_roots_requeues_n
     assert "Todo tracking is updated. A declared output artifact is still missing." in message
     assert "Continue with the next pending item: `Write the introduction chapter`." in message
     assert "Resume by creating `01-introduction.html` now." in message
-    assert "It is the next missing declared output under `chapters/`." in message
     assert "Prefer one `write` call for `" in message
     assert "01-introduction.html` instead of more rereads." in message
     assert "Do not spend the next turn on TodoWrite alone" in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_prefers_pending_index_over_empty_output_directory(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "Loader" / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Examine the existing Fortran guide structure to understand the format and depth",
+                "active_form": "Examining the existing Fortran guide structure",
+                "status": "completed",
+            },
+            {
+                "content": "Create the new nginx guide directory structure",
+                "active_form": "Creating the new nginx guide directory structure",
+                "status": "completed",
+            },
+            {
+                "content": "Create a new index.html for the nginx guide",
+                "active_form": "Creating a new index.html for the nginx guide",
+                "status": "pending",
+            },
+            {
+                "content": "Create the first chapter for the nginx guide",
+                "active_form": "Creating the first chapter for the nginx guide",
+                "status": "pending",
+            },
+        ],
+        project_root=temp_dir,
+    )
+
+    queued_messages: list[str] = []
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    todos = [
+        {
+            "content": "Examine the existing Fortran guide structure to understand the format and depth",
+            "active_form": "Examining the existing Fortran guide structure",
+            "status": "completed",
+        },
+        {
+            "content": "Create the new nginx guide directory structure",
+            "active_form": "Creating the new nginx guide directory structure",
+            "status": "completed",
+        },
+        {
+            "content": "Create a new index.html for the nginx guide",
+            "active_form": "Creating a new index.html for the nginx guide",
+            "status": "pending",
+        },
+        {
+            "content": "Create the first chapter for the nginx guide",
+            "active_form": "Creating the first chapter for the nginx guide",
+            "status": "pending",
+        },
+    ]
+    tool_call = ToolCall(
+        id="todo-index-before-chapter",
+        name="TodoWrite",
+        arguments={"todos": todos},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={"new_todos": todos},
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Continue with the next pending item: `Create a new index.html for the nginx guide`." in message
+    assert "Resume by creating `index.html` now." in message
+    assert f"Prefer one `write` call for `{index_path.resolve(strict=False)}`" in message
+    assert "01-introduction.html" not in message
 
 
 @pytest.mark.asyncio
@@ -3635,7 +3773,6 @@ async def test_tool_batch_runner_todowrite_with_declared_child_targets_names_nex
     assert "Todo tracking is updated. A declared output artifact is still missing." in message
     assert "Continue with the next pending item: `Write the introduction chapter`." in message
     assert "Resume by creating `introduction.html` now." in message
-    assert "It is the next missing declared output under `chapters/`." in message
     assert "Prefer one `write` call for `" in message
     assert "introduction.html` instead of more rereads." in message
     assert "Do not spend the next turn on TodoWrite alone" in message

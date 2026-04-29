@@ -1214,6 +1214,12 @@ class ToolBatchRunner:
             project_root=self.context.project_root,
             missing_artifact=missing_artifact,
         )
+        missing_artifact = _prefer_missing_artifact_for_pending_item(
+            dod,
+            missing_artifact=missing_artifact,
+            next_pending=next_pending,
+            project_root=self.context.project_root,
+        )
         if missing_artifact is None:
             if next_pending and _todo_is_mutation_step(next_pending):
                 pending_target = infer_pending_todo_output_target(
@@ -1350,6 +1356,12 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
             missing_artifact=missing_artifact,
+        )
+        missing_artifact = _prefer_missing_artifact_for_pending_item(
+            dod,
+            missing_artifact=missing_artifact,
+            next_pending=next_pending,
+            project_root=self.context.project_root,
         )
         todo_refresh = _todo_refresh_guidance(
             dod,
