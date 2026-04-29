@@ -46,6 +46,8 @@ from .workflow import (
     preferred_pending_todo_item,
     reconcile_aggregate_completion_steps,
     sync_todos_to_definition_of_done,
+    todo_describes_aggregate_mutation,
+    todo_describes_broad_setup_step,
 )
 
 EventSink = Callable[[AgentEvent], Awaitable[None]]
@@ -1333,10 +1335,22 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
-        next_pending_suffix = (
-            f" Continue with the next pending item: `{next_pending}`."
-            if next_pending
-            else ""
+        resume_target = _preferred_resume_target_path(
+            dod,
+            next_pending=next_pending,
+            missing_artifact=missing_artifact,
+            project_root=self.context.project_root,
+            messages=session_messages,
+        )
+        pending_target = _preferred_pending_target_path(
+            dod,
+            next_pending=next_pending,
+            project_root=self.context.project_root,
+        )
+        next_pending_suffix = _pending_item_handoff_prefix(
+            next_pending,
+            pending_target=pending_target,
+            resume_target=resume_target,
         )
         self.context.queue_steering_message(
             "Todo tracking is updated. A declared output artifact is still missing."
@@ -1740,6 +1754,43 @@ def _pending_item_resume_suffix(
         project_root=project_root,
         messages=messages,
     )
+
+
+def _pending_item_handoff_prefix(
+    next_pending: str | None,
+    *,
+    pending_target: Path | None,
+    resume_target: Path | None,
+) -> str:
+    if not next_pending:
+        return ""
+    if (
+        pending_target is None
+        and resume_target is not None
+        and resume_target.suffix
+        and todo_describes_aggregate_mutation(next_pending)
+        and not todo_describes_broad_setup_step(next_pending)
+    ):
+        return f" Continue with the next concrete output: `{resume_target.name}`."
+    return f" Continue with the next pending item: `{next_pending}`."
+
+
+def _preferred_pending_target_path(
+    dod: DefinitionOfDone,
+    *,
+    next_pending: str | None,
+    project_root: Path,
+) -> Path | None:
+    if not next_pending:
+        return None
+    pending_target = infer_pending_todo_output_target(
+        dod,
+        next_pending,
+        project_root=project_root,
+    )
+    if pending_target is None:
+        return None
+    return pending_target.expanduser().resolve(strict=False)
 
 
 def _preferred_resume_target_path(

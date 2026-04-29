@@ -63,6 +63,8 @@ __all__ = [
     "preferred_pending_todo_item",
     "reconcile_aggregate_completion_steps",
     "sync_todos_to_definition_of_done",
+    "todo_describes_aggregate_mutation",
+    "todo_describes_broad_setup_step",
     "todo_file_candidates",
 ]
 
@@ -1424,6 +1426,24 @@ def _todo_describes_aggregate_mutation(text: str) -> bool:
         text,
         _MUTATION_STEP_HINTS,
     )
+
+
+def todo_describes_aggregate_mutation(item: str) -> bool:
+    """Return True when a todo describes a broad multi-artifact mutation step."""
+
+    text = item.strip().lower()
+    if not text or item in _SPECIAL_TODO_ITEMS:
+        return False
+    return _todo_describes_aggregate_mutation(text)
+
+
+def todo_describes_broad_setup_step(item: str) -> bool:
+    """Return True when a todo is primarily about directory/setup scaffolding."""
+
+    text = item.strip().lower()
+    if not text or item in _SPECIAL_TODO_ITEMS:
+        return False
+    return _contains_any(text, _BROAD_SETUP_HINTS)
 
 
 def _todo_requires_complete_artifact_set(text: str) -> bool:

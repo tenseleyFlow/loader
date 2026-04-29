@@ -23,6 +23,8 @@ from .workflow import (
     infer_pending_todo_output_target,
     preferred_pending_todo_item,
     reconcile_aggregate_completion_steps,
+    todo_describes_aggregate_mutation,
+    todo_describes_broad_setup_step,
     todo_file_candidates,
 )
 
@@ -701,6 +703,56 @@ class ResponseRepairer:
             if next_pending
             else None
         )
+        if (
+            next_pending
+            and inferred_pending_target is None
+            and next_missing_artifact is not None
+            and not next_missing_artifact[1]
+            and todo_describes_aggregate_mutation(next_pending)
+            and not todo_describes_broad_setup_step(next_pending)
+        ):
+            concrete_target = next_missing_artifact[0]
+            outline_label = infer_output_outline_label(
+                dod,
+                concrete_target,
+                project_root=self.context.project_root,
+                todo_label=next_pending,
+            )
+            lines = [
+                f"Resume with this exact next step: create `{concrete_target.name}`.",
+                f"It is the next concrete output needed to continue `{next_pending}`.",
+                f"Prefer one `write(content=...)` call for `{concrete_target}` before more research.",
+                self._mutation_tool_scaffold(
+                    concrete_target,
+                    tool_name="write",
+                ),
+            ]
+            if not concrete_target.parent.exists():
+                lines.append(
+                    "The `write` tool can create that file's parent directories "
+                    "automatically, so do the write in one step instead of stopping "
+                    "for a separate mkdir."
+                )
+            if outline_label:
+                lines.append(
+                    f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
+                )
+            if completed_artifacts >= 2:
+                lines.append(
+                    "Follow the same one-file-at-a-time mutation pattern that already "
+                    "created the confirmed output files."
+                )
+            if retry_number >= 2:
+                lines.append(
+                    "Do not return another working note or empty response; emit the "
+                    "concrete mutation tool call now."
+                )
+            else:
+                lines.append(
+                    "Do not restart discovery unless one specific missing fact blocks "
+                    "that file write."
+                )
+            return lines
         if next_pending and inferred_pending_target is not None:
             inferred_is_directory = not bool(inferred_pending_target.suffix)
             inferred_label = self._format_artifact_label(

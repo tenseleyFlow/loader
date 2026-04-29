@@ -2481,6 +2481,138 @@ async def test_tool_batch_runner_softens_first_file_handoff_after_recovery_promp
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_todowrite_uses_concrete_output_language_for_aggregate_chapter_step(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation and Setup</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued_messages: list[str] = []
+    context.queue_steering_message_callback = queued_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Develop the main index.html file with proper structure",
+                "active_form": "Developing the main index.html file with proper structure",
+                "status": "completed",
+            },
+            {
+                "content": "Create chapter files with content and structure",
+                "active_form": "Creating chapter files with content and structure",
+                "status": "pending",
+            },
+        ],
+    )
+
+    todos = [
+        {
+            "content": "Develop the main index.html file with proper structure",
+            "active_form": "Developing the main index.html file with proper structure",
+            "status": "completed",
+        },
+        {
+            "content": "Create chapter files with content and structure",
+            "active_form": "Creating chapter files with content and structure",
+            "status": "pending",
+        },
+    ]
+    tool_call = ToolCall(
+        id="todo-aggregate",
+        name="TodoWrite",
+        arguments={"todos": todos},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="Todos updated",
+                is_error=False,
+                metadata={"new_todos": todos},
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert queued_messages
+    message = queued_messages[-1]
+    assert "Continue with the next concrete output: `01-introduction.html`." in message
+    assert "Resume by creating `01-introduction.html` now." in message
+    assert (
+        "Continue with the next pending item: `Create chapter files with content and structure`."
+        not in message
+    )
+
+
+@pytest.mark.asyncio
 async def test_duplicate_observation_nudge_prioritizes_missing_artifact_over_review(
     temp_dir: Path,
 ) -> None:

@@ -953,6 +953,77 @@ def test_empty_response_retry_prefers_pending_index_over_broad_directory_headlin
     )
 
 
+def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_step(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation and Setup</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    dod.completed_items.append("Develop the main index.html file with proper structure")
+    dod.pending_items.append("Create chapter files with content and structure")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=3,
+        max_empty_retries=4,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Next missing planned artifact: `01-introduction.html`" in decision.retry_message
+    assert (
+        "Resume with this exact next step: create `01-introduction.html`."
+        in decision.retry_message
+    )
+    assert (
+        "It is the next concrete output needed to continue `Create chapter files with content and structure`."
+        in decision.retry_message
+    )
+    assert (
+        "continue `Create chapter files with content and structure` by creating `01-introduction.html`."
+        not in decision.retry_message
+    )
+
+
 def test_empty_response_retry_prefers_output_index_over_reference_index_with_same_name(
     temp_dir: Path,
 ) -> None:
