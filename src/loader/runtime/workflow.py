@@ -1318,6 +1318,17 @@ def _todo_progress_score(item: str, tool_call: ToolCall) -> int:
         )
     ):
         return 0
+    if (
+        is_discovery_tool
+        and _contains_any(text, _ARTIFACT_SET_COMPLETION_HINTS)
+        and not (
+            _contains_any(text, _READ_STEP_HINTS)
+            or _contains_any(text, _SEARCH_STEP_HINTS)
+            or _contains_any(text, _PARSE_STEP_HINTS)
+            or _contains_any(text, _VERIFY_STEP_HINTS)
+        )
+    ):
+        return 0
 
     if basename and basename in text:
         score += 3

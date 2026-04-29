@@ -1295,6 +1295,62 @@ def test_advance_todos_from_tool_call_does_not_complete_aggregate_style_step_fro
     )
 
 
+def test_advance_todos_from_tool_call_does_not_complete_consistency_style_step_from_reference_read() -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "First, examine the existing fortran guide structure to understand the format",
+                "active_form": "Working on: First, examine the existing fortran guide structure to understand the format",
+                "status": "pending",
+            },
+            {
+                "content": "Ensure consistency with fortran guide style and structure",
+                "active_form": "Working on: Ensure consistency with fortran guide style and structure",
+                "status": "pending",
+            },
+        ],
+    )
+
+    assert (
+        advance_todos_from_tool_call(
+            dod,
+            ToolCall(
+                id="read-reference-index",
+                name="read",
+                arguments={"file_path": "~/Loader/guides/fortran/index.html"},
+            ),
+        )
+        is False
+    )
+    assert (
+        "First, examine the existing fortran guide structure to understand the format"
+        in dod.pending_items
+    )
+    assert (
+        "Ensure consistency with fortran guide style and structure"
+        in dod.pending_items
+    )
+
+    assert advance_todos_from_tool_call(
+        dod,
+        ToolCall(
+            id="read-reference-chapter",
+            name="read",
+            arguments={"file_path": "~/Loader/guides/fortran/chapters/01-introduction.html"},
+        ),
+    )
+    assert (
+        "First, examine the existing fortran guide structure to understand the format"
+        in dod.completed_items
+    )
+    assert (
+        "Ensure consistency with fortran guide style and structure"
+        in dod.pending_items
+    )
+
+
 def test_sync_todos_to_definition_of_done_keeps_linking_step_pending_while_artifacts_missing(
     temp_dir: Path,
 ) -> None:
