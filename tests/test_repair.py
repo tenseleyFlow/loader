@@ -947,6 +947,10 @@ def test_empty_response_retry_prefers_pending_index_over_broad_directory_headlin
         in decision.retry_message
     )
     assert "Next missing planned artifact: `chapters/`" not in decision.retry_message
+    assert (
+        "Next observed output pattern under `chapters/`: `01-introduction.html`"
+        not in decision.retry_message
+    )
 
 
 def test_empty_response_retry_prefers_output_index_over_reference_index_with_same_name(
@@ -1063,12 +1067,12 @@ def test_empty_response_retry_points_at_declared_child_file_within_incomplete_ou
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert "Next missing planned artifact: `introduction.html`" in decision.retry_message
-    assert "Next declared output under `chapters/`: `introduction.html`" in decision.retry_message
     assert (
         "Resume with this exact next step: continue `Write the introduction chapter` "
         "by creating `introduction.html`."
         in decision.retry_message
     )
+    assert "Next declared output under `chapters/`" not in decision.retry_message
     assert (
         f"Prefer one `write(content=...)` call for `{(chapters / 'introduction.html').resolve(strict=False)}` "
         "before more research."
@@ -1686,12 +1690,12 @@ def test_empty_response_retry_names_next_file_from_observed_sibling_directory(
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert "Next missing planned artifact: `01-introduction.html`" in decision.retry_message
-    assert "Next observed output pattern under `chapters/`: `01-introduction.html`" in decision.retry_message
     assert (
         "Resume with this exact next step: continue `Write the introduction chapter` "
         "by creating `01-introduction.html`."
         in decision.retry_message
     )
+    assert "Next observed output pattern under `chapters/`" not in decision.retry_message
     assert (
         "It mirrors the observed filename pattern from another `chapters/` directory "
         "you already inspected."

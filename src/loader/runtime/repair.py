@@ -623,9 +623,19 @@ class ResponseRepairer:
             ),
             (None, False),
         )
-        if first_missing_target is not None and first_missing_is_directory:
+        detail_target = (
+            preferred_missing_artifact
+            if preferred_missing_artifact is not None
+            else (
+                (first_missing_target, first_missing_is_directory)
+                if first_missing_target is not None
+                else None
+            )
+        )
+        if detail_target is not None and detail_target[1]:
+            detail_path = detail_target[0]
             next_output_file, next_output_source = infer_next_output_file(
-                target=first_missing_target,
+                target=detail_path,
                 project_root=self.context.project_root,
                 messages=list(getattr(self.context.session, "messages", []) or []),
             )
@@ -637,7 +647,7 @@ class ResponseRepairer:
                 )
                 lines.append(
                     next_output_detail
-                    + f"{self._format_artifact_label(first_missing_target, expect_directory=True)}: "
+                    + f"{self._format_artifact_label(detail_path, expect_directory=True)}: "
                     f"{self._format_artifact_label(next_output_file, expect_directory=False)}"
                 )
         if len(missing_labels) > 1:
