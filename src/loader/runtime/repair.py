@@ -33,6 +33,7 @@ _SPECIAL_DOD_ITEMS = {
     "Complete the requested work",
     "Collect verification evidence",
 }
+_FIRST_FILE_EMPTY_RETRY_EXTRA = 2
 _LATE_STAGE_EMPTY_RETRY_EXTRA = 2
 _MULTI_FILE_OUTPUT_EMPTY_RETRY_EXTRA = 2
 _WORKING_NOTE_TOOL_NAMES = (
@@ -502,6 +503,8 @@ class ResponseRepairer:
             extra_retries = _LATE_STAGE_EMPTY_RETRY_EXTRA
             if self._has_confirmed_output_file_progress(dod):
                 extra_retries += _MULTI_FILE_OUTPUT_EMPTY_RETRY_EXTRA
+            elif completed_artifacts > 0:
+                extra_retries += _FIRST_FILE_EMPTY_RETRY_EXTRA
             return base_max_empty_retries + extra_retries
         return base_max_empty_retries
 
@@ -691,6 +694,7 @@ class ResponseRepairer:
         retry_number: int,
     ) -> list[str]:
         completed_artifacts, _ = self._planned_artifact_counts(dod)
+        has_confirmed_output_file_progress = self._has_confirmed_output_file_progress(dod)
         next_missing_artifact = self._preferred_resume_missing_artifact(dod)
         next_pending = self._preferred_resume_pending_item(
             dod,
@@ -763,7 +767,13 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
-            if self._has_confirmed_output_file_progress(dod):
+            if not has_confirmed_output_file_progress:
+                lines.append(
+                    "Do not wait to perfect the entire multi-file output before this write. "
+                    "Write a compact but real initial version of this file now, then refine "
+                    "or expand it in later edits."
+                )
+            if has_confirmed_output_file_progress:
                 lines.append(
                     "Follow the same full-payload one-file-at-a-time write pattern that "
                     "already created the confirmed output files."
@@ -818,7 +828,13 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
-            if self._has_confirmed_output_file_progress(dod):
+            if not has_confirmed_output_file_progress and not inferred_is_directory:
+                lines.append(
+                    "Do not wait to perfect the entire multi-file output before this write. "
+                    "Write a compact but real initial version of this file now, then refine "
+                    "or expand it in later edits."
+                )
+            if has_confirmed_output_file_progress:
                 lines.append(
                     "Follow the same full-payload one-file-at-a-time write pattern that "
                     "already created the confirmed output files."
@@ -900,6 +916,12 @@ class ResponseRepairer:
                         lines.append(
                             f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                         )
+                    if not has_confirmed_output_file_progress:
+                        lines.append(
+                            "Do not wait to perfect the entire multi-file output before this write. "
+                            "Write a compact but real initial version of this file now, then refine "
+                            "or expand it in later edits."
+                        )
                     if not next_output_file.parent.exists():
                         lines.append(
                             "The `write` tool can create that file's parent directories "
@@ -947,6 +969,12 @@ class ResponseRepairer:
                         "The `write` tool can create that file's parent directories "
                         "automatically, so do the write in one step instead of stopping "
                         "for a separate mkdir."
+                    )
+                if not has_confirmed_output_file_progress:
+                    lines.append(
+                        "Do not wait to perfect the entire multi-file output before this write. "
+                        "Write a compact but real initial version of this file now, then refine "
+                        "or expand it in later edits."
                     )
                 lines.append(
                     self._mutation_tool_scaffold(

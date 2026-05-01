@@ -2246,6 +2246,7 @@ async def test_tool_batch_runner_missing_artifact_nudge_names_next_file_after_se
     message = persistent_messages[-1]
     assert "Directory setup is complete." in message
     assert "Next step: create `index.html`." in message
+    assert "Write a compact but real initial version of that file now" in message
     assert ephemeral_messages == []
 
 
@@ -2467,6 +2468,7 @@ async def test_tool_batch_runner_directory_handoff_uses_home_relative_path(
     message = persistent_messages[-1]
     assert "Next step: create `index.html`." in message
     assert "`~/Loader/guides/nginx/index.html`" in message
+    assert "Write a compact but real initial version of that file now" in message
 
 
 @pytest.mark.asyncio

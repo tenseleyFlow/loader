@@ -1046,6 +1046,7 @@ class ToolBatchRunner:
                     missing_artifact,
                     project_root=self.context.project_root,
                     messages=list(getattr(self.context.session, "messages", []) or []),
+                    encourage_initial_version=True,
                 )
                 if compact_handoff:
                     self.context.queue_steering_message(
@@ -1191,6 +1192,7 @@ class ToolBatchRunner:
                     (resume_target, False),
                     project_root=self.context.project_root,
                     messages=list(getattr(self.context.session, "messages", []) or []),
+                    encourage_initial_version=True,
                 )
                 if compact_resume:
                     self.context.queue_steering_message(
@@ -1222,6 +1224,7 @@ class ToolBatchRunner:
                 (resume_target, False),
                 project_root=self.context.project_root,
                 messages=session_messages,
+                encourage_initial_version=not has_file_artifact_progress,
             )
             if compact_resume:
                 queue_message(
@@ -1239,6 +1242,7 @@ class ToolBatchRunner:
                 missing_artifact,
                 project_root=self.context.project_root,
                 messages=session_messages,
+                encourage_initial_version=True,
             )
             if compact_handoff:
                 queue_message(
@@ -1381,6 +1385,10 @@ class ToolBatchRunner:
             )
             return
 
+        has_file_artifact_progress = _has_confirmed_file_artifact_progress(
+            dod,
+            project_root=self.context.project_root,
+        )
         todo_refresh = _todo_refresh_guidance(
             dod,
             project_root=self.context.project_root,
@@ -1407,6 +1415,7 @@ class ToolBatchRunner:
                 (resume_target, False),
                 project_root=self.context.project_root,
                 messages=session_messages,
+                encourage_initial_version=not has_file_artifact_progress,
             )
             if compact_resume:
                 self.context.queue_steering_message(
@@ -2006,6 +2015,7 @@ def _compact_missing_artifact_handoff(
     *,
     project_root: Path,
     messages: list[Any] | None = None,
+    encourage_initial_version: bool = False,
 ) -> str:
     """Build a shorter first-mutation handoff once the next output target is known."""
 
@@ -2041,6 +2051,11 @@ def _compact_missing_artifact_handoff(
             guidance += (
                 " The `write` tool can create that file's parent directories automatically."
             )
+        if encourage_initial_version:
+            guidance += (
+                " Write a compact but real initial version of that file now; you can expand "
+                "or refine it in later edits."
+            )
         guidance += " Make your next response the concrete mutation tool call itself."
         return guidance
 
@@ -2051,6 +2066,11 @@ def _compact_missing_artifact_handoff(
     if not target.parent.exists():
         guidance += (
             " The `write` tool can create that file's parent directories automatically."
+        )
+    if encourage_initial_version:
+        guidance += (
+            " Write a compact but real initial version of that file now; you can expand "
+            "or refine it in later edits."
         )
     guidance += " Make your next response the concrete mutation tool call itself."
     return guidance

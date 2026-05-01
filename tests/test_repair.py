@@ -327,6 +327,10 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
         f'Emit this tool shape now: `write(file_path="{display_runtime_path(index_path)}", content="...")`.'
         in decision.retry_message
     )
+    assert (
+        "Write a compact but real initial version of this file now, then refine or expand it in later edits."
+        in decision.retry_message
+    )
     assert "Do not restart discovery unless one specific missing fact blocks this step." in decision.retry_message
 
 
@@ -443,6 +447,10 @@ def test_empty_response_retry_uses_home_relative_path_for_home_artifacts(
     assert "`~/Loader/guides/nginx/index.html`" in decision.retry_message
     assert (
         'Emit this tool shape now: `write(file_path="~/Loader/guides/nginx/index.html", content="...")`.'
+        in decision.retry_message
+    )
+    assert (
+        "Write a compact but real initial version of this file now, then refine or expand it in later edits."
         in decision.retry_message
     )
 
