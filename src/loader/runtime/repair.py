@@ -257,7 +257,7 @@ class ResponseRepairer:
     ) -> str:
         if dod is not None and self._should_compact_empty_retry_message(dod):
             compact_lines: list[str] = []
-            compact_lines.extend(self._planned_artifact_progress_lines(dod)[:2])
+            compact_lines.extend(self._compact_planned_artifact_lines(dod))
             compact_lines.extend(self._payload_retry_lines(dod))
             compact_lines.extend(
                 self._next_step_resume_lines(
@@ -658,6 +658,29 @@ class ResponseRepairer:
                 preview += ", ..."
             lines.append("Remaining planned artifacts: " + preview)
         return lines
+
+    def _compact_planned_artifact_lines(self, dod: DefinitionOfDone) -> list[str]:
+        lines = self._planned_artifact_progress_lines(dod)
+        if self._confirmed_output_file_count(dod) < 2:
+            return lines[:1]
+        return lines[:2]
+
+    def _confirmed_output_file_count(self, dod: DefinitionOfDone) -> int:
+        return sum(
+            1
+            for target, expect_directory in collect_planned_artifact_targets(
+                dod,
+                project_root=self.context.project_root,
+                max_paths=12,
+            )
+            if not expect_directory
+            and planned_artifact_target_satisfied(
+                dod,
+                target=target,
+                expect_directory=False,
+                project_root=self.context.project_root,
+            )
+        )
 
     def _next_step_resume_lines(
         self,

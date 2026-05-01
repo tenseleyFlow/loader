@@ -947,6 +947,7 @@ def test_empty_response_retry_prefers_pending_index_over_broad_directory_headlin
         in decision.retry_message
     )
     assert "Next missing planned artifact: `chapters/`" not in decision.retry_message
+    assert "Remaining planned artifacts:" not in decision.retry_message
     assert (
         "Next observed output pattern under `chapters/`: `01-introduction.html`"
         not in decision.retry_message
@@ -1018,6 +1019,7 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
         "It is the next concrete output needed to continue `Create chapter files with content and structure`."
         in decision.retry_message
     )
+    assert "Remaining planned artifacts:" not in decision.retry_message
     assert (
         "continue `Create chapter files with content and structure` by creating `01-introduction.html`."
         not in decision.retry_message
