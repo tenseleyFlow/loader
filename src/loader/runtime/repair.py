@@ -760,10 +760,10 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
-            if completed_artifacts >= 2:
+            if self._has_confirmed_output_file_progress(dod):
                 lines.append(
-                    "Follow the same one-file-at-a-time mutation pattern that already "
-                    "created the confirmed output files."
+                    "Follow the same full-payload one-file-at-a-time write pattern that "
+                    "already created the confirmed output files."
                 )
             if retry_number >= 2:
                 lines.append(
@@ -813,10 +813,10 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
-            if completed_artifacts >= 2:
+            if self._has_confirmed_output_file_progress(dod):
                 lines.append(
-                    "Follow the same one-file-at-a-time mutation pattern that already "
-                    "created the confirmed output files."
+                    "Follow the same full-payload one-file-at-a-time write pattern that "
+                    "already created the confirmed output files."
                 )
             if retry_number >= 2:
                 lines.append(

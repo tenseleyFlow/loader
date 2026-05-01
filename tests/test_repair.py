@@ -584,7 +584,7 @@ def test_empty_response_retry_budget_extends_for_late_stage_multi_artifact_progr
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert "retry 3/4" in decision.retry_message
-    assert "Follow the same one-file-at-a-time mutation pattern" in decision.retry_message
+    assert "Follow the same full-payload one-file-at-a-time write pattern" in decision.retry_message
 
 
 def test_empty_response_retry_budget_extends_when_concrete_next_output_is_known(
@@ -1017,6 +1017,10 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
     )
     assert (
         "It is the next concrete output needed to continue `Create chapter files with content and structure`."
+        in decision.retry_message
+    )
+    assert (
+        "Follow the same full-payload one-file-at-a-time write pattern that already created the confirmed output files."
         in decision.retry_message
     )
     assert "Remaining planned artifacts:" not in decision.retry_message
