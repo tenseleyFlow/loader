@@ -913,24 +913,6 @@ class ToolBatchRunner:
         is_mutating = is_state_mutating_tool_call(tool_call)
         previously_verified = dod.last_verification_result == "passed"
         record_successful_tool_call(dod, tool_call)
-        if previously_verified and is_mutating:
-            _mark_verification_stale(
-                context=self.context,
-                summary=summary,
-                dod=dod,
-                tool_call=tool_call,
-            )
-        elif is_mutating and _should_plan_verification_for_tool_call(
-            dod,
-            tool_call=tool_call,
-            project_root=self.context.project_root,
-        ):
-            _mark_verification_planned(
-                context=self.context,
-                summary=summary,
-                dod=dod,
-                tool_call=tool_call,
-            )
         if tool_call.name == "TodoWrite" and outcome.registry_result is not None:
             new_todos = outcome.registry_result.metadata.get("new_todos", [])
             if isinstance(new_todos, list):
@@ -963,6 +945,24 @@ class ToolBatchRunner:
             self._queue_planned_artifact_handoff_nudge(
                 tool_call=tool_call,
                 dod=dod,
+            )
+        if previously_verified and is_mutating:
+            _mark_verification_stale(
+                context=self.context,
+                summary=summary,
+                dod=dod,
+                tool_call=tool_call,
+            )
+        elif is_mutating and _should_plan_verification_for_tool_call(
+            dod,
+            tool_call=tool_call,
+            project_root=self.context.project_root,
+        ):
+            _mark_verification_planned(
+                context=self.context,
+                summary=summary,
+                dod=dod,
+                tool_call=tool_call,
             )
         self.dod_store.save(dod)
         recovery_context = self.context.recovery_context
@@ -2145,6 +2145,19 @@ def _should_plan_verification_for_tool_call(
     tool_call: ToolCall,
     project_root: Path,
 ) -> bool:
+    actionable_pending = [
+        item
+        for item in effective_pending_todo_items(
+            dod,
+            project_root=project_root,
+        )
+        if item not in _TODO_NUDGE_EXCLUDED_ITEMS
+    ]
+    if any(
+        _todo_is_mutation_step(item) or _todo_is_consistency_review_step(item)
+        for item in actionable_pending
+    ):
+        return False
     if tool_call.name in {"write", "edit", "patch"}:
         return True
     if tool_call.name != "bash":
