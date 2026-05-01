@@ -110,6 +110,14 @@ _BOOKKEEPING_NOTE_TOOL_NAMES = {
     "notepad_write_priority",
     "notepad_write_manual",
 }
+_SUMMARY_ARTIFACT_NAMES = {
+    "index.html",
+    "index.htm",
+    "readme",
+    "readme.md",
+    "readme.rst",
+    "readme.txt",
+}
 
 
 @dataclass
@@ -1029,9 +1037,11 @@ class ToolBatchRunner:
             next_pending=next_pending,
             project_root=self.context.project_root,
         )
-        has_file_artifact_progress = _has_confirmed_file_artifact_progress(
-            dod,
-            project_root=self.context.project_root,
+        has_substantive_file_artifact_progress = (
+            _has_confirmed_substantive_file_artifact_progress(
+                dod,
+                project_root=self.context.project_root,
+            )
         )
         if not completed_label or not next_pending or next_pending == completed_label:
             return
@@ -1041,7 +1051,7 @@ class ToolBatchRunner:
             missing_artifact=missing_artifact,
             project_root=self.context.project_root,
         ):
-            if not has_file_artifact_progress:
+            if not has_substantive_file_artifact_progress:
                 compact_handoff = _compact_missing_artifact_handoff(
                     missing_artifact,
                     project_root=self.context.project_root,
@@ -1160,9 +1170,11 @@ class ToolBatchRunner:
         )
 
         current_label = _current_mutation_label(tool_call)
-        has_file_artifact_progress = _has_confirmed_file_artifact_progress(
-            dod,
-            project_root=self.context.project_root,
+        has_substantive_file_artifact_progress = (
+            _has_confirmed_substantive_file_artifact_progress(
+                dod,
+                project_root=self.context.project_root,
+            )
         )
         resume_target = _preferred_resume_target_path(
             dod,
@@ -1179,7 +1191,7 @@ class ToolBatchRunner:
             messages=list(getattr(self.context.session, "messages", []) or []),
         )
         if (
-            not has_file_artifact_progress
+            not has_substantive_file_artifact_progress
             and _is_pure_directory_creation_tool_call(tool_call)
         ):
             if (
@@ -1224,7 +1236,7 @@ class ToolBatchRunner:
                 (resume_target, False),
                 project_root=self.context.project_root,
                 messages=session_messages,
-                encourage_initial_version=not has_file_artifact_progress,
+                encourage_initial_version=not has_substantive_file_artifact_progress,
             )
             if compact_resume:
                 queue_message(
@@ -1237,7 +1249,7 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
-        if not has_file_artifact_progress:
+        if not has_substantive_file_artifact_progress:
             compact_handoff = _compact_missing_artifact_handoff(
                 missing_artifact,
                 project_root=self.context.project_root,
@@ -1385,9 +1397,11 @@ class ToolBatchRunner:
             )
             return
 
-        has_file_artifact_progress = _has_confirmed_file_artifact_progress(
-            dod,
-            project_root=self.context.project_root,
+        has_substantive_file_artifact_progress = (
+            _has_confirmed_substantive_file_artifact_progress(
+                dod,
+                project_root=self.context.project_root,
+            )
         )
         todo_refresh = _todo_refresh_guidance(
             dod,
@@ -1415,7 +1429,7 @@ class ToolBatchRunner:
                 (resume_target, False),
                 project_root=self.context.project_root,
                 messages=session_messages,
-                encourage_initial_version=not has_file_artifact_progress,
+                encourage_initial_version=not has_substantive_file_artifact_progress,
             )
             if compact_resume:
                 self.context.queue_steering_message(
@@ -1692,6 +1706,17 @@ def _has_confirmed_file_artifact_progress(
     return _confirmed_file_artifact_count(dod, project_root=project_root) > 0
 
 
+def _has_confirmed_substantive_file_artifact_progress(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> bool:
+    return _confirmed_substantive_file_artifact_count(
+        dod,
+        project_root=project_root,
+    ) > 0
+
+
 def _last_touched_file_path(dod: DefinitionOfDone) -> Path | None:
     for raw_path in reversed(dod.touched_files):
         path_text = str(raw_path or "").strip()
@@ -1733,15 +1758,50 @@ def _confirmed_file_artifact_count(
     )
 
 
+def _confirmed_substantive_file_artifact_count(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> int:
+    count = 0
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=12,
+    ):
+        if expect_directory or _is_summary_artifact_path(target):
+            continue
+        if planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=False,
+            project_root=project_root,
+        ):
+            count += 1
+    if count:
+        return count
+    return sum(
+        1
+        for path in dod.touched_files
+        if str(path).strip()
+        and Path(path).expanduser().resolve(strict=False).suffix
+        and not _is_summary_artifact_path(path)
+    )
+
+
 def _should_use_persistent_missing_artifact_handoff(
     dod: DefinitionOfDone,
     *,
     project_root: Path,
 ) -> bool:
-    return _confirmed_file_artifact_count(
+    return _confirmed_substantive_file_artifact_count(
         dod,
         project_root=project_root,
     ) == 0
+
+
+def _is_summary_artifact_path(path: str | Path) -> bool:
+    return Path(path).name.lower() in _SUMMARY_ARTIFACT_NAMES
 
 
 def _next_missing_planned_file_within_directory(
