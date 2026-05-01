@@ -1163,11 +1163,7 @@ class ToolBatchRunner:
             if use_persistent_handoff
             else self.context.queue_ephemeral_steering_message
         )
-        if (
-            use_persistent_handoff
-            and resume_target is not None
-            and resume_target.suffix
-        ):
+        if resume_target is not None and resume_target.suffix:
             compact_resume = _compact_missing_artifact_handoff(
                 (resume_target, False),
                 project_root=self.context.project_root,
@@ -1657,7 +1653,7 @@ def _should_use_persistent_missing_artifact_handoff(
     return _confirmed_file_artifact_count(
         dod,
         project_root=project_root,
-    ) < 2
+    ) == 0
 
 
 def _next_missing_planned_file_within_directory(

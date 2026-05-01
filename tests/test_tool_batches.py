@@ -2249,7 +2249,7 @@ async def test_tool_batch_runner_missing_artifact_nudge_names_next_file_after_se
 
 
 @pytest.mark.asyncio
-async def test_tool_batch_runner_first_file_handoff_stays_persistent(
+async def test_tool_batch_runner_first_chapter_handoff_becomes_ephemeral_after_first_file(
     temp_dir: Path,
 ) -> None:
     async def assess_confidence(
@@ -2351,8 +2351,9 @@ async def test_tool_batch_runner_first_file_handoff_stays_persistent(
         consecutive_errors=0,
     )
 
-    assert persistent_messages
-    message = persistent_messages[-1]
+    assert persistent_messages == []
+    assert ephemeral_messages
+    message = ephemeral_messages[-1]
     assert "Confirmed progress:" in message
     assert "Next step: create `01-introduction.html`." in message
     assert (
@@ -2360,7 +2361,6 @@ async def test_tool_batch_runner_first_file_handoff_stays_persistent(
         in message
     )
     assert "Do not reread reference material or spend the next turn on bookkeeping." in message
-    assert ephemeral_messages == []
 
 
 @pytest.mark.asyncio
@@ -2477,7 +2477,7 @@ async def test_tool_batch_runner_softens_first_file_handoff_after_recovery_promp
     assert persistent_messages == []
     assert ephemeral_messages
     message = ephemeral_messages[-1]
-    assert "Resume by creating `01-introduction.html` now." in message
+    assert "Next step: create `01-introduction.html`." in message
 
 
 @pytest.mark.asyncio
@@ -2932,13 +2932,10 @@ async def test_tool_batch_runner_mutation_handoff_points_at_next_missing_artifac
         consecutive_errors=0,
     )
 
-    assert persistent_messages
-    message = persistent_messages[-1]
+    assert persistent_messages == []
+    assert ephemeral_messages
+    message = ephemeral_messages[-1]
     assert "Next step: create `01-getting-started.html`." in message
-    assert (
-        f"Prefer one `write(file_path=..., content=...)` call for `{chapter_one.resolve(strict=False)}` now."
-        in message
-    )
     assert "refresh `TodoWrite`" not in message
     assert "Do not reread reference material or spend the next turn on bookkeeping." in message
 
@@ -3062,7 +3059,7 @@ async def test_tool_batch_runner_large_plan_does_not_claim_completion_early(
     )
 
     assert any(
-        "Resume by creating `06-performance-tuning.html` now." in message
+        "Next step: create `06-performance-tuning.html`." in message
         for message in ephemeral_messages
     )
     assert not any(
@@ -3188,8 +3185,8 @@ async def test_tool_batch_runner_uses_compact_missing_artifact_nudge_after_subst
 
     assert ephemeral_messages
     message = ephemeral_messages[-1]
-    assert "Resume by creating `05-advanced-features.html` now." in message
-    assert "No TodoWrite, no verification, no rereads until that artifact exists." in message
+    assert "Next step: create `05-advanced-features.html`." in message
+    assert "Do not reread reference material or spend the next turn on bookkeeping." in message
     assert "refresh `TodoWrite`" not in message
 
 
