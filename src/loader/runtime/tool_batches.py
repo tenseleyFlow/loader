@@ -310,6 +310,8 @@ class ToolBatchRunner:
                 )
                 self._queue_blocked_shell_rewrite_nudge(tool_call)
                 self._queue_blocked_html_edit_nudge(tool_call, outcome.event_content)
+            else:
+                self._queue_post_mutation_self_audit_nudge(tool_call, dod=dod)
 
             should_continue = await self.verification_gate.should_continue(
                 tool_call=tool_call,
@@ -489,6 +491,45 @@ class ToolBatchRunner:
         self.context.queue_steering_message(
             "Reuse the earlier observation instead of repeating it. "
             "Choose a different next step that makes progress."
+        )
+
+    def _queue_post_mutation_self_audit_nudge(
+        self,
+        tool_call: ToolCall,
+        *,
+        dod: DefinitionOfDone,
+    ) -> None:
+        """Steer out of rereading the file that was just written when the next output is known."""
+
+        if tool_call.name != "read":
+            return
+
+        file_path = str(tool_call.arguments.get("file_path", "")).strip()
+        if not file_path:
+            return
+
+        missing_artifact = _next_missing_planned_artifact(
+            dod,
+            project_root=self.context.project_root,
+            messages=list(getattr(self.context.session, "messages", []) or []),
+        )
+        if missing_artifact is None:
+            return
+
+        read_target = Path(file_path).expanduser().resolve(strict=False)
+        last_touched = _last_touched_file_path(dod)
+        if last_touched is None or read_target != last_touched:
+            return
+
+        self.context.queue_steering_message(
+            f"You already have the current contents of `{read_target.name}` from the successful write. "
+            "A declared output artifact is still missing."
+            + _missing_artifact_resume_suffix(
+                missing_artifact,
+                project_root=self.context.project_root,
+                messages=list(getattr(self.context.session, "messages", []) or []),
+            )
+            + " Do not spend another turn rereading the file you just wrote or on TodoWrite alone."
         )
 
     def _queue_blocked_shell_rewrite_nudge(self, tool_call: ToolCall) -> None:
@@ -1613,6 +1654,17 @@ def _has_confirmed_file_artifact_progress(
     project_root: Path,
 ) -> bool:
     return _confirmed_file_artifact_count(dod, project_root=project_root) > 0
+
+
+def _last_touched_file_path(dod: DefinitionOfDone) -> Path | None:
+    for raw_path in reversed(dod.touched_files):
+        path_text = str(raw_path or "").strip()
+        if not path_text:
+            continue
+        candidate = Path(path_text).expanduser().resolve(strict=False)
+        if candidate.suffix:
+            return candidate
+    return None
 
 
 def _confirmed_file_artifact_count(

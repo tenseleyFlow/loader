@@ -2364,6 +2364,114 @@ async def test_tool_batch_runner_first_chapter_handoff_becomes_ephemeral_after_f
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_redirects_post_write_self_audit_to_next_missing_artifact(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    nginx_root = temp_dir / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = nginx_root / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation and Setup</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{nginx_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapters / '01-introduction.html'}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    dod.completed_items.append("Develop the main index.html file for the nginx guide")
+    dod.pending_items.append("Create chapter files for the nginx guide")
+
+    tool_call = ToolCall(
+        id="read-index-self-audit",
+        name="read",
+        arguments={"file_path": str(index_path)},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="1\t<html>\n",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert persistent_messages
+    message = persistent_messages[-1]
+    assert "You already have the current contents of `index.html` from the successful write." in message
+    assert "Resume by creating `01-introduction.html` now." in message
+    assert "Do not spend another turn rereading the file you just wrote or on TodoWrite alone." in message
+    assert ephemeral_messages == []
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_softens_first_file_handoff_after_recovery_prompt(
     temp_dir: Path,
 ) -> None:
