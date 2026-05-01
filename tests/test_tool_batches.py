@@ -2243,8 +2243,7 @@ async def test_tool_batch_runner_missing_artifact_nudge_names_next_file_after_se
     assert persistent_messages
     message = persistent_messages[-1]
     assert "Directory setup is complete." in message
-    assert "Continue with the next pending item: `Develop the main index.html file with proper structure`." in message
-    assert "Resume by creating `index.html` now." in message
+    assert "Next step: create `index.html`." in message
     assert ephemeral_messages == []
 
 
@@ -2712,8 +2711,8 @@ async def test_tool_batch_runner_todowrite_uses_concrete_output_language_for_agg
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Continue with the next concrete output: `01-introduction.html`." in message
-    assert "Resume by creating `01-introduction.html` now." in message
+    assert "Todo tracking is updated." in message
+    assert "Next step: create `01-introduction.html`." in message
     assert (
         "Continue with the next pending item: `Create chapter files with content and structure`."
         not in message
@@ -3435,10 +3434,9 @@ async def test_tool_batch_runner_todowrite_with_missing_artifact_requeues_exact_
 
     assert persistent_messages
     message = persistent_messages[-1]
-    assert "Todo tracking is updated. A declared output artifact is still missing." in message
-    assert "Resume by creating `02-installation.html` now." in message
-    assert "refresh `TodoWrite`" in message
-    assert "Do not spend the next turn on TodoWrite alone" in message
+    assert "Todo tracking is updated. Next step: create `02-installation.html`." in message
+    assert "Prefer one `write(file_path=..., content=...)` call" in message
+    assert "Make your next response the concrete mutation tool call itself." in message
     assert ephemeral_messages == []
 
 
@@ -3744,12 +3742,9 @@ async def test_tool_batch_runner_todowrite_with_existing_output_roots_requeues_n
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. A declared output artifact is still missing." in message
-    assert "Continue with the next pending item: `Write the introduction chapter`." in message
-    assert "Resume by creating `01-introduction.html` now." in message
-    assert "Prefer one `write` call for `" in message
-    assert "01-introduction.html` instead of more rereads." in message
-    assert "Do not spend the next turn on TodoWrite alone" in message
+    assert "Todo tracking is updated. Next step: create `01-introduction.html`." in message
+    assert "Prefer one `write(file_path=..., content=...)` call" in message
+    assert "Make your next response the concrete mutation tool call itself." in message
 
 
 @pytest.mark.asyncio
@@ -3885,9 +3880,8 @@ async def test_tool_batch_runner_todowrite_prefers_pending_index_over_empty_outp
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Continue with the next pending item: `Create a new index.html for the nginx guide`." in message
-    assert "Resume by creating `index.html` now." in message
-    assert f"Prefer one `write` call for `{index_path.resolve(strict=False)}`" in message
+    assert "Todo tracking is updated. Next step: create `index.html`." in message
+    assert f"Prefer one `write(file_path=..., content=...)` call for `{index_path.resolve(strict=False)}`" in message
     assert "01-introduction.html" not in message
 
 
@@ -4011,12 +4005,9 @@ async def test_tool_batch_runner_todowrite_with_declared_child_targets_names_nex
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. A declared output artifact is still missing." in message
-    assert "Continue with the next pending item: `Write the introduction chapter`." in message
-    assert "Resume by creating `introduction.html` now." in message
-    assert "Prefer one `write` call for `" in message
-    assert "introduction.html` instead of more rereads." in message
-    assert "Do not spend the next turn on TodoWrite alone" in message
+    assert "Todo tracking is updated. Next step: create `introduction.html`." in message
+    assert "Prefer one `write(file_path=..., content=...)` call" in message
+    assert "Make your next response the concrete mutation tool call itself." in message
 
 
 @pytest.mark.asyncio
@@ -4141,14 +4132,8 @@ async def test_tool_batch_runner_todowrite_names_concrete_pending_file_after_art
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. A declared output artifact is still missing." in message
-    assert "Continue with the next pending item: `Creating Chapter 2: Installation and Setup`." in message
-    assert "Resume by creating `02-installation.html` now." in message
-    assert (
-        f"Prefer one `write` call for `{(chapters / '02-installation.html').resolve(strict=False)}` "
-        "instead of more rereads."
-        in message
-    )
+    assert "Todo tracking is updated. Next step: create `02-installation.html`." in message
+    assert "Prefer one `write(file_path=..., content=...)` call" in message
     assert "Make your next response the concrete mutation tool call itself" in message
 
 
@@ -4278,15 +4263,8 @@ async def test_tool_batch_runner_todowrite_uses_observed_sibling_pattern_for_nex
 
     assert queued_messages
     message = queued_messages[-1]
-    assert "Todo tracking is updated. A declared output artifact is still missing." in message
-    assert "Continue with the next pending item: `Write the introduction chapter`." in message
-    assert "Resume by creating `01-introduction.html` now." in message
-    assert (
-        "It mirrors the observed filename pattern from another `chapters/` directory "
-        "you already inspected."
-        in message
-    )
-    assert "01-introduction.html` instead of more rereads." in message
+    assert "Todo tracking is updated. Next step: create `01-introduction.html`." in message
+    assert "Prefer one `write(file_path=..., content=...)` call" in message
 
 
 @pytest.mark.asyncio

@@ -1186,6 +1186,18 @@ class ToolBatchRunner:
                 and resume_target is not None
                 and resume_target.suffix
             ):
+                compact_resume = _compact_missing_artifact_handoff(
+                    (resume_target, False),
+                    project_root=self.context.project_root,
+                    messages=list(getattr(self.context.session, "messages", []) or []),
+                )
+                if compact_resume:
+                    self.context.queue_steering_message(
+                        "Directory setup is complete. "
+                        + compact_resume
+                        + " Do not reread older reference files before that mutation."
+                    )
+                    return
                 self.context.queue_steering_message(
                     f"Directory setup is complete. Continue with the next pending item: `{next_pending}`."
                     + resume_suffix
@@ -1389,6 +1401,20 @@ class ToolBatchRunner:
             pending_target=pending_target,
             resume_target=resume_target,
         )
+        if resume_target is not None and resume_target.suffix:
+            compact_resume = _compact_missing_artifact_handoff(
+                (resume_target, False),
+                project_root=self.context.project_root,
+                messages=session_messages,
+            )
+            if compact_resume:
+                self.context.queue_steering_message(
+                    "Todo tracking is updated. "
+                    + compact_resume
+                    + " Do not spend the next turn on TodoWrite alone, bookkeeping notes, "
+                    "verification, or final confirmation until that artifact exists."
+                )
+                return
         self.context.queue_steering_message(
             "Todo tracking is updated. A declared output artifact is still missing."
             + next_pending_suffix
