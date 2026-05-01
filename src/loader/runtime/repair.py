@@ -36,6 +36,14 @@ _SPECIAL_DOD_ITEMS = {
 _FIRST_FILE_EMPTY_RETRY_EXTRA = 2
 _LATE_STAGE_EMPTY_RETRY_EXTRA = 2
 _MULTI_FILE_OUTPUT_EMPTY_RETRY_EXTRA = 2
+_SUMMARY_ARTIFACT_NAMES = {
+    "index.html",
+    "index.htm",
+    "readme",
+    "readme.md",
+    "readme.rst",
+    "readme.txt",
+}
 _WORKING_NOTE_TOOL_NAMES = (
     "notepad_write_working",
     "notepad_append",
@@ -505,7 +513,7 @@ class ResponseRepairer:
             return base_max_empty_retries + _LATE_STAGE_EMPTY_RETRY_EXTRA
         if self._has_concrete_next_output_step(dod):
             extra_retries = _LATE_STAGE_EMPTY_RETRY_EXTRA
-            if self._has_confirmed_output_file_progress(dod):
+            if self._has_confirmed_substantive_output_file_progress(dod):
                 extra_retries += _MULTI_FILE_OUTPUT_EMPTY_RETRY_EXTRA
             elif completed_artifacts > 0:
                 extra_retries += _FIRST_FILE_EMPTY_RETRY_EXTRA
@@ -576,6 +584,33 @@ class ResponseRepairer:
     def _has_confirmed_output_file_progress(self, dod: DefinitionOfDone) -> bool:
         return any(
             not expect_directory
+            and planned_artifact_target_satisfied(
+                dod,
+                target=target,
+                expect_directory=False,
+                project_root=self.context.project_root,
+            )
+            for target, expect_directory in collect_planned_artifact_targets(
+                dod,
+                project_root=self.context.project_root,
+                max_paths=12,
+            )
+        )
+
+    def _has_confirmed_substantive_output_file_progress(
+        self,
+        dod: DefinitionOfDone,
+    ) -> bool:
+        for raw_path in dod.touched_files:
+            if not str(raw_path).strip():
+                continue
+            path = Path(raw_path).expanduser().resolve(strict=False)
+            if not path.suffix or _is_summary_artifact_path(path) or not path.is_file():
+                continue
+            return True
+        return any(
+            not expect_directory
+            and not _is_summary_artifact_path(target)
             and planned_artifact_target_satisfied(
                 dod,
                 target=target,
@@ -699,6 +734,9 @@ class ResponseRepairer:
     ) -> list[str]:
         completed_artifacts, _ = self._planned_artifact_counts(dod)
         has_confirmed_output_file_progress = self._has_confirmed_output_file_progress(dod)
+        has_confirmed_substantive_output_file_progress = (
+            self._has_confirmed_substantive_output_file_progress(dod)
+        )
         next_missing_artifact = self._preferred_resume_missing_artifact(dod)
         next_pending = self._preferred_resume_pending_item(
             dod,
@@ -771,13 +809,17 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
-            if not has_confirmed_output_file_progress:
+            if _should_encourage_initial_version(
+                target=concrete_target,
+                has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+                has_confirmed_substantive_output_file_progress=has_confirmed_substantive_output_file_progress,
+            ):
                 lines.append(
                     "Do not wait to perfect the entire multi-file output before this write. "
                     "Write a compact but real initial version of this file now, then refine "
                     "or expand it in later edits."
                 )
-            if has_confirmed_output_file_progress:
+            if has_confirmed_substantive_output_file_progress:
                 lines.append(
                     "Follow the same full-payload one-file-at-a-time write pattern that "
                     "already created the confirmed output files."
@@ -837,13 +879,20 @@ class ResponseRepairer:
                     1,
                     f"It is the next concrete output needed to continue `{next_pending}`.",
                 )
-            if not has_confirmed_output_file_progress and not inferred_is_directory:
+            if (
+                not inferred_is_directory
+                and _should_encourage_initial_version(
+                    target=inferred_pending_target,
+                    has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+                    has_confirmed_substantive_output_file_progress=has_confirmed_substantive_output_file_progress,
+                )
+            ):
                 lines.append(
                     "Do not wait to perfect the entire multi-file output before this write. "
                     "Write a compact but real initial version of this file now, then refine "
                     "or expand it in later edits."
                 )
-            if has_confirmed_output_file_progress:
+            if has_confirmed_substantive_output_file_progress:
                 lines.append(
                     "Follow the same full-payload one-file-at-a-time write pattern that "
                     "already created the confirmed output files."
@@ -925,7 +974,11 @@ class ResponseRepairer:
                         lines.append(
                             f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                         )
-                    if not has_confirmed_output_file_progress:
+                    if _should_encourage_initial_version(
+                        target=next_output_file,
+                        has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+                        has_confirmed_substantive_output_file_progress=has_confirmed_substantive_output_file_progress,
+                    ):
                         lines.append(
                             "Do not wait to perfect the entire multi-file output before this write. "
                             "Write a compact but real initial version of this file now, then refine "
@@ -979,7 +1032,11 @@ class ResponseRepairer:
                         "automatically, so do the write in one step instead of stopping "
                         "for a separate mkdir."
                     )
-                if not has_confirmed_output_file_progress:
+                if _should_encourage_initial_version(
+                    target=target,
+                    has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+                    has_confirmed_substantive_output_file_progress=has_confirmed_substantive_output_file_progress,
+                ):
                     lines.append(
                         "Do not wait to perfect the entire multi-file output before this write. "
                         "Write a compact but real initial version of this file now, then refine "
@@ -1226,3 +1283,20 @@ def _todo_is_mutation_step(label: str) -> bool:
 def _todo_is_consistency_review_step(label: str) -> bool:
     lowered = label.lower()
     return any(token in lowered for token in _CONSISTENCY_REVIEW_HINTS)
+
+
+def _is_summary_artifact_path(path: Path) -> bool:
+    return path.name.lower() in _SUMMARY_ARTIFACT_NAMES
+
+
+def _should_encourage_initial_version(
+    *,
+    target: Path,
+    has_confirmed_output_file_progress: bool,
+    has_confirmed_substantive_output_file_progress: bool,
+) -> bool:
+    if not has_confirmed_output_file_progress:
+        return True
+    if _is_summary_artifact_path(target):
+        return False
+    return not has_confirmed_substantive_output_file_progress

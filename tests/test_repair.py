@@ -1089,9 +1089,10 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
         in decision.retry_message
     )
     assert (
-        "Follow the same full-payload one-file-at-a-time write pattern that already created the confirmed output files."
+        "Write a compact but real initial version of this file now, then refine or expand it in later edits."
         in decision.retry_message
     )
+    assert "Follow the same full-payload one-file-at-a-time write pattern" not in decision.retry_message
     assert "Remaining planned artifacts:" not in decision.retry_message
     assert "Next pending item:" not in decision.retry_message
 
@@ -1171,6 +1172,7 @@ def test_empty_response_retry_keeps_concrete_second_chapter_for_aggregate_chapte
         in decision.retry_message
     )
     assert f"`{display_runtime_path(chapter_two)}`" in decision.retry_message
+    assert "Follow the same full-payload one-file-at-a-time write pattern" in decision.retry_message
 
 
 def test_empty_response_retry_prefers_output_index_over_reference_index_with_same_name(

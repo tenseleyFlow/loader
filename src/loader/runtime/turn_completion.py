@@ -60,6 +60,14 @@ _COMPLETION_HINTS = (
     "successfully completed",
     "everything is done",
 )
+_SUMMARY_ARTIFACT_NAMES = {
+    "index.html",
+    "index.htm",
+    "readme",
+    "readme.md",
+    "readme.rst",
+    "readme.txt",
+}
 
 
 class TurnCompletionAction(StrEnum):
@@ -429,13 +437,26 @@ def _build_in_progress_continuation(
         messages=messages,
     )
     if target is not None:
+        prompt = (
+            "[CONTINUE CURRENT STEP]\n"
+            "You just described the next planned step, but the concrete output is not on disk yet. "
+            f"Respond with one concrete `write` or `edit`-style tool call that creates or updates `{target}` now. "
+            "Do not summarize, verify, or restart discovery first."
+        )
+        if (
+            not _is_summary_artifact_path(target)
+            and _confirmed_substantive_output_file_count(
+                dod,
+                project_root=project_root,
+            )
+            == 0
+        ):
+            prompt += (
+                " If needed, write a compact but real initial version of that file now; "
+                "you can expand or refine it in later edits."
+            )
         return InProgressContinuation(
-            prompt=(
-                "[CONTINUE CURRENT STEP]\n"
-                "You just described the next planned step, but the concrete output is not on disk yet. "
-                f"Respond with one concrete `write` or `edit`-style tool call that creates or updates `{target}` now. "
-                "Do not summarize, verify, or restart discovery first."
-            ),
+            prompt=prompt,
             target=target,
         )
 
@@ -558,6 +579,48 @@ def _confirmed_output_file_count(
             project_root=project_root,
         )
     )
+
+
+def _confirmed_substantive_output_file_count(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> int:
+    count = 0
+    seen: set[str] = set()
+    for raw_path in dod.touched_files:
+        if not str(raw_path).strip():
+            continue
+        path = Path(raw_path).expanduser().resolve(strict=False)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.suffix or _is_summary_artifact_path(path) or not path.is_file():
+            continue
+        count += 1
+
+    return sum(
+        1
+        for target, expect_directory in collect_planned_artifact_targets(
+            dod,
+            project_root=project_root,
+            max_paths=12,
+        )
+        if str(target.expanduser().resolve(strict=False)) not in seen
+        if not expect_directory
+        and not _is_summary_artifact_path(target)
+        and planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=False,
+            project_root=project_root,
+        )
+    ) + count
+
+
+def _is_summary_artifact_path(path: Path) -> bool:
+    return path.name.lower() in _SUMMARY_ARTIFACT_NAMES
 
 
 def _recent_concrete_target_prompt(
