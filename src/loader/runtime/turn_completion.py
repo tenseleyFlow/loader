@@ -272,7 +272,14 @@ class TurnCompletionController:
             assistant_message = Message(role=Role.ASSISTANT, content=response_content)
             self.context.session.append(assistant_message)
             summary.assistant_messages.append(assistant_message)
-            if progress_intent.target is not None and continuation_count == 0:
+            if (
+                progress_intent.target is not None
+                and continuation_count == 0
+                and not _recent_concrete_target_prompt(
+                    progress_messages,
+                    target=progress_intent.target,
+                )
+            ):
                 self._append_completion_trace_entry(
                     summary=summary,
                     stage="continuation_check",
@@ -524,3 +531,31 @@ def _preferred_progress_target(
     if next_output_file is not None:
         return next_output_file
     return None
+
+
+def _recent_concrete_target_prompt(
+    messages: list[object],
+    *,
+    target: Path,
+) -> bool:
+    target = target.expanduser().resolve(strict=False)
+    target_text = str(target)
+    target_name = target.name
+    for message in reversed(messages[-6:]):
+        role = getattr(message, "role", None)
+        if getattr(role, "value", role) != "user":
+            continue
+        content = str(getattr(message, "content", "") or "")
+        if not content:
+            continue
+        if "[CONTINUE CURRENT STEP]" not in content and "[USER INTERRUPTION]" not in content and "[EMPTY ASSISTANT RESPONSE]" not in content:
+            continue
+        if target_text not in content and target_name not in content:
+            continue
+        if (
+            "concrete mutation tool call" in content
+            or "Resume by creating" in content
+            or "Emit this tool shape now" in content
+        ):
+            return True
+    return False
