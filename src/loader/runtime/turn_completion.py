@@ -275,6 +275,11 @@ class TurnCompletionController:
             if (
                 progress_intent.target is not None
                 and continuation_count == 0
+                and _confirmed_output_file_count(
+                    dod,
+                    project_root=self.context.project_root,
+                )
+                == 0
                 and not _recent_concrete_target_prompt(
                     progress_messages,
                     target=progress_intent.target,
@@ -531,6 +536,28 @@ def _preferred_progress_target(
     if next_output_file is not None:
         return next_output_file
     return None
+
+
+def _confirmed_output_file_count(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> int:
+    return sum(
+        1
+        for target, expect_directory in collect_planned_artifact_targets(
+            dod,
+            project_root=project_root,
+            max_paths=12,
+        )
+        if not expect_directory
+        and planned_artifact_target_satisfied(
+            dod,
+            target=target,
+            expect_directory=False,
+            project_root=project_root,
+        )
+    )
 
 
 def _recent_concrete_target_prompt(
