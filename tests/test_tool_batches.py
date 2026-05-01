@@ -16,6 +16,7 @@ from loader.runtime.dod import (
 )
 from loader.runtime.events import AgentEvent, TurnSummary
 from loader.runtime.executor import ToolExecutionOutcome, ToolExecutionState
+from loader.runtime.path_display import display_runtime_path
 from loader.runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -693,7 +694,8 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
     assert "A declared output artifact is still missing." in persistent_messages[0]
     assert "Resume by creating `04-variables.html` now." in persistent_messages[0]
     assert (
-        f"Prefer one `write` call for `{temp_dir / 'chapters' / '04-variables.html'}` instead of more rereads."
+        "Prefer one `write` call for "
+        f"`{display_runtime_path(temp_dir / 'chapters' / '04-variables.html')}` instead of more rereads."
         in persistent_messages[0]
     )
     assert ephemeral_messages == []
@@ -2360,6 +2362,111 @@ async def test_tool_batch_runner_first_chapter_handoff_becomes_ephemeral_after_f
         in message
     )
     assert "Do not reread reference material or spend the next turn on bookkeeping." in message
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_runner_directory_handoff_uses_home_relative_path(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(temp_dir.resolve(strict=False)))
+
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    nginx_root = temp_dir / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    index_path = nginx_root / "index.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    persistent_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create the nginx directory structure",
+                "active_form": "Creating the nginx directory structure",
+                "status": "pending",
+            },
+            {
+                "content": "Develop the main index.html file with proper structure",
+                "active_form": "Developing the main index.html file with proper structure",
+                "status": "pending",
+            },
+        ],
+    )
+
+    tool_call = ToolCall(
+        id="mkdir-nginx-home",
+        name="bash",
+        arguments={"command": f"mkdir -p {chapters}"},
+    )
+    executor = FakeExecutor(
+        [
+            tool_outcome(
+                tool_call=tool_call,
+                output="",
+                is_error=False,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert persistent_messages
+    message = persistent_messages[-1]
+    assert "Next step: create `index.html`." in message
+    assert "`~/Loader/guides/nginx/index.html`" in message
 
 
 @pytest.mark.asyncio
@@ -5468,7 +5575,7 @@ async def test_tool_batch_runner_blocked_empty_file_path_nudges_concrete_next_ar
     assert "did not provide a valid `file_path`" in queued[0]
     assert "Resume by creating `02-installation.html` now." in queued[0]
     assert (
-        f"Prefer one `write` call for `{chapter_two}` instead of more rereads."
+        f"Prefer one `write` call for `{display_runtime_path(chapter_two)}` instead of more rereads."
         in queued[0]
     )
     assert context.recovery_context is not None

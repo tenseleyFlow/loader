@@ -17,6 +17,7 @@ from .dod import (
     planned_artifact_target_satisfied,
 )
 from .parsing import parse_tool_calls
+from .path_display import display_runtime_path
 from .recovery import detect_missing_mutation_payload
 from .workflow import (
     infer_output_outline_label,
@@ -369,11 +370,12 @@ class ResponseRepairer:
 
         target = fix["file_path"] or self._preferred_retry_target(dod)
         invalid = ", ".join(f"`{field}`" for field in fix["invalid_fields"])
+        display_target = display_runtime_path(target) if target else None
         if fix.get("kind") == "missing_target":
             if attempt.tool_name == "write":
                 target_line = (
-                    f"Last tool failure: resend `write` for `{target}` with a valid `file_path` and real `content`."
-                    if target
+                    f"Last tool failure: resend `write` for `{display_target}` with a valid `file_path` and real `content`."
+                    if display_target
                     else "Last tool failure: resend `write` with a valid `file_path` and real `content`."
                 )
                 return [
@@ -388,8 +390,8 @@ class ResponseRepairer:
                 ]
             if attempt.tool_name == "edit":
                 target_line = (
-                    f"Last tool failure: resend `edit` for `{target}` with a valid `file_path` plus real `old_string`/`new_string`."
-                    if target
+                    f"Last tool failure: resend `edit` for `{display_target}` with a valid `file_path` plus real `old_string`/`new_string`."
+                    if display_target
                     else "Last tool failure: resend `edit` with a valid `file_path` plus real `old_string`/`new_string`."
                 )
                 return [
@@ -404,8 +406,8 @@ class ResponseRepairer:
                 ]
             if attempt.tool_name == "patch":
                 target_line = (
-                    f"Last tool failure: resend `patch` for `{target}` with a valid `file_path` and real patch text or `hunks`."
-                    if target
+                    f"Last tool failure: resend `patch` for `{display_target}` with a valid `file_path` and real patch text or `hunks`."
+                    if display_target
                     else "Last tool failure: resend `patch` with a valid `file_path` and real patch text or `hunks`."
                 )
                 return [
@@ -421,8 +423,8 @@ class ResponseRepairer:
         if attempt.tool_name == "write":
             lines = [
                 (
-                    f"Last tool failure: resend `write` for `{target}` with real `content`, not just summary fields."
-                    if target
+                    f"Last tool failure: resend `write` for `{display_target}` with real `content`, not just summary fields."
+                    if display_target
                     else "Last tool failure: resend `write` with real `content`, not just summary fields."
                 ),
             ]
@@ -438,8 +440,8 @@ class ResponseRepairer:
         if attempt.tool_name == "edit":
             lines = [
                 (
-                    f"Last tool failure: resend `edit` for `{target}` with the real text payload."
-                    if target
+                    f"Last tool failure: resend `edit` for `{display_target}` with the real text payload."
+                    if display_target
                     else "Last tool failure: resend `edit` with the real text payload."
                 ),
                 f"Do not use {invalid} in place of `old_string`/`new_string`.",
@@ -455,8 +457,8 @@ class ResponseRepairer:
         if attempt.tool_name == "patch":
             lines = [
                 (
-                    f"Last tool failure: resend `patch` for `{target}` with real patch text or structured hunks."
-                    if target
+                    f"Last tool failure: resend `patch` for `{display_target}` with real patch text or structured hunks."
+                    if display_target
                     else "Last tool failure: resend `patch` with real patch text or structured hunks."
                 ),
                 f"Do not use {invalid} in place of the real patch payload.",
@@ -744,7 +746,8 @@ class ResponseRepairer:
             lines = [
                 f"Resume with this exact next step: create `{concrete_target.name}`.",
                 f"It is the next concrete output needed to continue `{next_pending}`.",
-                f"Prefer one `write(content=...)` call for `{concrete_target}` before more research.",
+                "Prefer one `write(content=...)` call for "
+                f"`{display_runtime_path(concrete_target)}` before more research.",
                 self._mutation_tool_scaffold(
                     concrete_target,
                     tool_name="write",
@@ -794,14 +797,16 @@ class ResponseRepairer:
             ]
             if inferred_is_directory:
                 lines.append(
-                    f"Prefer one concrete directory-creation step for `{inferred_pending_target}` before more research."
+                    "Prefer one concrete directory-creation step for "
+                    f"`{display_runtime_path(inferred_pending_target)}` before more research."
                 )
                 lines.append(
                     self._directory_creation_scaffold(inferred_pending_target)
                 )
             else:
                 lines.append(
-                    f"Prefer one `write(content=...)` call for `{inferred_pending_target}` before more research."
+                    "Prefer one `write(content=...)` call for "
+                    f"`{display_runtime_path(inferred_pending_target)}` before more research."
                 )
                 lines.append(
                     self._mutation_tool_scaffold(
@@ -882,7 +887,8 @@ class ResponseRepairer:
                         )
                     )
                     lines.append(
-                        f"Prefer one `write` call for `{next_output_file}` before more research."
+                        "Prefer one `write` call for "
+                        f"`{display_runtime_path(next_output_file)}` before more research."
                     )
                     lines.append(
                         self._mutation_tool_scaffold(
@@ -921,17 +927,20 @@ class ResponseRepairer:
                         f"under {label}."
                     ]
                 lines.append(
-                    f"Prefer one concrete `write` call for a file inside `{target}` before more research."
+                    "Prefer one concrete `write` call for a file inside "
+                    f"`{display_runtime_path(target)}` before more research."
                 )
             else:
                 lines = [f"Resume with this exact next step: create {label}."]
             if expect_directory and not target.is_dir():
                 lines.append(
-                    f"Prefer one concrete directory-creation step for `{target}` before more research."
+                    "Prefer one concrete directory-creation step for "
+                    f"`{display_runtime_path(target)}` before more research."
                 )
             elif not expect_directory:
                 lines.append(
-                    f"Prefer one `write` call for `{target}` before any more reference reads."
+                    "Prefer one `write` call for "
+                    f"`{display_runtime_path(target)}` before any more reference reads."
                 )
                 if not target.parent.exists():
                     lines.append(
@@ -1154,7 +1163,7 @@ class ResponseRepairer:
 
     @staticmethod
     def _mutation_tool_scaffold(path: Path, *, tool_name: str) -> str:
-        normalized_path = json.dumps(str(path.expanduser().resolve(strict=False)))
+        normalized_path = json.dumps(display_runtime_path(path))
         if tool_name == "edit":
             signature = (
                 f"edit(file_path={normalized_path}, old_string=\"...\", "
@@ -1168,7 +1177,7 @@ class ResponseRepairer:
 
     @staticmethod
     def _directory_creation_scaffold(path: Path) -> str:
-        command = f"mkdir -p {shlex.quote(str(path.expanduser().resolve(strict=False)))}"
+        command = f"mkdir -p {shlex.quote(display_runtime_path(path))}"
         return f"Emit this tool shape now: `bash(command={json.dumps(command)})`."
 
 

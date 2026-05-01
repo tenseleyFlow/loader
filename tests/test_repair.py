@@ -6,9 +6,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from loader.llm.base import Message, Role, ToolCall
 from loader.runtime.context import RuntimeContext
 from loader.runtime.dod import create_definition_of_done
+from loader.runtime.path_display import display_runtime_path
 from loader.runtime.permissions import (
     PermissionMode,
     build_permission_policy,
@@ -312,7 +315,8 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
         in decision.retry_message
     )
     assert (
-        f"Prefer one `write` call for `{index_path}` before any more reference reads."
+        "Prefer one `write` call for "
+        f"`{display_runtime_path(index_path)}` before any more reference reads."
         in decision.retry_message
     )
     assert (
@@ -320,7 +324,7 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
         in decision.retry_message
     )
     assert (
-        f'Emit this tool shape now: `write(file_path="{index_path.resolve(strict=False)}", content="...")`.'
+        f'Emit this tool shape now: `write(file_path="{display_runtime_path(index_path)}", content="...")`.'
         in decision.retry_message
     )
     assert "Do not restart discovery unless one specific missing fact blocks this step." in decision.retry_message
@@ -378,15 +382,69 @@ def test_empty_response_retry_uses_directory_creation_for_setup_targets(
         in decision.retry_message
     )
     assert (
-        f"Prefer one concrete directory-creation step for `{chapters_path}` before more research."
+        "Prefer one concrete directory-creation step for "
+        f"`{display_runtime_path(chapters_path)}` before more research."
         in decision.retry_message
     )
-    expected_command = f"mkdir -p {chapters_path.resolve(strict=False)}"
+    expected_command = f"mkdir -p {display_runtime_path(chapters_path)}"
     assert (
         f'Emit this tool shape now: `bash(command="{expected_command}")`.'
         in decision.retry_message
     )
-    assert f'write(file_path="{chapters_path.resolve(strict=False)}"' not in decision.retry_message
+    assert f'write(file_path="{display_runtime_path(chapters_path)}"' not in decision.retry_message
+
+
+def test_empty_response_retry_uses_home_relative_path_for_home_artifacts(
+    temp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(temp_dir.resolve(strict=False)))
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "Loader" / "guides" / "nginx"
+    index_path = guide_root / "index.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items.extend(
+        [
+            "Create nginx guide directory structure",
+            "Write main index.html for nginx guide",
+        ]
+    )
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "`~/Loader/guides/nginx/index.html`" in decision.retry_message
+    assert (
+        'Emit this tool shape now: `write(file_path="~/Loader/guides/nginx/index.html", content="...")`.'
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_recovers_blocked_empty_file_path_to_concrete_target(
@@ -448,12 +506,13 @@ def test_empty_response_retry_recovers_blocked_empty_file_path_to_concrete_targe
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        f"Last tool failure: resend `write` for `{second_chapter}` with a valid `file_path` and real `content`."
+        "Last tool failure: resend `write` for "
+        f"`{display_runtime_path(second_chapter)}` with a valid `file_path` and real `content`."
         in decision.retry_message
     )
     assert "Do not leave `file_path` empty" in decision.retry_message
     assert (
-        f'Emit this tool shape now: `write(file_path="{second_chapter.resolve(strict=False)}", content="...")`.'
+        f'Emit this tool shape now: `write(file_path="{display_runtime_path(second_chapter)}", content="...")`.'
         in decision.retry_message
     )
 
@@ -822,7 +881,8 @@ def test_empty_response_retry_points_at_next_output_file_when_planned_directory_
         in decision.retry_message
     )
     assert (
-        f"Prefer one concrete `write` call for a file inside `{chapters}` before more research."
+        "Prefer one concrete `write` call for a file inside "
+        f"`{display_runtime_path(chapters)}` before more research."
         in decision.retry_message
     )
 
@@ -1081,7 +1141,8 @@ def test_empty_response_retry_prefers_output_index_over_reference_index_with_sam
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        f"Prefer one `write(content=...)` call for `{output_index}` before more research."
+        "Prefer one `write(content=...)` call for "
+        f"`{display_runtime_path(output_index)}` before more research."
         in decision.retry_message
     )
     assert str(reference_index) not in decision.retry_message
@@ -1217,7 +1278,8 @@ def test_empty_response_retry_infers_concrete_file_from_pending_todo_after_broad
         in decision.retry_message
     )
     assert (
-        f"Prefer one `write(content=...)` call for `{chapters / '02-installation.html'}` "
+        "Prefer one `write(content=...)` call for "
+        f"`{display_runtime_path(chapters / '02-installation.html')}` "
         "before more research."
         in decision.retry_message
     )
@@ -1294,12 +1356,13 @@ def test_empty_response_retry_maps_title_style_todo_to_html_graph_target(
         in decision.retry_message
     )
     assert (
-        f"Prefer one `write(content=...)` call for `{(chapters / '02-installation.html').resolve(strict=False)}` "
+        "Prefer one `write(content=...)` call for "
+        f"`{display_runtime_path(chapters / '02-installation.html')}` "
         "before more research."
         in decision.retry_message
     )
     assert (
-        f'Emit this tool shape now: `write(file_path="{(chapters / "02-installation.html").resolve(strict=False)}", content="...")`.'
+        f'Emit this tool shape now: `write(file_path="{display_runtime_path(chapters / "02-installation.html")}", content="...")`.'
         in decision.retry_message
     )
     assert (

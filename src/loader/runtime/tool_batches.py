@@ -29,6 +29,7 @@ from .events import AgentEvent, TurnSummary
 from .evidence_provenance import EvidenceProvenance, EvidenceProvenanceStatus
 from .executor import ToolExecutionState, ToolExecutor
 from .logging import get_runtime_logger
+from .path_display import display_runtime_path
 from .policy_timeline import append_verification_timeline_entry
 from .recovery import RecoveryContext, detect_missing_mutation_payload
 from .repair_focus import extract_active_repair_context
@@ -1939,6 +1940,7 @@ def _resume_suffix_for_target(
     allow_inferred_child: bool = True,
 ) -> str:
     label = target.name or str(target)
+    display_target = display_runtime_path(target)
     if expect_directory and not label.endswith("/"):
         label += "/"
     if expect_directory:
@@ -1960,7 +1962,7 @@ def _resume_suffix_for_target(
                 guidance = (
                     f" Resume by creating `{next_output_file.name}` now. {guidance_origin} "
                     f"Prefer one `write` call for "
-                    f"`{next_output_file}` instead of more rereads."
+                    f"`{display_runtime_path(next_output_file)}` instead of more rereads."
                 )
                 if not next_output_file.parent.exists():
                     guidance += (
@@ -1975,16 +1977,16 @@ def _resume_suffix_for_target(
         if target.is_dir():
             return (
                 f" Resume by creating the next output file under `{label}` now. Prefer one "
-                f"concrete `write` call for a file inside `{target}` instead of more rereads."
+                f"concrete `write` call for a file inside `{display_target}` instead of more rereads."
                 " Make your next response the concrete mutation tool call itself, not another"
                 " bookkeeping-only turn."
             )
         return (
             f" Resume by creating `{label}` now. Prefer one concrete directory-creation "
-            f"step for `{target}` instead of more rereads."
+            f"step for `{display_target}` instead of more rereads."
         )
     guidance = (
-        f" Resume by creating `{label}` now. Prefer one `write` call for `{target}` "
+        f" Resume by creating `{label}` now. Prefer one `write` call for `{display_target}` "
         "instead of more rereads."
     )
     if not target.parent.exists():
@@ -2012,6 +2014,7 @@ def _compact_missing_artifact_handoff(
 
     target, expect_directory = missing_artifact
     label = target.name or str(target)
+    display_target = display_runtime_path(target)
     if expect_directory and not label.endswith("/"):
         label += "/"
     if expect_directory:
@@ -2024,15 +2027,15 @@ def _compact_missing_artifact_handoff(
             if target.is_dir():
                 return (
                     f"Next step: create the next output file under `{label}`. Prefer one "
-                    f"concrete `write` call inside `{target}` now."
+                    f"concrete `write` call inside `{display_target}` now."
                 )
             return (
                 f"Next step: create `{label}`. Prefer one concrete directory-creation step "
-                f"for `{target}` now."
+                f"for `{display_target}` now."
             )
         guidance = (
             f"Next step: create `{next_output_file.name}`. Prefer one "
-            f"`write(file_path=..., content=...)` call for `{next_output_file}` now."
+            f"`write(file_path=..., content=...)` call for `{display_runtime_path(next_output_file)}` now."
         )
         if not next_output_file.parent.exists():
             guidance += (
@@ -2043,7 +2046,7 @@ def _compact_missing_artifact_handoff(
 
     guidance = (
         f"Next step: create `{label}`. Prefer one "
-        f"`write(file_path=..., content=...)` call for `{target}` now."
+        f"`write(file_path=..., content=...)` call for `{display_target}` now."
     )
     if not target.parent.exists():
         guidance += (
