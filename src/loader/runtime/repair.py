@@ -328,7 +328,11 @@ class ResponseRepairer:
                 dod,
                 missing_artifact=preferred_missing_artifact,
             )
-            if next_pending:
+            resume_already_names_pending = bool(
+                next_pending
+                and any(f"`{next_pending}`" in line for line in progress_lines)
+            )
+            if next_pending and not resume_already_names_pending:
                 progress_lines.append(f"Next pending item: {next_pending}")
             todo_refresh = self._todo_refresh_retry_line(dod)
             if todo_refresh:
@@ -827,6 +831,11 @@ class ResponseRepairer:
             if outline_label:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
+                )
+            if todo_describes_aggregate_mutation(next_pending):
+                lines.insert(
+                    1,
+                    f"It is the next concrete output needed to continue `{next_pending}`.",
                 )
             if not has_confirmed_output_file_progress and not inferred_is_directory:
                 lines.append(

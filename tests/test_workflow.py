@@ -1019,6 +1019,55 @@ def test_infer_pending_todo_output_target_maps_broad_setup_to_planned_directory(
     assert target == chapters.resolve(strict=False)
 
 
+def test_infer_pending_todo_output_target_maps_aggregate_chapter_step_to_next_declared_file(
+    tmp_path: Path,
+) -> None:
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    nginx_root = tmp_path / "Loader" / "guides" / "nginx"
+    chapters = nginx_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = nginx_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation and Setup</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+    chapter_one.write_text("<h1>Introduction</h1>\n")
+
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{nginx_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+
+    target = infer_pending_todo_output_target(
+        dod,
+        "Create chapter files following the established pattern",
+        project_root=tmp_path,
+    )
+
+    assert target == chapter_two.resolve(strict=False)
+
+
 def test_preferred_pending_todo_item_keeps_setup_step_when_missing_file_parent_absent(
     tmp_path: Path,
 ) -> None:

@@ -13,6 +13,7 @@ from .clarify_grounding import ClarifyGrounding
 from .dod import (
     all_planned_artifacts_exist,
     collect_planned_artifact_targets,
+    infer_next_output_file,
     planned_artifact_target_satisfied,
     slugify,
 )
@@ -991,6 +992,34 @@ def infer_pending_todo_output_target(
                 project_root=root,
             ):
                 return directory
+
+    if todo_describes_aggregate_mutation(item) and not todo_describes_broad_setup_step(item):
+        aggregate_directories: list[Path] = []
+        seen_directories: set[str] = set()
+
+        for directory in planned_directories:
+            normalized = directory.expanduser().resolve(strict=False)
+            key = str(normalized)
+            if key in seen_directories:
+                continue
+            seen_directories.add(key)
+            aggregate_directories.append(normalized)
+
+        for target in planned_files:
+            parent = target.expanduser().resolve(strict=False).parent
+            key = str(parent)
+            if key in seen_directories:
+                continue
+            seen_directories.add(key)
+            aggregate_directories.append(parent)
+
+        for directory in aggregate_directories:
+            next_output_file, _ = infer_next_output_file(
+                target=directory,
+                project_root=root,
+            )
+            if next_output_file is not None and not next_output_file.exists():
+                return next_output_file.expanduser().resolve(strict=False)
 
     if not target_label:
         return None

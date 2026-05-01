@@ -1080,7 +1080,8 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
     assert decision.retry_message is not None
     assert "Next missing planned artifact: `01-introduction.html`" in decision.retry_message
     assert (
-        "Resume with this exact next step: create `01-introduction.html`."
+        "Resume with this exact next step: continue `Create chapter files with content and structure` "
+        "by creating `01-introduction.html`."
         in decision.retry_message
     )
     assert (
@@ -1092,10 +1093,84 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
         in decision.retry_message
     )
     assert "Remaining planned artifacts:" not in decision.retry_message
-    assert (
-        "continue `Create chapter files with content and structure` by creating `01-introduction.html`."
-        not in decision.retry_message
+    assert "Next pending item:" not in decision.retry_message
+
+
+def test_empty_response_retry_keeps_concrete_second_chapter_for_aggregate_chapter_step(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
     )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation and Setup</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+    chapter_one.write_text("<h1>Introduction</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+    dod.completed_items.extend(
+        [
+            "Develop the main index.html file with proper structure",
+            "Create first chapter file (01-introduction.html)",
+        ]
+    )
+    dod.pending_items.append("Create chapter files following the established pattern")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=1,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Next pending item:" not in decision.retry_message
+    assert (
+        "Resume with this exact next step: continue `Create chapter files following the established pattern` "
+        "by creating `02-installation.html`."
+        in decision.retry_message
+    )
+    assert (
+        "It is the next concrete output needed to continue `Create chapter files following the established pattern`."
+        in decision.retry_message
+    )
+    assert f"`{display_runtime_path(chapter_two)}`" in decision.retry_message
 
 
 def test_empty_response_retry_prefers_output_index_over_reference_index_with_same_name(
