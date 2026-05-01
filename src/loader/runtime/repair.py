@@ -265,6 +265,14 @@ class ResponseRepairer:
         retry_number: int,
         max_empty_retries: int,
     ) -> str:
+        if dod is not None:
+            minimal_retry_message = self._build_early_concrete_write_retry_message(
+                dod,
+                retry_number=retry_number,
+                max_empty_retries=max_empty_retries,
+            )
+            if minimal_retry_message is not None:
+                return minimal_retry_message
         if dod is not None and self._should_compact_empty_retry_message(dod):
             compact_lines: list[str] = []
             compact_lines.extend(self._compact_planned_artifact_lines(dod))
@@ -365,6 +373,81 @@ class ResponseRepairer:
                 *[f"- {line}" for line in progress_lines],
                 "",
                 "Respond directly to the task or call tools if needed. Do not return an empty response.",
+            ]
+        )
+
+    def _build_early_concrete_write_retry_message(
+        self,
+        dod: DefinitionOfDone,
+        *,
+        retry_number: int,
+        max_empty_retries: int,
+    ) -> str | None:
+        if retry_number < 3:
+            return None
+        if not self._has_confirmed_output_file_progress(dod):
+            return None
+        if self._has_confirmed_substantive_output_file_progress(dod):
+            return None
+
+        next_missing_artifact = self._preferred_resume_missing_artifact(dod)
+        next_pending = self._preferred_resume_pending_item(
+            dod,
+            missing_artifact=next_missing_artifact,
+        )
+        inferred_pending_target = (
+            self._infer_pending_item_output_target(dod, next_pending)
+            if next_pending
+            else None
+        )
+        concrete_target: Path | None = None
+        if inferred_pending_target is not None and not inferred_pending_target.exists():
+            concrete_target = inferred_pending_target.expanduser().resolve(strict=False)
+        elif next_missing_artifact is not None and not next_missing_artifact[1]:
+            concrete_target = next_missing_artifact[0].expanduser().resolve(strict=False)
+        if concrete_target is None or not concrete_target.suffix:
+            return None
+
+        outline_label = infer_output_outline_label(
+            dod,
+            concrete_target,
+            project_root=self.context.project_root,
+            todo_label=next_pending or "",
+        )
+        if next_pending and _todo_is_mutation_step(next_pending):
+            first_line = (
+                f"Continue `{next_pending}` by creating `{concrete_target.name}`."
+            )
+        else:
+            first_line = f"Create `{concrete_target.name}` now."
+
+        lines = [
+            first_line,
+            self._mutation_tool_scaffold(concrete_target, tool_name="write"),
+        ]
+        if outline_label:
+            lines.append(
+                f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
+            )
+        if _should_encourage_initial_version(
+            target=concrete_target,
+            has_confirmed_output_file_progress=True,
+            has_confirmed_substantive_output_file_progress=False,
+        ):
+            lines.append(
+                "Write a compact but real initial version of this file now, then refine or expand it in later edits."
+            )
+        lines.append(
+            "No narration, no TodoWrite, no rereads, and no empty response; emit the mutation tool call now."
+        )
+        return "\n".join(
+            [
+                "[EMPTY ASSISTANT RESPONSE]",
+                (
+                    "Your last response was empty "
+                    f"(retry {retry_number}/{max_empty_retries}). Emit the exact next mutation now."
+                ),
+                *[f"- {line}" for line in lines],
             ]
         )
 

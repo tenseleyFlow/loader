@@ -752,7 +752,9 @@ def test_empty_response_retry_budget_extends_further_after_first_output_file_exi
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert "retry 5/6" in decision.retry_message
-    assert "01-introduction.html" in decision.retry_message
+    assert "Continue `Create 01-introduction.html` by creating `01-introduction.html`." in decision.retry_message
+    assert 'Emit this tool shape now: `write(file_path="' in decision.retry_message
+    assert "No narration, no TodoWrite, no rereads, and no empty response" in decision.retry_message
 
 
 def test_empty_response_retry_uses_compact_prompt_after_substantial_progress(
@@ -1078,20 +1080,20 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
 
     assert decision.should_continue is True
     assert decision.retry_message is not None
-    assert "Next missing planned artifact: `01-introduction.html`" in decision.retry_message
+    assert "Next missing planned artifact:" not in decision.retry_message
     assert (
-        "Resume with this exact next step: continue `Create chapter files with content and structure` "
-        "by creating `01-introduction.html`."
+        "Continue `Create chapter files with content and structure` by creating `01-introduction.html`."
         in decision.retry_message
     )
     assert (
-        "It is the next concrete output needed to continue `Create chapter files with content and structure`."
+        'Emit this tool shape now: `write(file_path="'
         in decision.retry_message
     )
     assert (
         "Write a compact but real initial version of this file now, then refine or expand it in later edits."
         in decision.retry_message
     )
+    assert "No narration, no TodoWrite, no rereads, and no empty response" in decision.retry_message
     assert "Follow the same full-payload one-file-at-a-time write pattern" not in decision.retry_message
     assert "Remaining planned artifacts:" not in decision.retry_message
     assert "Next pending item:" not in decision.retry_message
