@@ -1165,7 +1165,12 @@ def _normalize_pending_output_label(value: str) -> str:
         "",
         text,
     )
-    text = re.sub(r"\bfor nginx guide\b", "", text)
+    text = re.sub(
+        r"\bfor\s+(?:the\s+)?[a-z0-9][a-z0-9\s_-]{0,60}?\s+"
+        r"(?:guide|tutorial|docs|documentation|manual|website|site)\b",
+        "",
+        text,
+    )
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return " ".join(text.split())
 

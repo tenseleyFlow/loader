@@ -1019,6 +1019,35 @@ def test_infer_pending_todo_output_target_maps_broad_setup_to_planned_directory(
     assert target == chapters.resolve(strict=False)
 
 
+def test_infer_pending_todo_output_target_ignores_topic_specific_guide_suffixes(
+    tmp_path: Path,
+) -> None:
+    dod = create_definition_of_done("Create a multi-file postgres guide.")
+    guide_root = tmp_path / "Loader" / "guides" / "postgres"
+    index_path = guide_root / "index.html"
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+    dod.implementation_plan = str(implementation_plan)
+
+    target = infer_pending_todo_output_target(
+        dod,
+        "Create index.html for the postgres administration guide",
+        project_root=tmp_path,
+    )
+
+    assert target == index_path.resolve(strict=False)
+
+
 def test_infer_pending_todo_output_target_maps_aggregate_chapter_step_to_next_declared_file(
     tmp_path: Path,
 ) -> None:
