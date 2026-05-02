@@ -442,10 +442,17 @@ class ResponseRepairer:
         )
         if reference_cues_line:
             lines.append(reference_cues_line)
+        html_scaffold_line = self._known_existing_html_scaffold_line(
+            concrete_target,
+            require_first_substantive_output=True,
+        )
+        if html_scaffold_line:
+            lines.append(html_scaffold_line)
         html_starter_line = self._known_html_starter_shape_line(
             concrete_target,
             require_first_substantive_output=True,
             retry_number=retry_number,
+            outline_label=outline_label,
         )
         if html_starter_line:
             lines.append(html_starter_line)
@@ -931,6 +938,15 @@ class ResponseRepairer:
             )
             if reference_cues_line:
                 lines.append(reference_cues_line)
+            html_scaffold_line = self._known_existing_html_scaffold_line(
+                concrete_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+            )
+            if html_scaffold_line:
+                lines.append(html_scaffold_line)
             html_starter_line = self._known_html_starter_shape_line(
                 concrete_target,
                 require_first_substantive_output=(
@@ -938,6 +954,7 @@ class ResponseRepairer:
                     and not has_confirmed_substantive_output_file_progress
                 ),
                 retry_number=retry_number,
+                outline_label=outline_label,
             )
             if html_starter_line:
                 lines.append(html_starter_line)
@@ -1025,6 +1042,15 @@ class ResponseRepairer:
             )
             if reference_cues_line:
                 lines.append(reference_cues_line)
+            html_scaffold_line = self._known_existing_html_scaffold_line(
+                inferred_pending_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+            )
+            if html_scaffold_line:
+                lines.append(html_scaffold_line)
             html_starter_line = self._known_html_starter_shape_line(
                 inferred_pending_target,
                 require_first_substantive_output=(
@@ -1032,6 +1058,7 @@ class ResponseRepairer:
                     and not has_confirmed_substantive_output_file_progress
                 ),
                 retry_number=retry_number,
+                outline_label=outline_label,
             )
             if html_starter_line:
                 lines.append(html_starter_line)
@@ -1154,6 +1181,15 @@ class ResponseRepairer:
                     )
                     if reference_cues_line:
                         lines.append(reference_cues_line)
+                    html_scaffold_line = self._known_existing_html_scaffold_line(
+                        next_output_file,
+                        require_first_substantive_output=(
+                            has_confirmed_output_file_progress
+                            and not has_confirmed_substantive_output_file_progress
+                        ),
+                    )
+                    if html_scaffold_line:
+                        lines.append(html_scaffold_line)
                     html_starter_line = self._known_html_starter_shape_line(
                         next_output_file,
                         require_first_substantive_output=(
@@ -1161,6 +1197,7 @@ class ResponseRepairer:
                             and not has_confirmed_substantive_output_file_progress
                         ),
                         retry_number=retry_number,
+                        outline_label=outline_label,
                     )
                     if html_starter_line:
                         lines.append(html_starter_line)
@@ -1479,22 +1516,52 @@ class ResponseRepairer:
             return None
         return f"Reference cues from `{display_runtime_path(reference)}`: {cues}"
 
+    def _known_existing_html_scaffold_line(
+        self,
+        target: Path,
+        *,
+        require_first_substantive_output: bool,
+    ) -> str | None:
+        if not require_first_substantive_output:
+            return None
+        if target.suffix.lower() not in {".html", ".htm"}:
+            return None
+        scaffold = self._best_known_root_html_scaffold(target)
+        if scaffold is None:
+            return None
+        return (
+            f"Reuse the existing `{display_runtime_path(scaffold)}` head/style/container "
+            "pattern for this chapter so the guide stays visually consistent; only adapt "
+            "the title, heading, and chapter body content."
+        )
+
     def _known_html_starter_shape_line(
         self,
         target: Path,
         *,
         require_first_substantive_output: bool,
         retry_number: int,
+        outline_label: str | None,
     ) -> str | None:
         if not require_first_substantive_output or retry_number < 1:
             return None
         if target.suffix.lower() not in {".html", ".htm"}:
             return None
+        label = outline_label.strip() if outline_label and outline_label.strip() else "this chapter"
         return (
-            "For this first HTML content file, a minimal acceptable starter is: "
-            "matching `<title>` and `<h1>`, one introductory paragraph, a few section "
-            "blocks, and a back link to `../index.html`."
+            f"If you get stuck, start with `<title>{label}</title>`, "
+            f"`<h1>{label}</h1>`, one introductory paragraph, a couple of `<h2>` "
+            "sections with short body text, and a back link to `../index.html`."
         )
+
+    def _best_known_root_html_scaffold(self, target: Path) -> Path | None:
+        normalized_target = target.expanduser().resolve(strict=False)
+        if normalized_target.suffix.lower() not in {".html", ".htm"}:
+            return None
+        candidate = normalized_target.parent.parent / "index.html"
+        if candidate == normalized_target or not candidate.exists():
+            return None
+        return candidate
 
     def _best_known_reference_path(self, target: Path) -> Path | None:
         normalized_target = target.expanduser().resolve(strict=False)

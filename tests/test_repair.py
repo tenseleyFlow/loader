@@ -1254,9 +1254,15 @@ def test_empty_response_retry_reuses_known_reference_structure_for_first_substan
         in decision.retry_message
     )
     assert (
-        "For this first HTML content file, a minimal acceptable starter is: "
-        "matching `<title>` and `<h1>`, one introductory paragraph, a few section "
-        "blocks, and a back link to `../index.html`."
+        f"Reuse the existing `{display_runtime_path(index_path)}` head/style/container pattern "
+        "for this chapter so the guide stays visually consistent; only adapt the title, heading, "
+        "and chapter body content."
+        in decision.retry_message
+    )
+    assert (
+        "If you get stuck, start with `<title>Chapter 1: Introduction to Nginx</title>`, "
+        "`<h1>Chapter 1: Introduction to Nginx</h1>`, one introductory paragraph, a couple "
+        "of `<h2>` sections with short body text, and a back link to `../index.html`."
         in decision.retry_message
     )
 
@@ -1343,9 +1349,15 @@ def test_compact_first_substantive_retry_reuses_known_reference_structure(
         in decision.retry_message
     )
     assert (
-        "For this first HTML content file, a minimal acceptable starter is: "
-        "matching `<title>` and `<h1>`, one introductory paragraph, a few section "
-        "blocks, and a back link to `../index.html`."
+        f"Reuse the existing `{display_runtime_path(index_path)}` head/style/container pattern "
+        "for this chapter so the guide stays visually consistent; only adapt the title, heading, "
+        "and chapter body content."
+        in decision.retry_message
+    )
+    assert (
+        "If you get stuck, start with `<title>Chapter 1: Introduction to Nginx</title>`, "
+        "`<h1>Chapter 1: Introduction to Nginx</h1>`, one introductory paragraph, a couple "
+        "of `<h2>` sections with short body text, and a back link to `../index.html`."
         in decision.retry_message
     )
 
