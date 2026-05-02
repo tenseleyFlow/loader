@@ -783,13 +783,13 @@ class ToolBatchRunner:
         )
         if closest_targets:
             guidance += (
-                " Replace the invented hrefs with the closest declared target(s): "
+                " Remove the invented hrefs or replace them with the closest declared target(s): "
                 + ", ".join(f"`{candidate}`" for candidate in closest_targets[:3])
                 + "."
             )
         elif declared_targets:
             guidance += (
-                " Keep local links within the declared target set, for example: "
+                " Remove the invented hrefs or keep local links within the declared target set, for example: "
                 + ", ".join(f"`{candidate}`" for candidate in declared_targets[:3])
                 + "."
             )

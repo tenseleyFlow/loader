@@ -602,6 +602,39 @@ def test_pre_action_validator_blocks_chapter_write_with_existing_but_undeclared_
     assert "04-advanced-configuration.html" in result.suggestion
 
 
+def test_pre_action_validator_does_not_suggest_unrelated_declared_html_target(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    (guide / "index.html").write_text(
+        "\n".join(
+            [
+                '<a href="chapters/introduction.html">Introduction</a>',
+                '<a href="chapters/installation.html">Installation</a>',
+                '<a href="chapters/configuration.html">Configuration</a>',
+                '<a href="chapters/basic-usage.html">Basic Usage</a>',
+                '<a href="chapters/advanced-topics.html">Advanced Topics</a>',
+                "",
+            ]
+        )
+    )
+
+    result = validator.validate(
+        "write",
+        {
+            "file_path": str(chapters / "introduction.html"),
+            "content": '<a href="troubleshooting.html">Troubleshooting</a>\n',
+        },
+    )
+
+    assert result.valid is False
+    assert "troubleshooting.html" in result.suggestion
+    assert "Closest declared local targets include:" not in result.suggestion
+
+
 def test_pre_action_validator_allows_chapter_write_with_root_declared_sibling_and_index_link(
     tmp_path: Path,
 ) -> None:

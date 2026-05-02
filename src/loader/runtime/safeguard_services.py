@@ -40,6 +40,11 @@ TEXT_REWRITE_SUFFIXES = frozenset(
         ".yml",
     }
 )
+
+
+def _html_target_tokens(target: str) -> set[str]:
+    stem = Path(target).stem.lower()
+    return {token for token in re.split(r"[^a-z0-9]+", stem) if token}
 TEXT_REWRITE_FILENAMES = frozenset(
     {
         "dockerfile",
@@ -1065,13 +1070,13 @@ class PreActionValidator:
         if authoritative_root_graph:
             suggestion = (
                 "Keep non-root HTML pages within the root-declared local-link set and "
-                f"avoid introducing new sibling targets that the guide root does not declare, "
-                f"for example fix: {preview}"
+                "avoid introducing new sibling targets that the guide root does not declare; "
+                f"remove or replace undeclared hrefs like: {preview}"
             )
         else:
             suggestion = (
                 "Keep non-root HTML pages within the current declared local-link set and "
-                f"avoid introducing new missing sibling targets, for example fix: {preview}"
+                f"avoid introducing new missing sibling targets; remove or replace undeclared hrefs like: {preview}"
             )
         if declared_preview:
             suggestion += f". Already-declared local targets include: {declared_preview}"
@@ -1245,6 +1250,7 @@ class PreActionValidator:
             chapter_match = re.match(r"(\d+)[-_]", href_name)
             preferred = available
             preferred_names = available_names
+            same_prefix_match = False
             if chapter_match is not None:
                 prefix = f"{chapter_match.group(1)}-"
                 filtered = [
@@ -1255,6 +1261,7 @@ class PreActionValidator:
                 if filtered:
                     preferred = filtered
                     preferred_names = [Path(candidate).name for candidate in filtered]
+                    same_prefix_match = True
 
             matched_names = get_close_matches(
                 href_name,
@@ -1273,11 +1280,15 @@ class PreActionValidator:
                 ),
                 None,
             )
+            if candidate is not None and not same_prefix_match:
+                href_tokens = _html_target_tokens(href)
+                candidate_tokens = _html_target_tokens(candidate)
+                if not href_tokens.intersection(candidate_tokens):
+                    continue
             if candidate is not None and candidate not in suggestions:
                 suggestions.append(candidate)
 
         return suggestions
-
     def _validate_path(self, file_path: str) -> ValidationResult:
         if '\x00' in file_path:
             return ValidationResult(
