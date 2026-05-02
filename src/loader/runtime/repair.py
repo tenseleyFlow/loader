@@ -420,6 +420,7 @@ class ResponseRepairer:
             )
         else:
             first_line = f"Create `{concrete_target.name}` now."
+        compact_retry = retry_number >= 4
 
         lines = [
             first_line,
@@ -429,25 +430,25 @@ class ResponseRepairer:
             lines.append(
                 f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
             )
-        reference_line = self._known_reference_structure_line(
-            concrete_target,
-            require_first_substantive_output=True,
-        )
-        if reference_line:
-            lines.append(reference_line)
-        reference_cues_line = self._known_reference_cues_line(
-            concrete_target,
-            require_first_substantive_output=True,
-            retry_number=retry_number,
-        )
-        if reference_cues_line:
-            lines.append(reference_cues_line)
         html_scaffold_line = self._known_existing_html_scaffold_line(
             concrete_target,
             require_first_substantive_output=True,
         )
         if html_scaffold_line:
             lines.append(html_scaffold_line)
+        reference_line = self._known_reference_structure_line(
+            concrete_target,
+            require_first_substantive_output=True,
+        )
+        if reference_line and not compact_retry:
+            lines.append(reference_line)
+        reference_cues_line = self._known_reference_cues_line(
+            concrete_target,
+            require_first_substantive_output=True,
+            retry_number=retry_number,
+        )
+        if reference_cues_line and not compact_retry:
+            lines.append(reference_cues_line)
         html_starter_line = self._known_html_starter_shape_line(
             concrete_target,
             require_first_substantive_output=True,
@@ -456,10 +457,13 @@ class ResponseRepairer:
         )
         if html_starter_line:
             lines.append(html_starter_line)
-        if _should_encourage_initial_version(
-            target=concrete_target,
-            has_confirmed_output_file_progress=True,
-            has_confirmed_substantive_output_file_progress=False,
+        if (
+            not compact_retry
+            and _should_encourage_initial_version(
+                target=concrete_target,
+                has_confirmed_output_file_progress=True,
+                has_confirmed_substantive_output_file_progress=False,
+            )
         ):
             lines.append(
                 "Write a compact but real initial version of this file now, then refine or expand it in later edits."
