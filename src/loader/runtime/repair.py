@@ -1486,7 +1486,7 @@ class ResponseRepairer:
         require_first_substantive_output: bool,
         retry_number: int,
     ) -> str | None:
-        if not require_first_substantive_output or retry_number < 2:
+        if not require_first_substantive_output or retry_number < 1:
             return None
         if target.suffix.lower() not in {".html", ".htm"}:
             return None

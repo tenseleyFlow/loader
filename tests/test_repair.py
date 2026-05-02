@@ -1253,6 +1253,12 @@ def test_empty_response_retry_reuses_known_reference_structure_for_first_substan
         "as the starting pattern for this new file, then adapt the content to the current target."
         in decision.retry_message
     )
+    assert (
+        "For this first HTML content file, a minimal acceptable starter is: "
+        "matching `<title>` and `<h1>`, one introductory paragraph, a few section "
+        "blocks, and a back link to `../index.html`."
+        in decision.retry_message
+    )
 
 
 def test_compact_first_substantive_retry_reuses_known_reference_structure(
