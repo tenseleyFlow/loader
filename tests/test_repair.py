@@ -1336,6 +1336,12 @@ def test_compact_first_substantive_retry_reuses_known_reference_structure(
         "<h1>Chapter 1: Introduction to Fortran</h1>"
         in decision.retry_message
     )
+    assert (
+        "For this first HTML content file, a minimal acceptable starter is: "
+        "matching `<title>` and `<h1>`, one introductory paragraph, a few section "
+        "blocks, and a back link to `../index.html`."
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_prefers_output_index_over_reference_index_with_same_name(

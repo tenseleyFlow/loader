@@ -442,6 +442,13 @@ class ResponseRepairer:
         )
         if reference_cues_line:
             lines.append(reference_cues_line)
+        html_starter_line = self._known_html_starter_shape_line(
+            concrete_target,
+            require_first_substantive_output=True,
+            retry_number=retry_number,
+        )
+        if html_starter_line:
+            lines.append(html_starter_line)
         if _should_encourage_initial_version(
             target=concrete_target,
             has_confirmed_output_file_progress=True,
@@ -924,6 +931,16 @@ class ResponseRepairer:
             )
             if reference_cues_line:
                 lines.append(reference_cues_line)
+            html_starter_line = self._known_html_starter_shape_line(
+                concrete_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+                retry_number=retry_number,
+            )
+            if html_starter_line:
+                lines.append(html_starter_line)
             if _should_encourage_initial_version(
                 target=concrete_target,
                 has_confirmed_output_file_progress=has_confirmed_output_file_progress,
@@ -1008,6 +1025,16 @@ class ResponseRepairer:
             )
             if reference_cues_line:
                 lines.append(reference_cues_line)
+            html_starter_line = self._known_html_starter_shape_line(
+                inferred_pending_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+                retry_number=retry_number,
+            )
+            if html_starter_line:
+                lines.append(html_starter_line)
             if todo_describes_aggregate_mutation(next_pending):
                 lines.insert(
                     1,
@@ -1127,6 +1154,16 @@ class ResponseRepairer:
                     )
                     if reference_cues_line:
                         lines.append(reference_cues_line)
+                    html_starter_line = self._known_html_starter_shape_line(
+                        next_output_file,
+                        require_first_substantive_output=(
+                            has_confirmed_output_file_progress
+                            and not has_confirmed_substantive_output_file_progress
+                        ),
+                        retry_number=retry_number,
+                    )
+                    if html_starter_line:
+                        lines.append(html_starter_line)
                     if _should_encourage_initial_version(
                         target=next_output_file,
                         has_confirmed_output_file_progress=has_confirmed_output_file_progress,
@@ -1441,6 +1478,23 @@ class ResponseRepairer:
         if not cues:
             return None
         return f"Reference cues from `{display_runtime_path(reference)}`: {cues}"
+
+    def _known_html_starter_shape_line(
+        self,
+        target: Path,
+        *,
+        require_first_substantive_output: bool,
+        retry_number: int,
+    ) -> str | None:
+        if not require_first_substantive_output or retry_number < 2:
+            return None
+        if target.suffix.lower() not in {".html", ".htm"}:
+            return None
+        return (
+            "For this first HTML content file, a minimal acceptable starter is: "
+            "matching `<title>` and `<h1>`, one introductory paragraph, a few section "
+            "blocks, and a back link to `../index.html`."
+        )
 
     def _best_known_reference_path(self, target: Path) -> Path | None:
         normalized_target = target.expanduser().resolve(strict=False)
