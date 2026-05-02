@@ -303,6 +303,10 @@ class ToolBatchRunner:
                     outcome.event_content,
                     dod=dod,
                 )
+                self._queue_blocked_html_declared_file_creation_nudge(
+                    tool_call,
+                    outcome.event_content,
+                )
                 self._queue_blocked_html_declared_target_nudge(
                     tool_call,
                     outcome.event_content,
@@ -795,6 +799,42 @@ class ToolBatchRunner:
             )
         guidance += (
             " Resend one concrete mutation for that same file now instead of rereading the reference guide."
+        )
+        self.context.queue_steering_message(guidance)
+
+    def _queue_blocked_html_declared_file_creation_nudge(
+        self,
+        tool_call: ToolCall,
+        event_content: str,
+    ) -> None:
+        """Steer blocked undeclared HTML file creation back through the root guide."""
+
+        if tool_call.name not in {"write", "edit", "patch"}:
+            return
+        if "HTML file creation falls outside the current declared artifact set" not in event_content:
+            return
+
+        target = str(
+            tool_call.arguments.get("file_path")
+            or tool_call.arguments.get("path")
+            or ""
+        ).strip()
+        if not target:
+            return
+
+        target_path = Path(target).expanduser().resolve(strict=False)
+        root_index = (target_path.parent.parent / "index.html").resolve(strict=False)
+        relative_target = None
+        try:
+            relative_target = target_path.relative_to(root_index.parent).as_posix()
+        except ValueError:
+            relative_target = target_path.name
+
+        guidance = (
+            "That new HTML file is outside the current root-declared artifact set. "
+            f"Before creating `{relative_target}`, update `{root_index}` so the guide root "
+            "explicitly links to that page, then retry the file creation. "
+            "Stay on the active guide files; do not reopen the earlier reference guide first."
         )
         self.context.queue_steering_message(guidance)
 

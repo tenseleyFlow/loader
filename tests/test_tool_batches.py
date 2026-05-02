@@ -5621,6 +5621,59 @@ def test_tool_batch_runner_blocked_html_declared_target_nudge_without_close_matc
     assert "closest declared target(s)" not in queued[0]
 
 
+def test_tool_batch_runner_blocked_html_declared_file_creation_nudge_points_to_root(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    target = temp_dir / "guide" / "chapters" / "troubleshooting.html"
+    runner._queue_blocked_html_declared_file_creation_nudge(
+        ToolCall(
+            id="write-troubleshooting",
+            name="write",
+            arguments={"file_path": str(target)},
+        ),
+        (
+            "[Blocked - HTML file creation falls outside the current declared artifact set] "
+            "Suggestion: Keep new non-root HTML files within the root-declared artifact set and "
+            f"update the guide root `{(temp_dir / 'guide' / 'index.html').resolve(strict=False)}` "
+            "before creating undeclared sibling pages, for example: chapters/troubleshooting.html. "
+            "Already-declared local targets include: chapters/advanced-topics.html, "
+            "chapters/basic-usage.html, chapters/configuration.html"
+        ),
+    )
+
+    assert queued
+    assert "update" in queued[0].lower()
+    assert str((temp_dir / "guide" / "index.html").resolve(strict=False)) in queued[0]
+    assert "`chapters/troubleshooting.html`" in queued[0]
+    assert "retry the file creation" in queued[0]
+
+
 @pytest.mark.asyncio
 async def test_tool_batch_runner_blocked_empty_file_path_nudges_concrete_next_artifact(
     temp_dir: Path,

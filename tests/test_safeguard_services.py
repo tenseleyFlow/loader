@@ -488,6 +488,7 @@ def test_pre_action_validator_blocks_undeclared_chapter_file_creation_after_root
     assert result.valid is False
     assert result.reason == "HTML file creation falls outside the current declared artifact set"
     assert "09-monitoring.html" in result.suggestion
+    assert str((guide / "index.html").resolve(strict=False)) in result.suggestion
 
 
 def test_pre_action_validator_allows_declared_missing_chapter_file_creation(

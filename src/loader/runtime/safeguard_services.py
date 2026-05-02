@@ -920,9 +920,11 @@ class PreActionValidator:
 
         declared_preview = ", ".join(sorted(declared_targets)[:3])
         if authoritative_root_graph:
+            root_index = (root / "index.html").resolve(strict=False)
             suggestion = (
                 "Keep new non-root HTML files within the root-declared artifact set and "
-                f"update the guide root before creating undeclared sibling pages, for example: {current_relative}"
+                f"update the guide root `{root_index}` before creating undeclared sibling pages, "
+                f"for example: {current_relative}"
             )
         else:
             suggestion = (
