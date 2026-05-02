@@ -171,6 +171,79 @@ class TurnCompletionController:
             detail="Checking completion policy",
             reason_code="completion_gate",
         )
+        progress_messages = list(getattr(self.context.session, "messages", []) or [])
+        progress_intent = _build_in_progress_continuation(
+            content=content,
+            dod=dod,
+            project_root=self.context.project_root,
+            messages=progress_messages,
+        )
+        if progress_intent is not None:
+            assistant_message = Message(role=Role.ASSISTANT, content=response_content)
+            self.context.session.append(assistant_message)
+            summary.assistant_messages.append(assistant_message)
+            if (
+                progress_intent.target is not None
+                and continuation_count == 0
+                and _confirmed_output_file_count(
+                    dod,
+                    project_root=self.context.project_root,
+                )
+                == 0
+                and not _recent_concrete_target_prompt(
+                    progress_messages,
+                    target=progress_intent.target,
+                )
+            ):
+                self._append_completion_trace_entry(
+                    summary=summary,
+                    stage="continuation_check",
+                    outcome="continue",
+                    decision_code="in_progress_transition_continue",
+                    decision_summary=(
+                        "continued to let the assistant finish the concrete next "
+                        "planned step without interrupting it yet"
+                    ),
+                )
+                self._record_completion_decision(
+                    summary=summary,
+                    decision_code="in_progress_transition_continue",
+                    decision_summary=(
+                        "continued to let the assistant finish the concrete next "
+                        "planned step without interrupting it yet"
+                    ),
+                )
+                return TurnCompletionDecision(
+                    action=TurnCompletionAction.CONTINUE,
+                    continuation_count=continuation_count + 1,
+                )
+
+            self.context.session.append(
+                Message(role=Role.USER, content=progress_intent.prompt)
+            )
+            self._append_completion_trace_entry(
+                summary=summary,
+                stage="continuation_check",
+                outcome="continue",
+                decision_code="in_progress_transition_continue",
+                decision_summary=(
+                    "continued because the assistant described the next planned step "
+                    "without executing it yet"
+                ),
+            )
+            self._record_completion_decision(
+                summary=summary,
+                decision_code="in_progress_transition_continue",
+                decision_summary=(
+                    "continued because the assistant described the next planned step "
+                    "without executing it yet"
+                ),
+            )
+            return TurnCompletionDecision(
+                action=TurnCompletionAction.CONTINUE,
+                continuation_count=continuation_count + 1,
+            )
+
         text_loop_decision = await self.completion_policy.maybe_stop_for_text_loop(
             content=content,
             emit=emit,
@@ -268,79 +341,6 @@ class TurnCompletionController:
                     finalize_reason_code=continuation_decision.decision_code,
                     finalize_reason_summary=continuation_decision.decision_summary,
                 )
-
-        progress_messages = list(getattr(self.context.session, "messages", []) or [])
-        progress_intent = _build_in_progress_continuation(
-            content=content,
-            dod=dod,
-            project_root=self.context.project_root,
-            messages=progress_messages,
-        )
-        if progress_intent is not None:
-            assistant_message = Message(role=Role.ASSISTANT, content=response_content)
-            self.context.session.append(assistant_message)
-            summary.assistant_messages.append(assistant_message)
-            if (
-                progress_intent.target is not None
-                and continuation_count == 0
-                and _confirmed_output_file_count(
-                    dod,
-                    project_root=self.context.project_root,
-                )
-                == 0
-                and not _recent_concrete_target_prompt(
-                    progress_messages,
-                    target=progress_intent.target,
-                )
-            ):
-                self._append_completion_trace_entry(
-                    summary=summary,
-                    stage="continuation_check",
-                    outcome="continue",
-                    decision_code="in_progress_transition_continue",
-                    decision_summary=(
-                        "continued to let the assistant finish the concrete next "
-                        "planned step without interrupting it yet"
-                    ),
-                )
-                self._record_completion_decision(
-                    summary=summary,
-                    decision_code="in_progress_transition_continue",
-                    decision_summary=(
-                        "continued to let the assistant finish the concrete next "
-                        "planned step without interrupting it yet"
-                    ),
-                )
-                return TurnCompletionDecision(
-                    action=TurnCompletionAction.CONTINUE,
-                    continuation_count=continuation_count + 1,
-                )
-
-            self.context.session.append(
-                Message(role=Role.USER, content=progress_intent.prompt)
-            )
-            self._append_completion_trace_entry(
-                summary=summary,
-                stage="continuation_check",
-                outcome="continue",
-                decision_code="in_progress_transition_continue",
-                decision_summary=(
-                    "continued because the assistant described the next planned step "
-                    "without executing it yet"
-                ),
-            )
-            self._record_completion_decision(
-                summary=summary,
-                decision_code="in_progress_transition_continue",
-                decision_summary=(
-                    "continued because the assistant described the next planned step "
-                    "without executing it yet"
-                ),
-            )
-            return TurnCompletionDecision(
-                action=TurnCompletionAction.CONTINUE,
-                continuation_count=continuation_count + 1,
-            )
 
         final_response = self.completion_policy.finalize_response_text(
             content=content,
