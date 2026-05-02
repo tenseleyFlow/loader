@@ -1331,6 +1331,11 @@ def test_compact_first_substantive_retry_reuses_known_reference_structure(
         "as the starting pattern for this new file, then adapt the content to the current target."
         in decision.retry_message
     )
+    assert (
+        f"Reference cues from `{display_runtime_path(reference_chapter)}`: "
+        "<h1>Chapter 1: Introduction to Fortran</h1>"
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_prefers_output_index_over_reference_index_with_same_name(

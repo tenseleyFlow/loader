@@ -435,6 +435,13 @@ class ResponseRepairer:
         )
         if reference_line:
             lines.append(reference_line)
+        reference_cues_line = self._known_reference_cues_line(
+            concrete_target,
+            require_first_substantive_output=True,
+            retry_number=retry_number,
+        )
+        if reference_cues_line:
+            lines.append(reference_cues_line)
         if _should_encourage_initial_version(
             target=concrete_target,
             has_confirmed_output_file_progress=True,
@@ -907,6 +914,16 @@ class ResponseRepairer:
             )
             if reference_line:
                 lines.append(reference_line)
+            reference_cues_line = self._known_reference_cues_line(
+                concrete_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+                retry_number=retry_number,
+            )
+            if reference_cues_line:
+                lines.append(reference_cues_line)
             if _should_encourage_initial_version(
                 target=concrete_target,
                 has_confirmed_output_file_progress=has_confirmed_output_file_progress,
@@ -981,6 +998,16 @@ class ResponseRepairer:
             )
             if reference_line:
                 lines.append(reference_line)
+            reference_cues_line = self._known_reference_cues_line(
+                inferred_pending_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+                retry_number=retry_number,
+            )
+            if reference_cues_line:
+                lines.append(reference_cues_line)
             if todo_describes_aggregate_mutation(next_pending):
                 lines.insert(
                     1,
@@ -1090,6 +1117,16 @@ class ResponseRepairer:
                     )
                     if reference_line:
                         lines.append(reference_line)
+                    reference_cues_line = self._known_reference_cues_line(
+                        next_output_file,
+                        require_first_substantive_output=(
+                            has_confirmed_output_file_progress
+                            and not has_confirmed_substantive_output_file_progress
+                        ),
+                        retry_number=retry_number,
+                    )
+                    if reference_cues_line:
+                        lines.append(reference_cues_line)
                     if _should_encourage_initial_version(
                         target=next_output_file,
                         has_confirmed_output_file_progress=has_confirmed_output_file_progress,
@@ -1388,6 +1425,23 @@ class ResponseRepairer:
             "to the current target."
         )
 
+    def _known_reference_cues_line(
+        self,
+        target: Path,
+        *,
+        require_first_substantive_output: bool,
+        retry_number: int,
+    ) -> str | None:
+        if not require_first_substantive_output or retry_number < 2:
+            return None
+        reference = self._best_known_reference_path(target)
+        if reference is None:
+            return None
+        cues = self._reference_content_cues(reference)
+        if not cues:
+            return None
+        return f"Reference cues from `{display_runtime_path(reference)}`: {cues}"
+
     def _best_known_reference_path(self, target: Path) -> Path | None:
         normalized_target = target.expanduser().resolve(strict=False)
         target_tokens = {
@@ -1432,6 +1486,42 @@ class ResponseRepairer:
             return None
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return candidates[0][2]
+
+    def _reference_content_cues(self, reference: Path) -> str | None:
+        try:
+            content = reference.read_text()
+        except OSError:
+            return None
+
+        suffix = reference.suffix.lower()
+        cues: list[str] = []
+        if suffix in {".html", ".htm"}:
+            for raw_line in content.splitlines():
+                stripped = " ".join(raw_line.strip().split())
+                if not stripped:
+                    continue
+                lowered = stripped.lower()
+                if not any(
+                    token in lowered
+                    for token in ("<title", "<h1", "<h2", "<p", "<li", "<a ")
+                ):
+                    continue
+                cues.append(_truncate_reference_cue(stripped))
+                if len(cues) >= 3:
+                    break
+        if not cues:
+            for raw_line in content.splitlines():
+                stripped = " ".join(raw_line.strip().split())
+                if not stripped:
+                    continue
+                if sum(ch.isalpha() for ch in stripped) < 6:
+                    continue
+                cues.append(_truncate_reference_cue(stripped))
+                if len(cues) >= 3:
+                    break
+        if not cues:
+            return None
+        return " | ".join(cues)
 
     @staticmethod
     def _mutation_tool_scaffold(path: Path, *, tool_name: str) -> str:
@@ -1483,3 +1573,9 @@ def _should_encourage_initial_version(
 def _leading_numeric_prefix(stem: str) -> str:
     match = re.match(r"^(\d+)", stem)
     return match.group(1) if match else ""
+
+
+def _truncate_reference_cue(value: str, *, max_chars: int = 96) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3].rstrip() + "..."
