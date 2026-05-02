@@ -429,6 +429,12 @@ class ResponseRepairer:
             lines.append(
                 f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
             )
+        reference_line = self._known_reference_structure_line(
+            concrete_target,
+            require_first_substantive_output=True,
+        )
+        if reference_line:
+            lines.append(reference_line)
         if _should_encourage_initial_version(
             target=concrete_target,
             has_confirmed_output_file_progress=True,
@@ -892,6 +898,15 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
+            reference_line = self._known_reference_structure_line(
+                concrete_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+            )
+            if reference_line:
+                lines.append(reference_line)
             if _should_encourage_initial_version(
                 target=concrete_target,
                 has_confirmed_output_file_progress=has_confirmed_output_file_progress,
@@ -957,6 +972,15 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
+            reference_line = self._known_reference_structure_line(
+                inferred_pending_target,
+                require_first_substantive_output=(
+                    has_confirmed_output_file_progress
+                    and not has_confirmed_substantive_output_file_progress
+                ),
+            )
+            if reference_line:
+                lines.append(reference_line)
             if todo_describes_aggregate_mutation(next_pending):
                 lines.insert(
                     1,
@@ -1057,6 +1081,15 @@ class ResponseRepairer:
                         lines.append(
                             f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                         )
+                    reference_line = self._known_reference_structure_line(
+                        next_output_file,
+                        require_first_substantive_output=(
+                            has_confirmed_output_file_progress
+                            and not has_confirmed_substantive_output_file_progress
+                        ),
+                    )
+                    if reference_line:
+                        lines.append(reference_line)
                     if _should_encourage_initial_version(
                         target=next_output_file,
                         has_confirmed_output_file_progress=has_confirmed_output_file_progress,
@@ -1338,6 +1371,68 @@ class ResponseRepairer:
                 return first_line or None
         return None
 
+    def _known_reference_structure_line(
+        self,
+        target: Path,
+        *,
+        require_first_substantive_output: bool,
+    ) -> str | None:
+        if not require_first_substantive_output:
+            return None
+        reference = self._best_known_reference_path(target)
+        if reference is None:
+            return None
+        return (
+            f"You already read `{display_runtime_path(reference)}`; reuse its overall "
+            "structure as the starting pattern for this new file, then adapt the content "
+            "to the current target."
+        )
+
+    def _best_known_reference_path(self, target: Path) -> Path | None:
+        normalized_target = target.expanduser().resolve(strict=False)
+        target_tokens = {
+            token
+            for token in re.split(r"[^a-z0-9]+", normalized_target.stem.lower())
+            if token
+        }
+        target_number = _leading_numeric_prefix(normalized_target.stem)
+        messages = list(getattr(self.context.session, "messages", []) or [])
+        candidates: list[tuple[int, str, Path]] = []
+
+        for message in messages:
+            for tool_call in getattr(message, "tool_calls", []) or []:
+                if getattr(tool_call, "name", "") != "read":
+                    continue
+                raw_path = str(tool_call.arguments.get("file_path") or "").strip()
+                if not raw_path:
+                    continue
+                candidate = Path(raw_path).expanduser().resolve(strict=False)
+                if candidate == normalized_target or not candidate.suffix:
+                    continue
+                if candidate.suffix.lower() != normalized_target.suffix.lower():
+                    continue
+                score = 0
+                if candidate.name.lower() == normalized_target.name.lower():
+                    score += 8
+                if candidate.parent.name.lower() == normalized_target.parent.name.lower():
+                    score += 2
+                if target_number and _leading_numeric_prefix(candidate.stem) == target_number:
+                    score += 3
+                candidate_tokens = {
+                    token
+                    for token in re.split(r"[^a-z0-9]+", candidate.stem.lower())
+                    if token
+                }
+                score += min(3, len(target_tokens & candidate_tokens))
+                if score <= 0:
+                    continue
+                candidates.append((score, str(candidate), candidate))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
     @staticmethod
     def _mutation_tool_scaffold(path: Path, *, tool_name: str) -> str:
         normalized_path = json.dumps(display_runtime_path(path))
@@ -1383,3 +1478,8 @@ def _should_encourage_initial_version(
     if _is_summary_artifact_path(target):
         return False
     return not has_confirmed_substantive_output_file_progress
+
+
+def _leading_numeric_prefix(stem: str) -> str:
+    match = re.match(r"^(\d+)", stem)
+    return match.group(1) if match else ""
