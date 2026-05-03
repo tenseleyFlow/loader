@@ -45,6 +45,18 @@ TEXT_REWRITE_SUFFIXES = frozenset(
 def _html_target_tokens(target: str) -> set[str]:
     stem = Path(target).stem.lower()
     return {token for token in re.split(r"[^a-z0-9]+", stem) if token}
+
+
+def _ordered_html_target_number(target: str) -> int | None:
+    match = re.match(r"(\d+)[-_]", Path(target).name)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 TEXT_REWRITE_FILENAMES = frozenset(
     {
         "dockerfile",
@@ -1075,8 +1087,26 @@ class PreActionValidator:
         missing_after = self._collect_missing_local_html_targets(normalized, content)
         if not missing_after:
             return False
-        if len(missing_after) > len(self._collect_existing_missing_local_html_targets(normalized)):
-            return False
+        existing_missing = self._collect_existing_missing_local_html_targets(normalized)
+        if len(missing_after) > len(existing_missing):
+            declared_targets, authoritative_root_graph = self._collect_declared_html_targets(
+                root,
+                normalized,
+            )
+            if not authoritative_root_graph:
+                return False
+            newly_missing = [
+                href
+                for href in missing_after
+                if href not in existing_missing
+            ]
+            if not newly_missing:
+                return False
+            if any(
+                not self._is_next_ordered_html_target(root, href, declared_targets)
+                for href in newly_missing
+            ):
+                return False
 
         for href in missing:
             resolved = (normalized.parent / href).resolve(strict=False)
@@ -1084,6 +1114,37 @@ class PreActionValidator:
             if relative is None:
                 return False
         return True
+
+    def _is_next_ordered_html_target(
+        self,
+        root: Path,
+        href: str,
+        declared_targets: set[str],
+    ) -> bool:
+        relative_href = self._relative_html_target(root, (root / href).resolve(strict=False))
+        if relative_href is None:
+            return False
+
+        expected_number = _ordered_html_target_number(relative_href)
+        if expected_number is None:
+            return False
+
+        parent = Path(relative_href).parent
+        sibling_numbers = sorted(
+            number
+            for target in declared_targets
+            if Path(target).parent == parent
+            if (number := _ordered_html_target_number(target)) is not None
+        )
+        if not sibling_numbers:
+            return False
+
+        min_number = sibling_numbers[0]
+        max_number = sibling_numbers[-1]
+        if expected_number != max_number + 1:
+            return False
+
+        return sibling_numbers == list(range(min_number, max_number + 1))
 
     def _collect_existing_missing_local_html_targets(self, file_path: Path) -> list[str]:
         try:

@@ -441,6 +441,102 @@ def test_pre_action_validator_allows_incomplete_root_index_to_reshape_missing_ch
     assert result.valid is True
 
 
+def test_pre_action_validator_allows_root_index_to_add_next_ordered_missing_sibling(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    index = guide / "index.html"
+    index.write_text(
+        "\n".join(
+            [
+                '<li><a href="chapters/01-introduction.html">Chapter 1: Introduction</a></li>',
+                '<li><a href="chapters/02-installation.html">Chapter 2: Installation</a></li>',
+                '<li><a href="chapters/03-configuration.html">Chapter 3: Configuration</a></li>',
+                '<li><a href="chapters/04-usage.html">Chapter 4: Usage</a></li>',
+                '<li><a href="chapters/05-advanced-topics.html">Chapter 5: Advanced Topics</a></li>',
+                "",
+            ]
+        )
+    )
+    for name in [
+        "01-introduction.html",
+        "02-installation.html",
+        "03-configuration.html",
+        "04-usage.html",
+        "05-advanced-topics.html",
+    ]:
+        (chapters / name).write_text("<html></html>\n")
+
+    result = validator.validate(
+        "edit",
+        {
+            "file_path": str(index),
+            "old_string": (
+                '<li><a href="chapters/05-advanced-topics.html">'
+                "Chapter 5: Advanced Topics</a></li>"
+            ),
+            "new_string": (
+                '<li><a href="chapters/05-advanced-topics.html">'
+                "Chapter 5: Advanced Topics</a></li>\n"
+                '<li><a href="chapters/06-troubleshooting.html">'
+                "Chapter 6: Troubleshooting</a></li>"
+            ),
+        },
+    )
+
+    assert result.valid is True
+
+
+def test_pre_action_validator_blocks_root_index_from_skipping_to_far_missing_sibling(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    index = guide / "index.html"
+    index.write_text(
+        "\n".join(
+            [
+                '<li><a href="chapters/01-introduction.html">Chapter 1: Introduction</a></li>',
+                '<li><a href="chapters/02-installation.html">Chapter 2: Installation</a></li>',
+                '<li><a href="chapters/03-configuration.html">Chapter 3: Configuration</a></li>',
+                "",
+            ]
+        )
+    )
+    for name in [
+        "01-introduction.html",
+        "02-installation.html",
+        "03-configuration.html",
+    ]:
+        (chapters / name).write_text("<html></html>\n")
+
+    result = validator.validate(
+        "edit",
+        {
+            "file_path": str(index),
+            "old_string": (
+                '<li><a href="chapters/03-configuration.html">'
+                "Chapter 3: Configuration</a></li>"
+            ),
+            "new_string": (
+                '<li><a href="chapters/03-configuration.html">'
+                "Chapter 3: Configuration</a></li>\n"
+                '<li><a href="chapters/08-troubleshooting.html">'
+                "Chapter 8: Troubleshooting</a></li>"
+            ),
+        },
+    )
+
+    assert result.valid is False
+    assert result.reason == "Edited HTML links point to files that do not exist"
+    assert "chapters/08-troubleshooting.html" in result.suggestion
+
+
 def test_pre_action_validator_blocks_index_edit_with_title_mismatch(tmp_path) -> None:
     validator = PreActionValidator()
     index = tmp_path / "index.html"
