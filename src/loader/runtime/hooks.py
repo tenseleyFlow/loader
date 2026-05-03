@@ -20,6 +20,7 @@ from .dod import (
     planned_artifact_target_satisfied,
 )
 from .memory import MemoryStore
+from .path_display import display_runtime_path
 from .permissions import PermissionOverride, PermissionPolicy
 from .repair_focus import (
     extract_active_repair_context,
@@ -33,6 +34,7 @@ from .safeguard_services import (
     PreActionValidator,
     extract_shell_text_rewrite_target,
 )
+from .workflow import infer_output_outline_label
 
 
 class HookEvent(StrEnum):
@@ -1096,6 +1098,135 @@ class LateReferenceDriftHook(BaseToolHook):
         self._completed_scope_observation_count = 0
 
 
+class MissingPlannedOutputReadHook(BaseToolHook):
+    """Block rereads of planned outputs that have not been created yet."""
+
+    def __init__(
+        self,
+        *,
+        dod_store: DefinitionOfDoneStore,
+        project_root: Path,
+        session: Any,
+    ) -> None:
+        self.dod_store = dod_store
+        self.project_root = project_root
+        self.session = session
+
+    async def pre_tool_use(self, context: HookContext) -> HookResult:
+        if context.tool_call.name != "read":
+            return HookResult()
+        if context.source == "verification":
+            return HookResult()
+
+        missing_output = self._missing_planned_output_path(context.tool_call)
+        if missing_output is None:
+            return HookResult()
+
+        target_path, dod = missing_output
+        message_lines = [
+            (
+                "[Blocked - missing planned output artifact: "
+                f"`{target_path}` has not been created yet.]"
+            ),
+            (
+                "Suggestion: create it now with one "
+                f"`write(file_path=\"{display_runtime_path(target_path)}\", content=\"...\")` "
+                "call instead of reading it first."
+            ),
+        ]
+
+        outline_label = infer_output_outline_label(
+            dod,
+            target_path,
+            project_root=self.project_root,
+        )
+        if outline_label:
+            message_lines.append(
+                f"Use the existing outline label `{outline_label}` so the new file matches the current artifact graph."
+            )
+
+        sibling_hint = self._existing_sibling_html_hint(target_path)
+        if sibling_hint:
+            message_lines.append(sibling_hint)
+
+        return HookResult(
+            decision=HookDecision.DENY,
+            message=" ".join(message_lines),
+            terminal_state="blocked",
+        )
+
+    def _missing_planned_output_path(
+        self,
+        tool_call: ToolCall,
+    ) -> tuple[Path, Any] | None:
+        dod_path = getattr(self.session, "active_dod_path", None)
+        if not dod_path:
+            return None
+        path = Path(str(dod_path))
+        if not path.exists():
+            return None
+        dod = self.dod_store.load(path)
+        if dod.status in {"done", "fixing"}:
+            return None
+
+        raw_path = str(tool_call.arguments.get("file_path") or "").strip()
+        if not raw_path:
+            return None
+        target_path = Path(raw_path).expanduser().resolve(strict=False)
+        if target_path.exists():
+            return None
+
+        planned_targets = collect_planned_artifact_targets(
+            dod,
+            project_root=self.project_root,
+        )
+        if not planned_targets:
+            return None
+
+        for planned_target, expect_directory in planned_targets:
+            if expect_directory:
+                continue
+            if planned_target != target_path:
+                continue
+            if planned_artifact_target_satisfied(
+                dod,
+                target=planned_target,
+                expect_directory=False,
+                project_root=self.project_root,
+            ):
+                return None
+            return target_path, dod
+
+        for planned_target, _ in planned_targets:
+            if target_path not in collect_missing_declared_html_output_files(
+                target=planned_target,
+                project_root=self.project_root,
+            ):
+                continue
+            return target_path, dod
+        return None
+
+    def _existing_sibling_html_hint(self, target_path: Path) -> str | None:
+        if target_path.suffix.lower() not in {".html", ".htm"}:
+            return None
+        parent = target_path.parent
+        if not parent.is_dir():
+            return None
+        siblings = sorted(
+            child for child in parent.iterdir() if child.is_file() and child != target_path
+        )
+        html_siblings = [
+            child for child in siblings if child.suffix.lower() in {".html", ".htm"}
+        ]
+        if not html_siblings:
+            return None
+        reference = html_siblings[-1]
+        return (
+            "Reuse the overall structure and navigation pattern from "
+            f"`{reference.name}` as the starting pattern for this file."
+        )
+
+
 class HookManager:
     """Runs tool hooks across Loader's three lifecycle events."""
 
@@ -1307,6 +1438,11 @@ def build_default_tool_hooks(
                 session=session,
             ),
             LateReferenceDriftHook(
+                dod_store=DefinitionOfDoneStore(workspace_root),
+                project_root=workspace_root,
+                session=session,
+            ),
+            MissingPlannedOutputReadHook(
                 dod_store=DefinitionOfDoneStore(workspace_root),
                 project_root=workspace_root,
                 session=session,

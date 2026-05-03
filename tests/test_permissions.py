@@ -19,6 +19,7 @@ from loader.runtime.hooks import (
     HookManager,
     HookResult,
     LateReferenceDriftHook,
+    MissingPlannedOutputReadHook,
     RelativePathContextHook,
     SearchPathAliasHook,
 )
@@ -1855,3 +1856,80 @@ async def test_late_reference_drift_hook_does_not_block_when_html_outputs_still_
     )
 
     assert result.decision == HookDecision.CONTINUE
+
+
+@pytest.mark.asyncio
+async def test_missing_planned_output_read_hook_blocks_reads_of_declared_missing_output(
+    temp_dir: Path,
+) -> None:
+    registry = create_default_registry(temp_dir)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=temp_dir,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    dod_store = DefinitionOfDoneStore(temp_dir)
+    dod = create_definition_of_done("Create a multi-file guide from a reference")
+    dod.status = "in_progress"
+    plan_path = temp_dir / "implementation.md"
+    guide_root = temp_dir / "guide"
+    chapters = guide_root / "chapters"
+    plan_path.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root / 'index.html'}`",
+                f"- `{chapters}/`",
+                "",
+            ]
+        )
+    )
+    dod.implementation_plan = str(plan_path)
+    chapters.mkdir(parents=True, exist_ok=True)
+    (guide_root / "index.html").write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation</a>',
+                '<a href="chapters/03-configuration-basics.html">Chapter 3: Configuration Basics</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+    (chapters / "01-introduction.html").write_text("<h1>Introduction</h1>\n")
+    (chapters / "02-installation.html").write_text("<h1>Installation</h1>\n")
+    dod_path = dod_store.save(dod)
+    session = FakeSession(active_dod_path=str(dod_path), messages=[])
+    hook = MissingPlannedOutputReadHook(
+        dod_store=dod_store,
+        project_root=temp_dir,
+        session=session,
+    )
+    missing_target = chapters / "03-configuration-basics.html"
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="read-missing-output",
+                name="read",
+                arguments={"file_path": str(missing_target)},
+            ),
+            tool=registry.get("read"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.decision == HookDecision.DENY
+    assert result.terminal_state == "blocked"
+    assert result.message is not None
+    assert "missing planned output artifact" in result.message
+    assert 'write(file_path="' in result.message
+    assert "03-configuration-basics.html" in result.message
+    assert "Chapter 3: Configuration Basics" in result.message
+    assert "02-installation.html" in result.message
