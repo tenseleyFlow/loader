@@ -14,6 +14,7 @@ from .context import RuntimeContext
 from .dod import (
     DefinitionOfDone,
     DefinitionOfDoneStore,
+    all_planned_artifact_outputs_exist,
     all_planned_artifacts_exist,
     begin_new_verification_attempt,
     collect_planned_artifact_targets,
@@ -325,10 +326,16 @@ class ToolBatchRunner:
                 self._queue_blocked_html_declared_file_creation_nudge(
                     tool_call,
                     outcome.event_content,
+                    dod=dod,
                 )
                 self._queue_blocked_html_declared_target_nudge(
                     tool_call,
                     outcome.event_content,
+                )
+                self._queue_blocked_html_missing_target_nudge(
+                    tool_call,
+                    outcome.event_content,
+                    dod=dod,
                 )
                 self._queue_blocked_active_repair_nudge(outcome.event_content)
                 self._queue_blocked_active_repair_mutation_nudge(outcome.event_content)
@@ -473,7 +480,7 @@ class ToolBatchRunner:
             )
             return
 
-        if all_planned_artifacts_exist(dod, project_root=self.context.project_root):
+        if all_planned_artifact_outputs_exist(dod, project_root=self.context.project_root):
             verification_commands = dod.verification_commands or derive_verification_commands(
                 dod,
                 project_root=self.context.project_root,
@@ -487,9 +494,10 @@ class ToolBatchRunner:
             )
             self.context.queue_steering_message(
                 "Reuse the earlier observation instead of repeating it. "
-                "All explicitly planned artifacts already exist. "
+                "All explicitly planned artifacts already exist on disk. "
                 "Use the current task artifacts as the source of truth and do not reopen "
                 "reference materials unless one specific gap is still unknown. "
+                "If anything is still wrong, repair the current files instead of expanding the artifact set. "
                 + verification_suffix
             )
             return
@@ -586,7 +594,7 @@ class ToolBatchRunner:
             return
         if extract_active_repair_context(self.context.session.messages) is not None:
             return
-        if not all_planned_artifacts_exist(dod, project_root=self.context.project_root):
+        if not all_planned_artifact_outputs_exist(dod, project_root=self.context.project_root):
             return
 
         observed_paths = _extract_observation_paths(tool_call)
@@ -930,6 +938,8 @@ class ToolBatchRunner:
         self,
         tool_call: ToolCall,
         event_content: str,
+        *,
+        dod: DefinitionOfDone,
     ) -> None:
         """Steer blocked undeclared HTML file creation back through the root guide."""
 
@@ -954,6 +964,26 @@ class ToolBatchRunner:
         except ValueError:
             relative_target = target_path.name
 
+        if all_planned_artifact_outputs_exist(dod, project_root=self.context.project_root):
+            verification_commands = dod.verification_commands or derive_verification_commands(
+                dod,
+                project_root=self.context.project_root,
+                task_statement=getattr(self.context.session, "current_task", "") or "",
+                supplement_existing=True,
+            )
+            verification_suffix = (
+                " Move to verification or final confirmation using the files already on disk."
+                if verification_commands
+                else " Finish the task using the files already on disk."
+            )
+            self.context.queue_steering_message(
+                "All explicitly planned artifacts already exist on disk. "
+                f"Do not expand the output set with `{relative_target}`. "
+                "Use the current generated files as the source of truth and repair or verify them instead."
+                + verification_suffix
+            )
+            return
+
         guidance = (
             "That new HTML file is outside the current root-declared artifact set. "
             f"Before creating `{relative_target}`, update `{root_index}` so the guide root "
@@ -961,6 +991,40 @@ class ToolBatchRunner:
             "Stay on the active guide files; do not reopen the earlier reference guide first."
         )
         self.context.queue_steering_message(guidance)
+
+    def _queue_blocked_html_missing_target_nudge(
+        self,
+        tool_call: ToolCall,
+        event_content: str,
+        *,
+        dod: DefinitionOfDone,
+    ) -> None:
+        """Turn post-build missing-link expansions into verify/repair handoffs."""
+
+        if tool_call.name not in {"write", "edit", "patch"}:
+            return
+        if "Edited HTML links point to files that do not exist" not in event_content:
+            return
+        if not all_planned_artifact_outputs_exist(dod, project_root=self.context.project_root):
+            return
+
+        verification_commands = dod.verification_commands or derive_verification_commands(
+            dod,
+            project_root=self.context.project_root,
+            task_statement=getattr(self.context.session, "current_task", "") or "",
+            supplement_existing=True,
+        )
+        verification_suffix = (
+            " Move to verification or final confirmation using the files already on disk."
+            if verification_commands
+            else " Finish the task using the files already on disk."
+        )
+        self.context.queue_steering_message(
+            "All explicitly planned artifacts already exist on disk. "
+            "Do not introduce new local-link targets beyond the current output set. "
+            "Repair the existing generated files instead of expanding the guide."
+            + verification_suffix
+        )
 
     def _queue_blocked_invalid_mutation_nudge(
         self,
@@ -1270,7 +1334,7 @@ class ToolBatchRunner:
     ) -> None:
         if not is_state_mutating_tool_call(tool_call):
             return
-        if not all_planned_artifacts_exist(dod, project_root=self.context.project_root):
+        if not all_planned_artifact_outputs_exist(dod, project_root=self.context.project_root):
             return
 
         next_pending = preferred_pending_todo_item(
@@ -1291,7 +1355,7 @@ class ToolBatchRunner:
                 else " Avoid another full reread unless one specific inconsistency is still unknown."
             )
             self.context.queue_steering_message(
-                "All explicitly planned artifacts now exist. "
+                "All explicitly planned artifacts now exist on disk. "
                 f"Continue with the next pending item: `{next_pending}`. "
                 "Use the files already on disk as the source of truth instead of restarting "
                 "discovery or inventing alternate filenames."
@@ -1301,7 +1365,7 @@ class ToolBatchRunner:
 
         if verification_commands:
             self.context.queue_steering_message(
-                "All explicitly planned artifacts now exist. "
+                "All explicitly planned artifacts now exist on disk. "
                 "Do not expand the artifact set or restart discovery unless a specific gap is "
                 "still known. Move to verification or final confirmation using the files that "
                 "already exist."
@@ -1469,8 +1533,12 @@ class ToolBatchRunner:
             next_pending=next_pending,
             project_root=self.context.project_root,
         )
+        outputs_exist = all_planned_artifact_outputs_exist(
+            dod,
+            project_root=self.context.project_root,
+        )
         if missing_artifact is None:
-            if next_pending and _todo_is_mutation_step(next_pending):
+            if next_pending and _todo_is_mutation_step(next_pending) and not outputs_exist:
                 pending_target = infer_pending_todo_output_target(
                     dod,
                     next_pending,
@@ -1511,10 +1579,7 @@ class ToolBatchRunner:
             if (
                 next_pending
                 and _todo_is_consistency_review_step(next_pending)
-                and not all_planned_artifacts_exist(
-                    dod,
-                    project_root=self.context.project_root,
-                )
+                and not outputs_exist
             ):
                 self.context.queue_ephemeral_steering_message(
                     "Todo tracking is updated. Continue with the next pending item: "
@@ -1524,7 +1589,7 @@ class ToolBatchRunner:
                 )
                 return
 
-            if not all_planned_artifacts_exist(dod, project_root=self.context.project_root):
+            if not outputs_exist:
                 return
 
             verification_commands = dod.verification_commands or derive_verification_commands(
@@ -1540,7 +1605,7 @@ class ToolBatchRunner:
                     else " Finish the targeted consistency pass without reopening reference materials."
                 )
                 self.context.queue_ephemeral_steering_message(
-                    "Todo tracking is updated. All explicitly planned artifacts now exist. "
+                    "Todo tracking is updated. All explicitly planned artifacts now exist on disk. "
                     f"Continue with the next pending item: `{next_pending}`. "
                     "Use the current output files as the source of truth, and do not restart "
                     "early discovery or reopen reference materials."
@@ -1554,9 +1619,9 @@ class ToolBatchRunner:
                 else " Finish the task using the files already on disk."
             )
             self.context.queue_ephemeral_steering_message(
-                "Todo tracking is updated. All explicitly planned artifacts now exist. "
+                "Todo tracking is updated. All explicitly planned artifacts now exist on disk. "
                 "Do not restart discovery, reopen reference materials, or spend another turn "
-                "on TodoWrite alone."
+                "on TodoWrite alone. Repair or verify the current files instead of expanding the artifact set."
                 + verification_suffix
             )
             return

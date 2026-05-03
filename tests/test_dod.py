@@ -6,6 +6,7 @@ from loader.llm.base import ToolCall
 from loader.runtime.dod import (
     DefinitionOfDoneStore,
     VerificationEvidence,
+    all_planned_artifact_outputs_exist,
     all_planned_artifacts_exist,
     begin_new_verification_attempt,
     build_verification_summary,
@@ -570,6 +571,7 @@ def test_all_planned_artifacts_exist_stays_false_while_touched_html_links_missin
     dod.completed_items = ["Create chapter files with appropriate content"]
 
     assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
+    assert all_planned_artifact_outputs_exist(dod, project_root=tmp_path) is True
 
     (chapters / "02-setup.html").write_text("<h1>Setup</h1>\n")
 

@@ -747,6 +747,30 @@ def all_planned_artifacts_exist(
     project_root: Path,
     max_paths: int | None = None,
 ) -> bool:
+    if not all_planned_artifact_outputs_exist(
+        dod,
+        project_root=project_root,
+        max_paths=max_paths,
+    ):
+        return False
+    targets = collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+        max_paths=max_paths,
+    )
+    return not _planned_html_outputs_have_missing_local_links(
+        dod,
+        project_root=project_root,
+        targets=targets,
+    )
+
+
+def all_planned_artifact_outputs_exist(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    max_paths: int | None = None,
+) -> bool:
     targets = collect_planned_artifact_targets(
         dod,
         project_root=project_root,
@@ -769,11 +793,7 @@ def all_planned_artifacts_exist(
         project_root=project_root,
     ):
         return False
-    return not _planned_html_outputs_have_missing_local_links(
-        dod,
-        project_root=project_root,
-        targets=targets,
-    )
+    return True
 
 
 def planned_artifact_target_satisfied(
