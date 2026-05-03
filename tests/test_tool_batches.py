@@ -5034,6 +5034,7 @@ def test_tool_batch_runner_blocked_noop_edit_nudge_stays_on_active_repair_target
     queued: list[str] = []
     context.queue_steering_message_callback = queued.append
     runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Repair a guide page.")
 
     runner._queue_blocked_html_edit_nudge(
         ToolCall(
@@ -5046,6 +5047,7 @@ def test_tool_batch_runner_blocked_noop_edit_nudge_stays_on_active_repair_target
             },
         ),
         "[Blocked - old_string and new_string are identical - no change would occur] Suggestion: Provide different old and new strings",
+        dod=dod,
     )
 
     assert queued
@@ -5053,6 +5055,91 @@ def test_tool_batch_runner_blocked_noop_edit_nudge_stays_on_active_repair_target
     assert "no on-disk change" in queued[0]
     assert "replace the surrounding block" in queued[0]
     assert "Do not reopen unrelated reference materials" in queued[0]
+
+
+def test_tool_batch_runner_blocked_noop_edit_after_full_build_prefers_verification(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guide"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<html></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[
+            Message(
+                role=Role.ASSISTANT,
+                content=(
+                    "Repair focus:\n"
+                    f"- Confirm the final guide state in `{index_path}`.\n"
+                    f"- Immediate next step: verify `{index_path}` if no concrete mismatch remains.\n"
+                ),
+            )
+        ],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+
+    dod = create_definition_of_done("Create a multi-file guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one)])
+    dod.verification_commands = [f"ls -la {guide_root}"]
+
+    runner._queue_blocked_html_edit_nudge(
+        ToolCall(
+            id="edit-1",
+            name="edit",
+            arguments={
+                "file_path": str(index_path),
+                "old_string": "same",
+                "new_string": "same",
+            },
+        ),
+        "[Blocked - old_string and new_string are identical - no change would occur] Suggestion: Provide different old and new strings",
+        dod=dod,
+    )
+
+    assert queued
+    assert "All explicitly planned artifacts already exist." in queued[0]
+    assert "Move to verification or final confirmation using the files already on disk." in queued[0]
+    assert "replace the surrounding block" not in queued[0]
 
 
 async def _noop_emit(event: AgentEvent) -> None:

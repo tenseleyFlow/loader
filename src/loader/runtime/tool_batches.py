@@ -341,7 +341,11 @@ class ToolBatchRunner:
                     dod=dod,
                 )
                 self._queue_blocked_shell_rewrite_nudge(tool_call)
-                self._queue_blocked_html_edit_nudge(tool_call, outcome.event_content)
+                self._queue_blocked_html_edit_nudge(
+                    tool_call,
+                    outcome.event_content,
+                    dod=dod,
+                )
             else:
                 self._queue_post_mutation_self_audit_nudge(tool_call, dod=dod)
                 self._queue_completed_artifact_observation_handoff_nudge(
@@ -818,7 +822,13 @@ class ToolBatchRunner:
             "Do not reopen earlier reference materials."
         )
 
-    def _queue_blocked_html_edit_nudge(self, tool_call: ToolCall, event_content: str) -> None:
+    def _queue_blocked_html_edit_nudge(
+        self,
+        tool_call: ToolCall,
+        event_content: str,
+        *,
+        dod: DefinitionOfDone,
+    ) -> None:
         """Keep blocked edit feedback generic; avoid task-class-specific steering."""
 
         if tool_call.name != "edit":
@@ -834,6 +844,26 @@ class ToolBatchRunner:
             str(tool_call.arguments.get("file_path") or "").strip() or repair.artifact_path
         )
         if not target:
+            return
+
+        verification_commands = dod.verification_commands or derive_verification_commands(
+            dod,
+            project_root=self.context.project_root,
+            task_statement=getattr(self.context.session, "current_task", "") or "",
+            supplement_existing=True,
+        )
+        if all_planned_artifacts_exist(dod, project_root=self.context.project_root):
+            verification_suffix = (
+                " Move to verification or final confirmation using the files already on disk."
+                if verification_commands
+                else " If no concrete mismatch remains, stop editing and finish from the files already on disk."
+            )
+            self.context.queue_steering_message(
+                "That edit would make no on-disk change. "
+                f"`{target}` already matches the change you attempted. "
+                "All explicitly planned artifacts already exist."
+                + verification_suffix
+            )
             return
 
         self.context.queue_steering_message(
