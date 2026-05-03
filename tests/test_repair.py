@@ -1446,6 +1446,13 @@ def test_late_first_substantive_retry_trims_context_to_core_write_cues(
         in decision.retry_message
     )
     assert (
+        "If blanking continues, use this minimal HTML starter as the `content` value "
+        "and adapt it:"
+        in decision.retry_message
+    )
+    assert "<title>Chapter 1: Introduction to Nginx</title>" in decision.retry_message
+    assert '<p><a href="../index.html">← Back to Main Guide Index</a></p>' in decision.retry_message
+    assert (
         f"You already read `{display_runtime_path(reference_chapter)}`; reuse its overall structure "
         "as the starting pattern for this new file, then adapt the content to the current target."
         not in decision.retry_message

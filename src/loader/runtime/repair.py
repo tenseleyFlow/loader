@@ -457,6 +457,14 @@ class ResponseRepairer:
         )
         if html_starter_line:
             lines.append(html_starter_line)
+        html_template_line = self._known_html_starter_template_line(
+            concrete_target,
+            require_first_substantive_output=True,
+            retry_number=retry_number,
+            outline_label=outline_label,
+        )
+        if html_template_line:
+            lines.append(html_template_line)
         if (
             not compact_retry
             and _should_encourage_initial_version(
@@ -1570,6 +1578,31 @@ class ResponseRepairer:
             f"If you get stuck, start with `<title>{label}</title>`, "
             f"`<h1>{label}</h1>`, one introductory paragraph, a couple of `<h2>` "
             "sections with short body text, and a back link to `../index.html`."
+        )
+
+    def _known_html_starter_template_line(
+        self,
+        target: Path,
+        *,
+        require_first_substantive_output: bool,
+        retry_number: int,
+        outline_label: str | None,
+    ) -> str | None:
+        if not require_first_substantive_output or retry_number < 4:
+            return None
+        if target.suffix.lower() not in {".html", ".htm"}:
+            return None
+        label = outline_label.strip() if outline_label and outline_label.strip() else "this chapter"
+        snippet = (
+            "<!DOCTYPE html> <html lang=\"en\"> <head> <meta charset=\"UTF-8\"> "
+            f"<title>{label}</title> </head> <body> <div class=\"container\"> "
+            f"<h1>{label}</h1> <p>...</p> <h2>Overview</h2> <p>...</p> "
+            "<p><a href=\"../index.html\">← Back to Main Guide Index</a></p> "
+            "</div> </body> </html>"
+        )
+        return (
+            "If blanking continues, use this minimal HTML starter as the `content` value "
+            f"and adapt it: `{snippet}`."
         )
 
     def _best_known_root_html_scaffold(self, target: Path) -> Path | None:
