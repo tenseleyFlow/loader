@@ -315,8 +315,8 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
         in decision.retry_message
     )
     assert (
-        "Prefer one `write` call for "
-        f"`{display_runtime_path(index_path)}` before any more reference reads."
+        "Prefer one `write(content=...)` call for "
+        f"`{display_runtime_path(index_path)}` before more research."
         in decision.retry_message
     )
     assert (
@@ -331,7 +331,10 @@ def test_empty_response_retry_mentions_write_can_create_missing_parent_directori
         "Write a compact but real initial version of this file now, then refine or expand it in later edits."
         in decision.retry_message
     )
-    assert "Do not restart discovery unless one specific missing fact blocks this step." in decision.retry_message
+    assert (
+        "No narration, no TodoWrite, no rereads, and no empty response; emit the mutation tool call now."
+        in decision.retry_message
+    )
 
 
 def test_empty_response_retry_uses_directory_creation_for_setup_targets(
@@ -752,7 +755,11 @@ def test_empty_response_retry_budget_extends_further_after_first_output_file_exi
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert "retry 5/6" in decision.retry_message
-    assert "Continue `Create 01-introduction.html` by creating `01-introduction.html`." in decision.retry_message
+    assert (
+        "Resume with this exact next step: continue `Create 01-introduction.html` "
+        "by creating `01-introduction.html`."
+        in decision.retry_message
+    )
     assert 'Emit this tool shape now: `write(file_path="' in decision.retry_message
     assert "No narration, no TodoWrite, no rereads, and no empty response" in decision.retry_message
 
@@ -958,6 +965,125 @@ def test_empty_response_retry_treats_develop_index_step_as_mutation_work(
     assert "Make the next response one concrete evidence-gathering tool call" not in decision.retry_message
 
 
+def test_empty_response_retry_adds_root_html_starter_shape_for_first_index_write(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{index_path}`",
+                f"- `{chapters}/`",
+                f"- `{chapter_one}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.completed_items.extend(
+        [
+            "First, examine the existing Fortran guide structure to understand the format and depth",
+            "Create the new nginx guide directory structure",
+        ]
+    )
+    dod.pending_items.append("Develop the main index.html file with proper structure")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=2,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        "If you get stuck, start with `<!DOCTYPE html>`, `<title>Nginx Guide</title>`, "
+        "`<h1>Nginx Guide</h1>`, a short intro paragraph, and a linked chapter list that "
+        "points at the guide pages you will create under `chapters/`."
+        in decision.retry_message
+    )
+    assert "../index.html" not in decision.retry_message
+
+
+def test_repeated_first_index_retry_includes_root_html_payload_shape(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{index_path}`",
+                f"- `{chapters}/`",
+                f"- `{chapter_one}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.completed_items.extend(
+        [
+            "First, examine the existing Fortran guide structure to understand the format and depth",
+            "Create the new nginx guide directory structure",
+        ]
+    )
+    dod.pending_items.append("Develop the main index.html file with proper structure")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=5,
+        max_empty_retries=6,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "If blanking continues, use this minimal starter payload shape" in decision.retry_message
+    assert "<title>Nginx Guide</title>" in decision.retry_message
+    assert 'href="chapters/01-...html"' in decision.retry_message
+    assert "../index.html" not in decision.retry_message
+
+
 def test_empty_response_retry_prefers_pending_index_over_broad_directory_headline(
     temp_dir: Path,
 ) -> None:
@@ -1082,7 +1208,8 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
     assert decision.retry_message is not None
     assert "Next missing planned artifact:" not in decision.retry_message
     assert (
-        "Continue `Create chapter files with content and structure` by creating `01-introduction.html`."
+        "Resume with this exact next step: continue `Create chapter files with content and structure` "
+        "by creating `01-introduction.html`."
         in decision.retry_message
     )
     assert (
@@ -1636,7 +1763,8 @@ def test_empty_response_retry_prefers_output_index_over_reference_index_with_sam
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        f"Continue `Develop the nginx index.html file` by creating `{output_index.name}`."
+        "Resume with this exact next step: continue `Develop the nginx index.html file` "
+        f"by creating `{output_index.name}`."
         in decision.retry_message
     )
     assert (
@@ -1703,7 +1831,8 @@ def test_empty_response_retry_points_at_declared_child_file_within_incomplete_ou
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        "Continue `Write the introduction chapter` by creating `introduction.html`."
+        "Resume with this exact next step: continue `Write the introduction chapter` "
+        "by creating `introduction.html`."
         in decision.retry_message
     )
     assert "Next declared output under `chapters/`" not in decision.retry_message
@@ -2411,7 +2540,8 @@ def test_empty_response_retry_names_next_file_from_observed_sibling_directory(
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        "Continue `Write the introduction chapter` by creating `01-introduction.html`."
+        "Resume with this exact next step: continue `Write the introduction chapter` "
+        "by creating `01-introduction.html`."
         in decision.retry_message
     )
     assert (

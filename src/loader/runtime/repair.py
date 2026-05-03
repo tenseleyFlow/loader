@@ -383,9 +383,13 @@ class ResponseRepairer:
         retry_number: int,
         max_empty_retries: int,
     ) -> str | None:
-        if not self._has_confirmed_output_file_progress(dod):
-            return None
-        if self._has_confirmed_substantive_output_file_progress(dod):
+        has_confirmed_output_file_progress = self._has_confirmed_output_file_progress(
+            dod
+        )
+        has_confirmed_substantive_output_file_progress = (
+            self._has_confirmed_substantive_output_file_progress(dod)
+        )
+        if has_confirmed_substantive_output_file_progress:
             return None
 
         next_missing_artifact = self._preferred_resume_missing_artifact(dod)
@@ -393,6 +397,16 @@ class ResponseRepairer:
             dod,
             missing_artifact=next_missing_artifact,
         )
+        if (
+            next_pending
+            and not _todo_is_mutation_step(next_pending)
+            and not _todo_is_consistency_review_step(next_pending)
+        ):
+            return None
+        if not has_confirmed_output_file_progress and any(
+            str(raw_path).strip() for raw_path in dod.touched_files
+        ):
+            return None
         inferred_pending_target = (
             self._infer_pending_item_output_target(dod, next_pending)
             if next_pending
@@ -412,49 +426,73 @@ class ResponseRepairer:
             project_root=self.context.project_root,
             todo_label=next_pending or "",
         )
-        if next_pending and _todo_is_mutation_step(next_pending):
+        if (
+            next_pending
+            and _todo_is_mutation_step(next_pending)
+            and not todo_describes_broad_setup_step(next_pending)
+        ):
             first_line = (
-                f"Continue `{next_pending}` by creating `{concrete_target.name}`."
+                "Resume with this exact next step: continue "
+                f"`{next_pending}` by creating `{concrete_target.name}`."
             )
         else:
-            first_line = f"Create `{concrete_target.name}` now."
-        compact_retry = True
+            first_line = (
+                f"Resume with this exact next step: create `{concrete_target.name}`."
+            )
 
-        lines = [
-            first_line,
-            self._mutation_tool_scaffold(concrete_target, tool_name="write"),
-        ]
+        lines: list[str] = []
+        if (
+            not has_confirmed_output_file_progress
+            and next_missing_artifact is not None
+            and not next_missing_artifact[1]
+        ):
+            lines.append(
+                "Next missing planned artifact: "
+                f"{self._format_artifact_label(concrete_target, expect_directory=False)}"
+            )
+        lines.extend(
+            [
+                first_line,
+                "Prefer one `write(content=...)` call for "
+                f"`{display_runtime_path(concrete_target)}` before more research.",
+                self._mutation_tool_scaffold(concrete_target, tool_name="write"),
+            ]
+        )
+        if (
+            next_pending
+            and todo_describes_aggregate_mutation(next_pending)
+            and not todo_describes_broad_setup_step(next_pending)
+        ):
+            lines.insert(
+                2,
+                f"It is the next concrete output needed to continue `{next_pending}`.",
+            )
+        if not concrete_target.parent.exists():
+            lines.append(
+                "The `write` tool can create that file's parent directories automatically, "
+                "so do the write in one step instead of stopping for a separate mkdir."
+            )
         if outline_label:
             lines.append(
                 f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
             )
-        html_scaffold_line = self._known_existing_html_scaffold_line(
-            concrete_target,
-            require_first_substantive_output=True,
-        )
-        if html_scaffold_line:
-            lines.append(html_scaffold_line)
-        html_starter_line = self._known_html_starter_shape_line(
-            concrete_target,
-            require_first_substantive_output=True,
-            retry_number=retry_number,
-            outline_label=outline_label,
-        )
-        if html_starter_line:
-            lines.append(html_starter_line)
-        html_payload_line = self._known_minimal_html_payload_line(
-            concrete_target,
+        self._append_concrete_html_write_cues(
+            lines,
+            target=concrete_target,
             outline_label=outline_label,
             retry_number=retry_number,
+            has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+            has_confirmed_substantive_output_file_progress=(
+                has_confirmed_substantive_output_file_progress
+            ),
         )
-        if html_payload_line:
-            lines.append(html_payload_line)
         if (
-            not compact_retry
-            and _should_encourage_initial_version(
+            _should_encourage_initial_version(
                 target=concrete_target,
-                has_confirmed_output_file_progress=True,
-                has_confirmed_substantive_output_file_progress=False,
+                has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+                has_confirmed_substantive_output_file_progress=(
+                    has_confirmed_substantive_output_file_progress
+                ),
             )
         ):
             lines.append(
@@ -930,6 +968,7 @@ class ResponseRepairer:
                     has_confirmed_output_file_progress
                     and not has_confirmed_substantive_output_file_progress
                 ),
+                allow_initial_concrete_output=False,
                 retry_number=retry_number,
                 outline_label=outline_label,
             )
@@ -1224,6 +1263,10 @@ class ResponseRepairer:
             has_confirmed_output_file_progress
             and not has_confirmed_substantive_output_file_progress
         )
+        initial_concrete_output = (
+            not has_confirmed_output_file_progress
+            and not has_confirmed_substantive_output_file_progress
+        )
         html_scaffold_line = self._known_existing_html_scaffold_line(
             target,
             require_first_substantive_output=first_substantive_output,
@@ -1246,6 +1289,7 @@ class ResponseRepairer:
                     and retry_number >= 4
                 )
             ),
+            allow_initial_concrete_output=initial_concrete_output,
             retry_number=retry_number,
             outline_label=outline_label,
         )
@@ -1254,6 +1298,7 @@ class ResponseRepairer:
         html_payload_line = self._known_minimal_html_payload_line(
             target,
             outline_label=outline_label,
+            allow_initial_concrete_output=initial_concrete_output,
             retry_number=retry_number,
         )
         if html_payload_line:
@@ -1491,14 +1536,27 @@ class ResponseRepairer:
         target: Path,
         *,
         require_first_substantive_output: bool,
+        allow_initial_concrete_output: bool,
         retry_number: int,
         outline_label: str | None,
     ) -> str | None:
-        if not require_first_substantive_output or retry_number < 1:
+        if (
+            not require_first_substantive_output
+            and not allow_initial_concrete_output
+        ) or retry_number < 1:
             return None
         if target.suffix.lower() not in {".html", ".htm"}:
             return None
-        label = outline_label.strip() if outline_label and outline_label.strip() else "this chapter"
+        label = (
+            outline_label.strip()
+            if outline_label and outline_label.strip()
+            else self._fallback_html_label(target)
+        )
+        if self._is_index_html_target(target):
+            return (
+                f"If you get stuck, start with `<!DOCTYPE html>`, `<title>{label}</title>`, "
+                f"`<h1>{label}</h1>`, a short intro paragraph, and a linked chapter list that points at the guide pages you will create under `chapters/`."
+            )
         return (
             f"If you get stuck, start with `<title>{label}</title>`, "
             f"`<h1>{label}</h1>`, one introductory paragraph, a couple of `<h2>` "
@@ -1510,6 +1568,7 @@ class ResponseRepairer:
         target: Path,
         *,
         outline_label: str | None,
+        allow_initial_concrete_output: bool,
         retry_number: int,
     ) -> str | None:
         if retry_number < 5:
@@ -1517,7 +1576,21 @@ class ResponseRepairer:
         if target.suffix.lower() not in {".html", ".htm"}:
             return None
 
-        label = outline_label.strip() if outline_label and outline_label.strip() else target.stem
+        label = (
+            outline_label.strip()
+            if outline_label and outline_label.strip()
+            else self._fallback_html_label(target)
+        )
+        if self._is_index_html_target(target):
+            return (
+                "If blanking continues, use this minimal starter payload shape inside the `write` call now: "
+                f"`<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" "
+                f"content=\"width=device-width, initial-scale=1.0\"><title>{label}</title></head><body>"
+                f"<div class=\"container\"><h1>{label}</h1><p>...</p><nav><ul>"
+                "<li><a href=\"chapters/01-...html\">Chapter 1: ...</a></li>"
+                "<li><a href=\"chapters/02-...html\">Chapter 2: ...</a></li>"
+                "</ul></nav></div></body></html>` and refine it later."
+            )
         return (
             "If blanking continues, use this minimal starter payload shape inside the `write` call now: "
             f"`<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" "
@@ -1526,6 +1599,18 @@ class ResponseRepairer:
             f"<h2>Key Steps</h2><p>...</p><p><a href=\"../index.html\">← Back to Main Guide Index</a></p>"
             "</div></body></html>` and refine it later."
         )
+
+    @staticmethod
+    def _is_index_html_target(target: Path) -> bool:
+        return target.name.lower() in {"index.html", "index.htm"}
+
+    def _fallback_html_label(self, target: Path) -> str:
+        if self._is_index_html_target(target):
+            parent_name = target.parent.name.strip()
+            if parent_name:
+                return f"{parent_name.title()} Guide"
+            return "Main Guide"
+        return target.stem
 
     def _best_known_root_html_scaffold(self, target: Path) -> Path | None:
         normalized_target = target.expanduser().resolve(strict=False)
