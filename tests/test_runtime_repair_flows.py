@@ -205,6 +205,69 @@ async def test_empty_response_retry_budget_resets_after_successful_turn(
 
 
 @pytest.mark.asyncio
+async def test_empty_response_retry_replaces_prior_user_interruption_handoff(
+    temp_dir: Path,
+) -> None:
+    first = temp_dir / "index.html"
+    second = temp_dir / "chapters" / "01-introduction.html"
+    backend = ScriptedBackend(
+        completions=[
+            CompletionResponse(
+                content="I'll create the guide index now.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="write",
+                        arguments={
+                            "file_path": str(first),
+                            "content": "<html><a href=\"chapters/01-introduction.html\">Intro</a></html>\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(content=""),
+            CompletionResponse(
+                content="I'll create the chapter now.",
+                tool_calls=[
+                    ToolCall(
+                        id="write-2",
+                        name="write",
+                        arguments={
+                            "file_path": str(second),
+                            "content": "<html></html>\n",
+                        },
+                    )
+                ],
+            ),
+            CompletionResponse(content="Done."),
+        ]
+    )
+
+    run = await run_scenario(
+        "Create index.html and a first chapter file.",
+        backend,
+        config=non_streaming_config(),
+        project_root=temp_dir,
+    )
+
+    assert run.response.startswith("Done.")
+    retry_invocation_messages = backend.invocations[2].messages
+    user_steering_messages = [
+        message.content
+        for message in retry_invocation_messages
+        if message.role == Role.USER
+        and (
+            "[EMPTY ASSISTANT RESPONSE]" in message.content
+            or "[USER INTERRUPTION]:" in message.content
+            or "[CONTINUE CURRENT STEP]" in message.content
+        )
+    ]
+    assert len(user_steering_messages) == 1
+    assert user_steering_messages[0].startswith("[EMPTY ASSISTANT RESPONSE]")
+    assert "[USER INTERRUPTION]:" not in user_steering_messages[0]
+
+
+@pytest.mark.asyncio
 async def test_empty_response_retry_budget_resets_after_todowrite_turn(
     temp_dir: Path,
 ) -> None:

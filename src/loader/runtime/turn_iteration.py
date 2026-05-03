@@ -270,8 +270,8 @@ class TurnIterationController:
             if (
                 self.context.session.messages
                 and self.context.session.messages[-1].role == Role.USER
-                and self.context.session.messages[-1].content.startswith(
-                    "[EMPTY ASSISTANT RESPONSE]"
+                and self._should_replace_last_steering_message(
+                    self.context.session.messages[-1].content
                 )
             ):
                 self.context.session.messages[-1] = retry_message
@@ -310,4 +310,15 @@ class TurnIterationController:
             consecutive_errors=consecutive_errors,
             finalize_reason_code=empty_decision.reason_code,
             finalize_reason_summary=empty_decision.reason_summary,
+        )
+
+    @staticmethod
+    def _should_replace_last_steering_message(content: str) -> bool:
+        return content.startswith(
+            (
+                "[EMPTY ASSISTANT RESPONSE]",
+                "[USER INTERRUPTION]:",
+                "[CONTINUE CURRENT STEP]",
+                "[PLANNED ARTIFACTS STILL MISSING]",
+            )
         )
