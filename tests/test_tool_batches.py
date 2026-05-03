@@ -2475,7 +2475,7 @@ async def test_tool_batch_runner_first_chapter_handoff_stays_persistent_until_su
         f"Prefer one `write(file_path=..., content=...)` call for `{(chapters / '01-introduction.html').resolve(strict=False)}` now."
         in message
     )
-    assert "Write a compact but real initial version of that file now" in message
+    assert "Write a compact but real initial version of that file now" not in message
     assert "Do not reread reference material or spend the next turn on bookkeeping." in message
 
 
@@ -2808,7 +2808,7 @@ async def test_tool_batch_runner_softens_first_file_handoff_after_recovery_promp
     assert ephemeral_messages
     message = ephemeral_messages[-1]
     assert "Next step: create `01-introduction.html`." in message
-    assert "Write a compact but real initial version of that file now" in message
+    assert "Write a compact but real initial version of that file now" not in message
 
 
 @pytest.mark.asyncio
@@ -3267,7 +3267,7 @@ async def test_tool_batch_runner_mutation_handoff_points_at_next_missing_artifac
     assert ephemeral_messages == []
     message = persistent_messages[-1]
     assert "Next step: create `01-getting-started.html`." in message
-    assert "Write a compact but real initial version of that file now" in message
+    assert "Write a compact but real initial version of that file now" not in message
     assert "refresh `TodoWrite`" not in message
     assert "Do not reread reference material or spend the next turn on bookkeeping." in message
 

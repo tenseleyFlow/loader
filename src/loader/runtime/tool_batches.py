@@ -1370,7 +1370,7 @@ class ToolBatchRunner:
                 (resume_target, False),
                 project_root=self.context.project_root,
                 messages=session_messages,
-                encourage_initial_version=not has_substantive_file_artifact_progress,
+                encourage_initial_version=False,
             )
             if compact_resume:
                 queue_message(
@@ -1388,7 +1388,7 @@ class ToolBatchRunner:
                 missing_artifact,
                 project_root=self.context.project_root,
                 messages=session_messages,
-                encourage_initial_version=True,
+                encourage_initial_version=False,
             )
             if compact_handoff:
                 queue_message(
@@ -1531,12 +1531,6 @@ class ToolBatchRunner:
             )
             return
 
-        has_substantive_file_artifact_progress = (
-            _has_confirmed_substantive_file_artifact_progress(
-                dod,
-                project_root=self.context.project_root,
-            )
-        )
         todo_refresh = _todo_refresh_guidance(
             dod,
             project_root=self.context.project_root,
@@ -1563,7 +1557,7 @@ class ToolBatchRunner:
                 (resume_target, False),
                 project_root=self.context.project_root,
                 messages=session_messages,
-                encourage_initial_version=not has_substantive_file_artifact_progress,
+                encourage_initial_version=False,
             )
             if compact_resume:
                 self.context.queue_steering_message(
