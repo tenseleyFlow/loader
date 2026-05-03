@@ -1360,6 +1360,91 @@ def test_compact_first_substantive_retry_reuses_known_reference_structure(
         "of `<h2>` sections with short body text, and a back link to `../index.html`."
         in decision.retry_message
     )
+    assert (
+        "If blanking continues, use this minimal HTML starter as the `content` value "
+        "and adapt it:"
+        in decision.retry_message
+    )
+
+
+def test_first_substantive_retry_activates_on_second_empty_turn(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    reference_chapter = temp_dir / "guides" / "fortran" / "chapters" / "01-introduction.html"
+    reference_chapter.parent.mkdir(parents=True)
+    reference_chapter.write_text("<h1>Chapter 1: Introduction to Fortran</h1>\n")
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+    context.session.append(
+        Message(
+            role=Role.ASSISTANT,
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call_ref",
+                    name="read",
+                    arguments={"file_path": str(reference_chapter)},
+                )
+            ],
+        )
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    dod.completed_items.append("Develop the main index.html file with proper structure")
+    dod.pending_items.append("Create the nginx chapters content")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=2,
+        max_empty_retries=4,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "Emit this tool shape now" in decision.retry_message
+    assert "01-introduction.html" in decision.retry_message
+    assert (
+        "If blanking continues, use this minimal HTML starter as the `content` value "
+        "and adapt it:"
+        in decision.retry_message
+    )
 
 
 def test_late_first_substantive_retry_trims_context_to_core_write_cues(
@@ -1512,8 +1597,11 @@ def test_empty_response_retry_prefers_output_index_over_reference_index_with_sam
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        "Prefer one `write(content=...)` call for "
-        f"`{display_runtime_path(output_index)}` before more research."
+        f"Continue `Develop the nginx index.html file` by creating `{output_index.name}`."
+        in decision.retry_message
+    )
+    assert (
+        f'Emit this tool shape now: `write(file_path="{display_runtime_path(output_index)}", content="...")`.'
         in decision.retry_message
     )
     assert str(reference_index) not in decision.retry_message

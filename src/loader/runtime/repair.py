@@ -383,7 +383,7 @@ class ResponseRepairer:
         retry_number: int,
         max_empty_retries: int,
     ) -> str | None:
-        if retry_number < 3:
+        if retry_number < 2:
             return None
         if not self._has_confirmed_output_file_progress(dod):
             return None
@@ -1588,7 +1588,7 @@ class ResponseRepairer:
         retry_number: int,
         outline_label: str | None,
     ) -> str | None:
-        if not require_first_substantive_output or retry_number < 4:
+        if not require_first_substantive_output or retry_number < 2:
             return None
         if target.suffix.lower() not in {".html", ".htm"}:
             return None
