@@ -11,6 +11,7 @@ from typing import ClassVar
 from ..llm.base import ToolCall
 from .clarify_grounding import ClarifyGrounding
 from .dod import (
+    all_planned_artifact_outputs_exist,
     all_planned_artifacts_exist,
     collect_planned_artifact_targets,
     infer_next_output_file,
@@ -840,7 +841,11 @@ def effective_pending_todo_items(
             project_root=project_root,
         )
     ]
-    if not all_planned_artifacts_exist(dod, project_root=project_root, max_paths=24):
+    if not all_planned_artifact_outputs_exist(
+        dod,
+        project_root=project_root,
+        max_paths=24,
+    ):
         return pending_items
 
     planned_files = {

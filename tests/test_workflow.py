@@ -662,6 +662,61 @@ def test_effective_pending_todo_items_filters_stale_creation_steps_after_artifac
     assert "Creating 02-installation.html" not in pending
 
 
+def test_effective_pending_todo_items_filters_unplanned_expansion_after_outputs_exist(
+    temp_dir: Path,
+) -> None:
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                '<a href="chapters/01-introduction.html">Intro</a>',
+                '<a href="chapters/02-installation.html">Install</a>',
+                '<a href="../index.html">Back</a>',
+                "",
+            ]
+        )
+    )
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.pending_items = [
+        "Creating chapter 08-troubleshooting.html",
+        "Verify all guide files are linked and complete",
+        "Complete the requested work",
+    ]
+
+    pending = effective_pending_todo_items(dod, project_root=temp_dir)
+
+    assert "Verify all guide files are linked and complete" in pending
+    assert "Complete the requested work" in pending
+    assert "Creating chapter 08-troubleshooting.html" not in pending
+
+
 def test_workflow_artifact_store_and_bridge_round_trip(tmp_path: Path) -> None:
     store = WorkflowArtifactStore(tmp_path)
     brief = ClarifyBrief.fallback(
