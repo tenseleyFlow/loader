@@ -1355,6 +1355,66 @@ def test_late_first_substantive_retry_stays_lean(
     assert "Write a compact but real initial version of this file now" not in decision.retry_message
 
 
+def test_repeated_first_substantive_retry_includes_minimal_payload_shape(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.append(str(index_path))
+    dod.completed_items.append("Develop the main index.html file with proper structure")
+    dod.pending_items.append("Create chapter files following the established pattern")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=5,
+        max_empty_retries=6,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert "If blanking continues, use this minimal starter payload shape" in decision.retry_message
+    assert "<title>Chapter 1: Introduction to Nginx</title>" in decision.retry_message
+    assert "../index.html" in decision.retry_message
+
+
 def test_first_substantive_retry_activates_on_first_empty_turn(
     temp_dir: Path,
 ) -> None:

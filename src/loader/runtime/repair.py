@@ -442,6 +442,13 @@ class ResponseRepairer:
         )
         if html_starter_line:
             lines.append(html_starter_line)
+        html_payload_line = self._known_minimal_html_payload_line(
+            concrete_target,
+            outline_label=outline_label,
+            retry_number=retry_number,
+        )
+        if html_payload_line:
+            lines.append(html_payload_line)
         if (
             not compact_retry
             and _should_encourage_initial_version(
@@ -1244,6 +1251,13 @@ class ResponseRepairer:
         )
         if html_starter_line:
             lines.append(html_starter_line)
+        html_payload_line = self._known_minimal_html_payload_line(
+            target,
+            outline_label=outline_label,
+            retry_number=retry_number,
+        )
+        if html_payload_line:
+            lines.append(html_payload_line)
 
     def _infer_pending_item_output_target(
         self,
@@ -1489,6 +1503,28 @@ class ResponseRepairer:
             f"If you get stuck, start with `<title>{label}</title>`, "
             f"`<h1>{label}</h1>`, one introductory paragraph, a couple of `<h2>` "
             "sections with short body text, and a back link to `../index.html`."
+        )
+
+    def _known_minimal_html_payload_line(
+        self,
+        target: Path,
+        *,
+        outline_label: str | None,
+        retry_number: int,
+    ) -> str | None:
+        if retry_number < 5:
+            return None
+        if target.suffix.lower() not in {".html", ".htm"}:
+            return None
+
+        label = outline_label.strip() if outline_label and outline_label.strip() else target.stem
+        return (
+            "If blanking continues, use this minimal starter payload shape inside the `write` call now: "
+            f"`<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" "
+            f"content=\"width=device-width, initial-scale=1.0\"><title>{label}</title></head><body>"
+            f"<div class=\"container\"><h1>{label}</h1><p>...</p><h2>Overview</h2><p>...</p>"
+            f"<h2>Key Steps</h2><p>...</p><p><a href=\"../index.html\">← Back to Main Guide Index</a></p>"
+            "</div></body></html>` and refine it later."
         )
 
     def _best_known_root_html_scaffold(self, target: Path) -> Path | None:
