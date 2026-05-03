@@ -539,6 +539,50 @@ async def test_relative_path_context_hook_remaps_workspace_mirror_of_external_ro
     ]
 
 
+@pytest.mark.asyncio
+async def test_relative_path_context_hook_prefers_external_search_ancestor_over_workspace_match(
+    temp_dir: Path,
+) -> None:
+    workspace_root = temp_dir / "workspace"
+    (workspace_root / "guides").mkdir(parents=True)
+    external_root = temp_dir / "external-home"
+    external_fortran = external_root / "Loader" / "guides" / "fortran"
+    external_fortran.mkdir(parents=True)
+    (external_fortran / "index.html").write_text("<html></html>\n")
+
+    registry = create_default_registry(workspace_root)
+    policy = build_permission_policy(
+        active_mode=PermissionMode.WORKSPACE_WRITE,
+        workspace_root=workspace_root,
+        tool_requirements=registry.get_tool_requirements(),
+    )
+    action_tracker = ActionTracker()
+    action_tracker.record_tool_call(
+        "read",
+        {"file_path": str(external_fortran / "index.html")},
+    )
+    hook = RelativePathContextHook(action_tracker, workspace_root)
+
+    result = await hook.pre_tool_use(
+        HookContext(
+            tool_call=ToolCall(
+                id="glob-ancestor-1",
+                name="glob",
+                arguments={"path": "guides", "pattern": "**"},
+            ),
+            tool=registry.get("glob"),
+            registry=registry,
+            permission_policy=policy,
+            source="native",
+        )
+    )
+
+    assert result.updated_arguments is not None
+    assert Path(result.updated_arguments["path"]).resolve() == (
+        external_root / "Loader" / "guides"
+    ).resolve()
+
+
 class FakeSession:
     def __init__(self, *, active_dod_path: str, messages: list[Message]) -> None:
         self.active_dod_path = active_dod_path

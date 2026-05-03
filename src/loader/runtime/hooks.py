@@ -273,6 +273,7 @@ class RelativePathContextHook(BaseToolHook):
             resolved = self._resolve_recent_context_path(
                 raw_path,
                 require_existing=require_existing,
+                prefer_external_ancestor=context.tool_call.name in self._SEARCH_TOOLS,
             )
         if resolved is None:
             return HookResult()
@@ -296,9 +297,17 @@ class RelativePathContextHook(BaseToolHook):
         raw_path: str,
         *,
         require_existing: bool,
+        prefer_external_ancestor: bool,
     ) -> str | None:
         workspace_candidate = (self.workspace_root / raw_path).expanduser()
         if workspace_candidate.exists():
+            if prefer_external_ancestor:
+                anchored = self._resolve_recent_context_ancestor(
+                    raw_path,
+                    require_existing=require_existing,
+                )
+                if anchored is not None:
+                    return anchored
             return None
 
         for base_dir in self.action_tracker.recent_path_contexts():
@@ -309,6 +318,59 @@ class RelativePathContextHook(BaseToolHook):
                 continue
             if candidate.exists() or candidate.parent.exists():
                 return str(candidate)
+        if prefer_external_ancestor:
+            return self._resolve_recent_context_ancestor(
+                raw_path,
+                require_existing=require_existing,
+            )
+        return None
+
+    def _resolve_recent_context_ancestor(
+        self,
+        raw_path: str,
+        *,
+        require_existing: bool,
+    ) -> str | None:
+        raw_parts = tuple(part for part in Path(raw_path).parts if part not in {"."})
+        if not raw_parts:
+            return None
+
+        for base_dir in self.action_tracker.recent_path_contexts():
+            base_path = Path(base_dir).expanduser()
+            try:
+                resolved_base = base_path.resolve(strict=False)
+            except Exception:
+                resolved_base = base_path
+            if resolved_base == self.workspace_root:
+                continue
+            try:
+                resolved_base.relative_to(self.workspace_root)
+                continue
+            except ValueError:
+                pass
+
+            matched = self._match_recent_context_ancestor(
+                resolved_base,
+                raw_parts,
+            )
+            if matched is None:
+                continue
+            if require_existing and not matched.exists():
+                continue
+            return str(matched)
+        return None
+
+    def _match_recent_context_ancestor(
+        self,
+        base_path: Path,
+        raw_parts: tuple[str, ...],
+    ) -> Path | None:
+        candidates = [base_path, *base_path.parents]
+        for candidate in candidates:
+            if len(candidate.parts) < len(raw_parts):
+                continue
+            if candidate.parts[-len(raw_parts) :] == raw_parts:
+                return candidate
         return None
 
     def _resolve_workspace_mirror_path(
