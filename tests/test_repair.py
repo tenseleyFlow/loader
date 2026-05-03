@@ -1367,7 +1367,7 @@ def test_compact_first_substantive_retry_reuses_known_reference_structure(
     )
 
 
-def test_first_substantive_retry_activates_on_second_empty_turn(
+def test_first_substantive_retry_activates_on_first_empty_turn(
     temp_dir: Path,
 ) -> None:
     context = build_context(
@@ -1431,7 +1431,7 @@ def test_first_substantive_retry_activates_on_second_empty_turn(
     decision = repairer.handle_empty_response(
         task="Create a multi-file nginx guide.",
         original_task=None,
-        empty_retry_count=2,
+        empty_retry_count=1,
         max_empty_retries=4,
         dod=dod,
     )
@@ -1663,16 +1663,13 @@ def test_empty_response_retry_points_at_declared_child_file_within_incomplete_ou
 
     assert decision.should_continue is True
     assert decision.retry_message is not None
-    assert "Next missing planned artifact: `introduction.html`" in decision.retry_message
     assert (
-        "Resume with this exact next step: continue `Write the introduction chapter` "
-        "by creating `introduction.html`."
+        "Continue `Write the introduction chapter` by creating `introduction.html`."
         in decision.retry_message
     )
     assert "Next declared output under `chapters/`" not in decision.retry_message
     assert (
-        f"Prefer one `write(content=...)` call for `{(chapters / 'introduction.html').resolve(strict=False)}` "
-        "before more research."
+        f'Emit this tool shape now: `write(file_path="{display_runtime_path(chapters / "introduction.html")}", content="...")`.'
         in decision.retry_message
     )
 
@@ -2374,15 +2371,18 @@ def test_empty_response_retry_names_next_file_from_observed_sibling_directory(
 
     assert decision.should_continue is True
     assert decision.retry_message is not None
-    assert "Next missing planned artifact: `01-introduction.html`" in decision.retry_message
     assert (
-        "Resume with this exact next step: continue `Write the introduction chapter` "
-        "by creating `01-introduction.html`."
+        "Continue `Write the introduction chapter` by creating `01-introduction.html`."
+        in decision.retry_message
+    )
+    assert (
+        f'Emit this tool shape now: `write(file_path="{display_runtime_path(chapters / "01-introduction.html")}", content="...")`.'
         in decision.retry_message
     )
     assert "Next observed output pattern under `chapters/`" not in decision.retry_message
     assert (
-        "It mirrors the observed filename pattern from another `chapters/` directory "
-        "you already inspected."
+        f"You already read `{display_runtime_path(reference_chapters / '01-introduction.html')}`; "
+        "reuse its overall structure as the starting pattern for this new file, then adapt the "
+        "content to the current target."
         in decision.retry_message
     )
