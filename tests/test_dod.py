@@ -535,7 +535,7 @@ def test_all_planned_artifacts_exist_respects_nested_file_change_entries(
     assert all_planned_artifacts_exist(dod, project_root=tmp_path) is True
 
 
-def test_all_planned_artifacts_exist_stays_false_while_touched_html_links_missing(
+def test_all_planned_artifact_outputs_stay_false_while_root_declares_missing_html_outputs(
     tmp_path: Path,
 ) -> None:
     implementation_plan = tmp_path / "implementation.md"
@@ -571,11 +571,45 @@ def test_all_planned_artifacts_exist_stays_false_while_touched_html_links_missin
     dod.completed_items = ["Create chapter files with appropriate content"]
 
     assert all_planned_artifacts_exist(dod, project_root=tmp_path) is False
-    assert all_planned_artifact_outputs_exist(dod, project_root=tmp_path) is True
+    assert all_planned_artifact_outputs_exist(dod, project_root=tmp_path) is False
 
     (chapters / "02-setup.html").write_text("<h1>Setup</h1>\n")
 
     assert all_planned_artifacts_exist(dod, project_root=tmp_path) is True
+    assert all_planned_artifact_outputs_exist(dod, project_root=tmp_path) is True
+
+
+def test_collect_missing_declared_html_outputs_accepts_root_html_file_target(
+    tmp_path: Path,
+) -> None:
+    implementation_plan = tmp_path / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{tmp_path / 'guide' / 'index.html'}`",
+                f"- `{tmp_path / 'guide' / 'chapters'}/` (directory for chapter files)",
+            ]
+        )
+    )
+
+    guide_root = tmp_path / "guide"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index = guide_root / "index.html"
+    index.write_text(
+        '<a href="chapters/01-introduction.html">Intro</a>\n'
+        '<a href="chapters/02-setup.html">Setup</a>\n'
+    )
+    (chapters / "01-introduction.html").write_text("<h1>Intro</h1>\n")
+
+    dod = create_definition_of_done("Create a multi-file guide with chapters.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files = [str(index), str(chapters / "01-introduction.html")]
+
+    assert all_planned_artifact_outputs_exist(dod, project_root=tmp_path) is False
 
 
 def test_build_verification_summary_keeps_concrete_missing_link_details() -> None:

@@ -702,6 +702,131 @@ async def test_tool_batch_runner_queues_duplicate_observation_nudge(
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_duplicate_read_keeps_root_declared_missing_html_output_active(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run for this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "guide"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    index.write_text(
+        '<a href="chapters/01-introduction.html">Intro</a>\n'
+        '<a href="chapters/02-installation.html">Install</a>\n'
+    )
+    chapter_one.write_text("<h1>Intro</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{index}`",
+                f"- `{chapters}/` (directory for chapter files)",
+            ]
+        )
+    )
+
+    messages = [
+        Message(
+            role=Role.ASSISTANT,
+            content="I should keep building the guide.",
+            tool_calls=[
+                ToolCall(
+                    id="read-index",
+                    name="read",
+                    arguments={"file_path": str(index)},
+                )
+            ],
+        ),
+    ]
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=messages,
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    context.session.current_task = f"Build the guide rooted at {index}."
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    tool_call = ToolCall(
+        id="read-dup-rooted",
+        name="read",
+        arguments={"file_path": str(index)},
+    )
+    duplicate_message = (
+        "[Skipped - duplicate action: Already read "
+        f"{index} recently without any intervening changes; "
+        "reuse the earlier read result instead of rereading]"
+    )
+    executor = FakeExecutor(
+        [
+            ToolExecutionOutcome(
+                tool_call=tool_call,
+                state=ToolExecutionState.DUPLICATE,
+                message=Message.tool_result_message(
+                    tool_call_id=tool_call.id,
+                    display_content=duplicate_message,
+                    result_content=duplicate_message,
+                ),
+                event_content=duplicate_message,
+                is_error=False,
+                result_output=duplicate_message,
+            )
+        ]
+    )
+
+    summary = TurnSummary(final_response="")
+    dod = create_definition_of_done("Create a multi-file HTML guide with chapters.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files = [str(index), str(chapter_one)]
+    dod.completed_items = ["Create chapter files with appropriate content"]
+    dod.pending_items.append("Create the remaining chapter files")
+
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert len(persistent_messages) == 1
+    assert "Create the remaining chapter files" in persistent_messages[0]
+    assert "Resume by creating `02-installation.html` now." in persistent_messages[0]
+    assert "All explicitly planned artifacts already exist on disk." not in persistent_messages[0]
+    assert ephemeral_messages == []
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_todo_write_does_not_regress_completed_file_todo(
     temp_dir: Path,
 ) -> None:

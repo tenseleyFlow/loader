@@ -788,6 +788,12 @@ def all_planned_artifact_outputs_exist(
         for target, expect_directory in targets
     ):
         return False
+    if _planned_html_outputs_declare_missing_files(
+        dod,
+        project_root=project_root,
+        targets=targets,
+    ):
+        return False
     if _substantive_multi_page_html_guide_is_incomplete(
         dod,
         project_root=project_root,
@@ -869,8 +875,11 @@ def collect_missing_declared_html_output_files(
     """Return missing HTML outputs already declared within the current artifact graph."""
 
     normalized_target = target.resolve(strict=False)
+    scope_target = normalized_target
+    if normalized_target.suffix.lower() in {".html", ".htm"}:
+        scope_target = normalized_target.parent
     artifact_root = _resolve_declared_html_artifact_root(
-        normalized_target,
+        scope_target,
         project_root=project_root.resolve(strict=False),
     )
     if artifact_root is None:
@@ -894,7 +903,7 @@ def collect_missing_declared_html_output_files(
                 continue
             try:
                 resolved_target.relative_to(artifact_root)
-                resolved_target.relative_to(normalized_target)
+                resolved_target.relative_to(scope_target)
             except ValueError:
                 continue
             key = str(resolved_target)
@@ -903,6 +912,36 @@ def collect_missing_declared_html_output_files(
             seen.add(key)
             missing_targets.append(resolved_target)
     return tuple(missing_targets)
+
+
+def _planned_html_outputs_declare_missing_files(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+    targets: list[tuple[Path, bool]],
+) -> bool:
+    if not _requires_multiple_html_pages(dod, project_root=project_root):
+        return False
+
+    seen_scopes: set[str] = set()
+    for target, expect_directory in targets:
+        if expect_directory:
+            scope_target = target
+        elif target.suffix.lower() in {".html", ".htm"}:
+            scope_target = target
+        else:
+            continue
+
+        scope_key = str(scope_target.resolve(strict=False))
+        if scope_key in seen_scopes:
+            continue
+        seen_scopes.add(scope_key)
+        if collect_missing_declared_html_output_files(
+            target=scope_target,
+            project_root=project_root,
+        ):
+            return True
+    return False
 
 
 def _infer_next_observed_output_file(
