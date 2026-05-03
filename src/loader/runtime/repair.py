@@ -1027,45 +1027,14 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
-            reference_line = self._known_reference_structure_line(
-                inferred_pending_target,
-                require_first_substantive_output=(
-                    has_confirmed_output_file_progress
-                    and not has_confirmed_substantive_output_file_progress
-                ),
-            )
-            if reference_line:
-                lines.append(reference_line)
-            reference_cues_line = self._known_reference_cues_line(
-                inferred_pending_target,
-                require_first_substantive_output=(
-                    has_confirmed_output_file_progress
-                    and not has_confirmed_substantive_output_file_progress
-                ),
-                retry_number=retry_number,
-            )
-            if reference_cues_line:
-                lines.append(reference_cues_line)
-            html_scaffold_line = self._known_existing_html_scaffold_line(
-                inferred_pending_target,
-                require_first_substantive_output=(
-                    has_confirmed_output_file_progress
-                    and not has_confirmed_substantive_output_file_progress
-                ),
-            )
-            if html_scaffold_line:
-                lines.append(html_scaffold_line)
-            html_starter_line = self._known_html_starter_shape_line(
-                inferred_pending_target,
-                require_first_substantive_output=(
-                    has_confirmed_output_file_progress
-                    and not has_confirmed_substantive_output_file_progress
-                ),
-                retry_number=retry_number,
+            self._append_concrete_html_write_cues(
+                lines,
+                target=inferred_pending_target,
                 outline_label=outline_label,
+                retry_number=retry_number,
+                has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+                has_confirmed_substantive_output_file_progress=has_confirmed_substantive_output_file_progress,
             )
-            if html_starter_line:
-                lines.append(html_starter_line)
             if todo_describes_aggregate_mutation(next_pending):
                 lines.insert(
                     1,
@@ -1166,45 +1135,14 @@ class ResponseRepairer:
                         lines.append(
                             f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                         )
-                    reference_line = self._known_reference_structure_line(
-                        next_output_file,
-                        require_first_substantive_output=(
-                            has_confirmed_output_file_progress
-                            and not has_confirmed_substantive_output_file_progress
-                        ),
-                    )
-                    if reference_line:
-                        lines.append(reference_line)
-                    reference_cues_line = self._known_reference_cues_line(
-                        next_output_file,
-                        require_first_substantive_output=(
-                            has_confirmed_output_file_progress
-                            and not has_confirmed_substantive_output_file_progress
-                        ),
-                        retry_number=retry_number,
-                    )
-                    if reference_cues_line:
-                        lines.append(reference_cues_line)
-                    html_scaffold_line = self._known_existing_html_scaffold_line(
-                        next_output_file,
-                        require_first_substantive_output=(
-                            has_confirmed_output_file_progress
-                            and not has_confirmed_substantive_output_file_progress
-                        ),
-                    )
-                    if html_scaffold_line:
-                        lines.append(html_scaffold_line)
-                    html_starter_line = self._known_html_starter_shape_line(
-                        next_output_file,
-                        require_first_substantive_output=(
-                            has_confirmed_output_file_progress
-                            and not has_confirmed_substantive_output_file_progress
-                        ),
-                        retry_number=retry_number,
+                    self._append_concrete_html_write_cues(
+                        lines,
+                        target=next_output_file,
                         outline_label=outline_label,
+                        retry_number=retry_number,
+                        has_confirmed_output_file_progress=has_confirmed_output_file_progress,
+                        has_confirmed_substantive_output_file_progress=has_confirmed_substantive_output_file_progress,
                     )
-                    if html_starter_line:
-                        lines.append(html_starter_line)
                     if _should_encourage_initial_version(
                         target=next_output_file,
                         has_confirmed_output_file_progress=has_confirmed_output_file_progress,
@@ -1298,6 +1236,61 @@ class ResponseRepairer:
                 )
             return lines
         return []
+
+    def _append_concrete_html_write_cues(
+        self,
+        lines: list[str],
+        *,
+        target: Path,
+        outline_label: str | None,
+        retry_number: int,
+        has_confirmed_output_file_progress: bool,
+        has_confirmed_substantive_output_file_progress: bool,
+    ) -> None:
+        first_substantive_output = (
+            has_confirmed_output_file_progress
+            and not has_confirmed_substantive_output_file_progress
+        )
+        reference_line = self._known_reference_structure_line(
+            target,
+            require_first_substantive_output=first_substantive_output,
+        )
+        if reference_line:
+            lines.append(reference_line)
+        reference_cues_line = self._known_reference_cues_line(
+            target,
+            require_first_substantive_output=first_substantive_output,
+            retry_number=retry_number,
+        )
+        if reference_cues_line:
+            lines.append(reference_cues_line)
+        html_scaffold_line = self._known_existing_html_scaffold_line(
+            target,
+            require_first_substantive_output=first_substantive_output,
+        )
+        if html_scaffold_line:
+            lines.append(html_scaffold_line)
+        sibling_scaffold_line = self._known_existing_html_sibling_scaffold_line(
+            target,
+            outline_label=outline_label,
+            require_existing_substantive_output=has_confirmed_substantive_output_file_progress,
+        )
+        if sibling_scaffold_line:
+            lines.append(sibling_scaffold_line)
+        html_starter_line = self._known_html_starter_shape_line(
+            target,
+            require_first_substantive_output=(
+                first_substantive_output
+                or (
+                    has_confirmed_substantive_output_file_progress
+                    and retry_number >= 4
+                )
+            ),
+            retry_number=retry_number,
+            outline_label=outline_label,
+        )
+        if html_starter_line:
+            lines.append(html_starter_line)
 
     def _infer_pending_item_output_target(
         self,
@@ -1539,6 +1532,27 @@ class ResponseRepairer:
             "the title, heading, and chapter body content."
         )
 
+    def _known_existing_html_sibling_scaffold_line(
+        self,
+        target: Path,
+        *,
+        outline_label: str | None,
+        require_existing_substantive_output: bool,
+    ) -> str | None:
+        if not require_existing_substantive_output:
+            return None
+        if target.suffix.lower() not in {".html", ".htm"}:
+            return None
+        sibling = self._best_known_existing_html_sibling(target)
+        if sibling is None:
+            return None
+        label = outline_label.strip() if outline_label and outline_label.strip() else target.stem
+        return (
+            f"Reuse the overall structure and navigation pattern from "
+            f"`{display_runtime_path(sibling)}` as the starting pattern for `{label}`; "
+            "adapt the title, heading, and body content to the new chapter."
+        )
+
     def _known_html_starter_shape_line(
         self,
         target: Path,
@@ -1566,6 +1580,32 @@ class ResponseRepairer:
         if candidate == normalized_target or not candidate.exists():
             return None
         return candidate
+
+    def _best_known_existing_html_sibling(self, target: Path) -> Path | None:
+        normalized_target = target.expanduser().resolve(strict=False)
+        if normalized_target.suffix.lower() not in {".html", ".htm"}:
+            return None
+        try:
+            siblings = [
+                candidate
+                for candidate in normalized_target.parent.iterdir()
+                if candidate.is_file()
+                and candidate != normalized_target
+                and candidate.suffix.lower() == normalized_target.suffix.lower()
+                and not _is_summary_artifact_path(candidate)
+            ]
+        except OSError:
+            return None
+        if not siblings:
+            return None
+        siblings.sort(
+            key=lambda candidate: (
+                candidate.stat().st_mtime if candidate.exists() else 0.0,
+                str(candidate),
+            ),
+            reverse=True,
+        )
+        return siblings[0]
 
     def _best_known_reference_path(self, target: Path) -> Path | None:
         normalized_target = target.expanduser().resolve(strict=False)

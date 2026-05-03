@@ -1736,6 +1736,92 @@ def test_empty_response_retry_maps_title_style_todo_to_html_graph_target(
     )
 
 
+def test_late_chapter_retry_reuses_existing_sibling_html_structure(
+    temp_dir: Path,
+) -> None:
+    context = build_context(
+        temp_dir=temp_dir,
+        use_react=False,
+    )
+    repairer = ResponseRepairer(context)
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    chapters.mkdir(parents=True)
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-introduction.html"
+    chapter_two = chapters / "02-installation.html"
+    chapter_three = chapters / "03-basic-configuration.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<html>",
+                '<a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a>',
+                '<a href="chapters/02-installation.html">Chapter 2: Installation</a>',
+                '<a href="chapters/03-basic-configuration.html">Chapter 3: Basic Configuration</a>',
+                "</html>",
+            ]
+        )
+        + "\n"
+    )
+    chapter_one.write_text("<html><body><h1>Chapter 1</h1></body></html>\n")
+    chapter_two.write_text("<html><body><h1>Chapter 2</h1></body></html>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                f"- `{chapter_three}`",
+                "",
+            ]
+        )
+    )
+
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.touched_files.extend([str(index_path), str(chapter_one), str(chapter_two)])
+    dod.completed_items.extend(
+        [
+            "Create index.html for nginx guide",
+            "Create first chapter file (01-introduction.html)",
+            "Create second chapter file (02-installation.html)",
+        ]
+    )
+    dod.pending_items.append("Create third chapter file (03-basic-configuration.html)")
+
+    decision = repairer.handle_empty_response(
+        task="Create a multi-file nginx guide.",
+        original_task=None,
+        empty_retry_count=4,
+        max_empty_retries=2,
+        dod=dod,
+    )
+
+    assert decision.should_continue is True
+    assert decision.retry_message is not None
+    assert (
+        "Reuse the overall structure and navigation pattern from "
+        f"`{display_runtime_path(chapter_two)}` as the starting pattern for "
+        "`Chapter 3: Basic Configuration`; adapt the title, heading, and body content "
+        "to the new chapter."
+        in decision.retry_message
+    )
+    assert (
+        "If you get stuck, start with `<title>Chapter 3: Basic Configuration</title>`, "
+        "`<h1>Chapter 3: Basic Configuration</h1>`, one introductory paragraph, a couple "
+        "of `<h2>` sections with short body text, and a back link to `../index.html`."
+        in decision.retry_message
+    )
+
+
 def test_empty_response_retry_reminds_model_to_resend_real_write_payload(
     temp_dir: Path,
 ) -> None:
