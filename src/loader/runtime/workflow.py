@@ -936,6 +936,7 @@ def infer_pending_todo_output_target(
         project_root=root,
         max_paths=12,
     )
+    planned_output_roots = _planned_output_roots_from_targets(planned_targets)
     planned_files = [
         target
         for target, expect_directory in planned_targets
@@ -953,6 +954,15 @@ def infer_pending_todo_output_target(
             for path in dod.touched_files
             if str(path).strip()
         ]
+        if planned_output_roots:
+            touched_paths = [
+                touched
+                for touched in touched_paths
+                if _path_within_planned_output_roots(
+                    touched.expanduser().resolve(strict=False),
+                    planned_output_roots,
+                )
+            ]
 
         for candidate in candidates:
             candidate_str = str(candidate)
@@ -1136,12 +1146,18 @@ def _pending_item_html_sources(
         project_root=project_root,
         max_paths=12,
     )
+    planned_output_roots = _planned_output_roots_from_targets(planned_targets)
     html_sources: list[Path] = []
     seen: set[str] = set()
 
     for raw_path in dod.touched_files:
         path = Path(raw_path).expanduser().resolve(strict=False)
         if path.suffix.lower() not in {".html", ".htm"}:
+            continue
+        if planned_output_roots and not _path_within_planned_output_roots(
+            path,
+            planned_output_roots,
+        ):
             continue
         key = str(path)
         if key in seen:
@@ -1159,6 +1175,39 @@ def _pending_item_html_sources(
         html_sources.append(target)
 
     return html_sources
+
+
+def _planned_output_roots_from_targets(
+    planned_targets: list[tuple[Path, bool]],
+) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for target, expect_directory in planned_targets:
+        root = (
+            target.expanduser().resolve(strict=False)
+            if expect_directory
+            else target.expanduser().resolve(strict=False).parent
+        )
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return tuple(roots)
+
+
+def _path_within_planned_output_roots(
+    candidate: Path,
+    roots: tuple[Path, ...],
+) -> bool:
+    normalized = candidate.expanduser().resolve(strict=False)
+    for root in roots:
+        try:
+            normalized.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def _normalize_pending_output_label(value: str) -> str:
