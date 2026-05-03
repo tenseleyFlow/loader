@@ -418,7 +418,7 @@ class ResponseRepairer:
             )
         else:
             first_line = f"Create `{concrete_target.name}` now."
-        compact_retry = retry_number >= 4
+        compact_retry = True
 
         lines = [
             first_line,
@@ -434,19 +434,6 @@ class ResponseRepairer:
         )
         if html_scaffold_line:
             lines.append(html_scaffold_line)
-        reference_line = self._known_reference_structure_line(
-            concrete_target,
-            require_first_substantive_output=True,
-        )
-        if reference_line and not compact_retry:
-            lines.append(reference_line)
-        reference_cues_line = self._known_reference_cues_line(
-            concrete_target,
-            require_first_substantive_output=True,
-            retry_number=retry_number,
-        )
-        if reference_cues_line and not compact_retry:
-            lines.append(reference_cues_line)
         html_starter_line = self._known_html_starter_shape_line(
             concrete_target,
             require_first_substantive_output=True,
@@ -455,14 +442,6 @@ class ResponseRepairer:
         )
         if html_starter_line:
             lines.append(html_starter_line)
-        html_template_line = self._known_html_starter_template_line(
-            concrete_target,
-            require_first_substantive_output=True,
-            retry_number=retry_number,
-            outline_label=outline_label,
-        )
-        if html_template_line:
-            lines.append(html_template_line)
         if (
             not compact_retry
             and _should_encourage_initial_version(
@@ -929,25 +908,6 @@ class ResponseRepairer:
                 lines.append(
                     f"Use the existing outline label `{outline_label}` for that file so it matches the current guide structure."
                 )
-            reference_line = self._known_reference_structure_line(
-                concrete_target,
-                require_first_substantive_output=(
-                    has_confirmed_output_file_progress
-                    and not has_confirmed_substantive_output_file_progress
-                ),
-            )
-            if reference_line:
-                lines.append(reference_line)
-            reference_cues_line = self._known_reference_cues_line(
-                concrete_target,
-                require_first_substantive_output=(
-                    has_confirmed_output_file_progress
-                    and not has_confirmed_substantive_output_file_progress
-                ),
-                retry_number=retry_number,
-            )
-            if reference_cues_line:
-                lines.append(reference_cues_line)
             html_scaffold_line = self._known_existing_html_scaffold_line(
                 concrete_target,
                 require_first_substantive_output=(
@@ -1257,19 +1217,6 @@ class ResponseRepairer:
             has_confirmed_output_file_progress
             and not has_confirmed_substantive_output_file_progress
         )
-        reference_line = self._known_reference_structure_line(
-            target,
-            require_first_substantive_output=first_substantive_output,
-        )
-        if reference_line:
-            lines.append(reference_line)
-        reference_cues_line = self._known_reference_cues_line(
-            target,
-            require_first_substantive_output=first_substantive_output,
-            retry_number=retry_number,
-        )
-        if reference_cues_line:
-            lines.append(reference_cues_line)
         html_scaffold_line = self._known_existing_html_scaffold_line(
             target,
             require_first_substantive_output=first_substantive_output,
@@ -1485,40 +1432,6 @@ class ResponseRepairer:
                 return first_line or None
         return None
 
-    def _known_reference_structure_line(
-        self,
-        target: Path,
-        *,
-        require_first_substantive_output: bool,
-    ) -> str | None:
-        if not require_first_substantive_output:
-            return None
-        reference = self._best_known_reference_path(target)
-        if reference is None:
-            return None
-        return (
-            f"You already read `{display_runtime_path(reference)}`; reuse its overall "
-            "structure as the starting pattern for this new file, then adapt the content "
-            "to the current target."
-        )
-
-    def _known_reference_cues_line(
-        self,
-        target: Path,
-        *,
-        require_first_substantive_output: bool,
-        retry_number: int,
-    ) -> str | None:
-        if not require_first_substantive_output or retry_number < 2:
-            return None
-        reference = self._best_known_reference_path(target)
-        if reference is None:
-            return None
-        cues = self._reference_content_cues(reference)
-        if not cues:
-            return None
-        return f"Reference cues from `{display_runtime_path(reference)}`: {cues}"
-
     def _known_existing_html_scaffold_line(
         self,
         target: Path,
@@ -1578,31 +1491,6 @@ class ResponseRepairer:
             "sections with short body text, and a back link to `../index.html`."
         )
 
-    def _known_html_starter_template_line(
-        self,
-        target: Path,
-        *,
-        require_first_substantive_output: bool,
-        retry_number: int,
-        outline_label: str | None,
-    ) -> str | None:
-        if not require_first_substantive_output or retry_number < 1:
-            return None
-        if target.suffix.lower() not in {".html", ".htm"}:
-            return None
-        label = outline_label.strip() if outline_label and outline_label.strip() else "this chapter"
-        snippet = (
-            "<!DOCTYPE html> <html lang=\"en\"> <head> <meta charset=\"UTF-8\"> "
-            f"<title>{label}</title> </head> <body> <div class=\"container\"> "
-            f"<h1>{label}</h1> <p>...</p> <h2>Overview</h2> <p>...</p> "
-            "<p><a href=\"../index.html\">← Back to Main Guide Index</a></p> "
-            "</div> </body> </html>"
-        )
-        return (
-            "If blanking continues, use this minimal HTML starter as the `content` value "
-            f"and adapt it: `{snippet}`."
-        )
-
     def _best_known_root_html_scaffold(self, target: Path) -> Path | None:
         normalized_target = target.expanduser().resolve(strict=False)
         if normalized_target.suffix.lower() not in {".html", ".htm"}:
@@ -1637,87 +1525,6 @@ class ResponseRepairer:
             reverse=True,
         )
         return siblings[0]
-
-    def _best_known_reference_path(self, target: Path) -> Path | None:
-        normalized_target = target.expanduser().resolve(strict=False)
-        target_tokens = {
-            token
-            for token in re.split(r"[^a-z0-9]+", normalized_target.stem.lower())
-            if token
-        }
-        target_number = _leading_numeric_prefix(normalized_target.stem)
-        messages = list(getattr(self.context.session, "messages", []) or [])
-        candidates: list[tuple[int, str, Path]] = []
-
-        for message in messages:
-            for tool_call in getattr(message, "tool_calls", []) or []:
-                if getattr(tool_call, "name", "") != "read":
-                    continue
-                raw_path = str(tool_call.arguments.get("file_path") or "").strip()
-                if not raw_path:
-                    continue
-                candidate = Path(raw_path).expanduser().resolve(strict=False)
-                if candidate == normalized_target or not candidate.suffix:
-                    continue
-                if candidate.suffix.lower() != normalized_target.suffix.lower():
-                    continue
-                score = 0
-                if candidate.name.lower() == normalized_target.name.lower():
-                    score += 8
-                if candidate.parent.name.lower() == normalized_target.parent.name.lower():
-                    score += 2
-                if target_number and _leading_numeric_prefix(candidate.stem) == target_number:
-                    score += 3
-                candidate_tokens = {
-                    token
-                    for token in re.split(r"[^a-z0-9]+", candidate.stem.lower())
-                    if token
-                }
-                score += min(3, len(target_tokens & candidate_tokens))
-                if score <= 0:
-                    continue
-                candidates.append((score, str(candidate), candidate))
-
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return candidates[0][2]
-
-    def _reference_content_cues(self, reference: Path) -> str | None:
-        try:
-            content = reference.read_text()
-        except OSError:
-            return None
-
-        suffix = reference.suffix.lower()
-        cues: list[str] = []
-        if suffix in {".html", ".htm"}:
-            for raw_line in content.splitlines():
-                stripped = " ".join(raw_line.strip().split())
-                if not stripped:
-                    continue
-                lowered = stripped.lower()
-                if not any(
-                    token in lowered
-                    for token in ("<title", "<h1", "<h2", "<p", "<li", "<a ")
-                ):
-                    continue
-                cues.append(_truncate_reference_cue(stripped))
-                if len(cues) >= 3:
-                    break
-        if not cues:
-            for raw_line in content.splitlines():
-                stripped = " ".join(raw_line.strip().split())
-                if not stripped:
-                    continue
-                if sum(ch.isalpha() for ch in stripped) < 6:
-                    continue
-                cues.append(_truncate_reference_cue(stripped))
-                if len(cues) >= 3:
-                    break
-        if not cues:
-            return None
-        return " | ".join(cues)
 
     @staticmethod
     def _mutation_tool_scaffold(path: Path, *, tool_name: str) -> str:
@@ -1759,19 +1566,4 @@ def _should_encourage_initial_version(
     has_confirmed_output_file_progress: bool,
     has_confirmed_substantive_output_file_progress: bool,
 ) -> bool:
-    if not has_confirmed_output_file_progress:
-        return True
-    if _is_summary_artifact_path(target):
-        return False
-    return not has_confirmed_substantive_output_file_progress
-
-
-def _leading_numeric_prefix(stem: str) -> str:
-    match = re.match(r"^(\d+)", stem)
-    return match.group(1) if match else ""
-
-
-def _truncate_reference_cue(value: str, *, max_chars: int = 96) -> str:
-    if len(value) <= max_chars:
-        return value
-    return value[: max_chars - 3].rstrip() + "..."
+    return not has_confirmed_output_file_progress

@@ -1091,7 +1091,7 @@ def test_empty_response_retry_uses_concrete_file_language_for_aggregate_chapter_
     )
     assert (
         "Write a compact but real initial version of this file now, then refine or expand it in later edits."
-        in decision.retry_message
+        not in decision.retry_message
     )
     assert "No narration, no TodoWrite, no rereads, and no empty response" in decision.retry_message
     assert "Follow the same full-payload one-file-at-a-time write pattern" not in decision.retry_message
@@ -1177,7 +1177,7 @@ def test_empty_response_retry_keeps_concrete_second_chapter_for_aggregate_chapte
     assert "Follow the same full-payload one-file-at-a-time write pattern" in decision.retry_message
 
 
-def test_empty_response_retry_reuses_known_reference_structure_for_first_substantive_file(
+def test_empty_response_retry_keeps_first_substantive_retry_lean(
     temp_dir: Path,
 ) -> None:
     context = build_context(
@@ -1249,11 +1249,6 @@ def test_empty_response_retry_reuses_known_reference_structure_for_first_substan
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        f"You already read `{display_runtime_path(reference_chapter)}`; reuse its overall structure "
-        "as the starting pattern for this new file, then adapt the content to the current target."
-        in decision.retry_message
-    )
-    assert (
         f"Reuse the existing `{display_runtime_path(index_path)}` head/style/container pattern "
         "for this chapter so the guide stays visually consistent; only adapt the title, heading, "
         "and chapter body content."
@@ -1265,9 +1260,13 @@ def test_empty_response_retry_reuses_known_reference_structure_for_first_substan
         "of `<h2>` sections with short body text, and a back link to `../index.html`."
         in decision.retry_message
     )
+    assert display_runtime_path(reference_chapter) not in decision.retry_message
+    assert "Reference cues from" not in decision.retry_message
+    assert "If blanking continues, use this minimal HTML starter" not in decision.retry_message
+    assert "Write a compact but real initial version of this file now" not in decision.retry_message
 
 
-def test_compact_first_substantive_retry_reuses_known_reference_structure(
+def test_late_first_substantive_retry_stays_lean(
     temp_dir: Path,
 ) -> None:
     context = build_context(
@@ -1339,16 +1338,6 @@ def test_compact_first_substantive_retry_reuses_known_reference_structure(
     assert decision.should_continue is True
     assert decision.retry_message is not None
     assert (
-        f"You already read `{display_runtime_path(reference_chapter)}`; reuse its overall structure "
-        "as the starting pattern for this new file, then adapt the content to the current target."
-        in decision.retry_message
-    )
-    assert (
-        f"Reference cues from `{display_runtime_path(reference_chapter)}`: "
-        "<h1>Chapter 1: Introduction to Fortran</h1>"
-        in decision.retry_message
-    )
-    assert (
         f"Reuse the existing `{display_runtime_path(index_path)}` head/style/container pattern "
         "for this chapter so the guide stays visually consistent; only adapt the title, heading, "
         "and chapter body content."
@@ -1360,11 +1349,10 @@ def test_compact_first_substantive_retry_reuses_known_reference_structure(
         "of `<h2>` sections with short body text, and a back link to `../index.html`."
         in decision.retry_message
     )
-    assert (
-        "If blanking continues, use this minimal HTML starter as the `content` value "
-        "and adapt it:"
-        in decision.retry_message
-    )
+    assert display_runtime_path(reference_chapter) not in decision.retry_message
+    assert "Reference cues from" not in decision.retry_message
+    assert "If blanking continues, use this minimal HTML starter" not in decision.retry_message
+    assert "Write a compact but real initial version of this file now" not in decision.retry_message
 
 
 def test_first_substantive_retry_activates_on_first_empty_turn(
@@ -1440,11 +1428,7 @@ def test_first_substantive_retry_activates_on_first_empty_turn(
     assert decision.retry_message is not None
     assert "Emit this tool shape now" in decision.retry_message
     assert "01-introduction.html" in decision.retry_message
-    assert (
-        "If blanking continues, use this minimal HTML starter as the `content` value "
-        "and adapt it:"
-        in decision.retry_message
-    )
+    assert "If blanking continues, use this minimal HTML starter" not in decision.retry_message
 
 
 def test_late_first_substantive_retry_trims_context_to_core_write_cues(
@@ -1530,19 +1514,14 @@ def test_late_first_substantive_retry_trims_context_to_core_write_cues(
         "of `<h2>` sections with short body text, and a back link to `../index.html`."
         in decision.retry_message
     )
-    assert (
-        "If blanking continues, use this minimal HTML starter as the `content` value "
-        "and adapt it:"
-        in decision.retry_message
-    )
     assert "<title>Chapter 1: Introduction to Nginx</title>" in decision.retry_message
-    assert '<p><a href="../index.html">← Back to Main Guide Index</a></p>' in decision.retry_message
     assert (
         f"You already read `{display_runtime_path(reference_chapter)}`; reuse its overall structure "
         "as the starting pattern for this new file, then adapt the content to the current target."
         not in decision.retry_message
     )
     assert "Reference cues from" not in decision.retry_message
+    assert "If blanking continues, use this minimal HTML starter" not in decision.retry_message
     assert "Write a compact but real initial version of this file now" not in decision.retry_message
 
 
@@ -2380,9 +2359,4 @@ def test_empty_response_retry_names_next_file_from_observed_sibling_directory(
         in decision.retry_message
     )
     assert "Next observed output pattern under `chapters/`" not in decision.retry_message
-    assert (
-        f"You already read `{display_runtime_path(reference_chapters / '01-introduction.html')}`; "
-        "reuse its overall structure as the starting pattern for this new file, then adapt the "
-        "content to the current target."
-        in decision.retry_message
-    )
+    assert display_runtime_path(reference_chapters / "01-introduction.html") not in decision.retry_message
