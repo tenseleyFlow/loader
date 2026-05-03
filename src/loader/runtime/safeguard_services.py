@@ -804,13 +804,22 @@ class PreActionValidator:
                 severity="error",
             )
 
-        html_index_result = self._validate_html_index_links(str(file_path), str(new_string))
+        prospective_content = self._prospective_edit_content(
+            str(file_path),
+            str(old_string),
+            str(new_string),
+        )
+
+        html_index_result = self._validate_html_index_links(
+            str(file_path),
+            prospective_content,
+        )
         if not html_index_result.valid:
             return html_index_result
 
         html_declared_target_result = self._validate_html_declared_target_set(
             str(file_path),
-            str(new_string),
+            prospective_content,
         )
         if not html_declared_target_result.valid:
             return html_declared_target_result
@@ -1014,6 +1023,8 @@ class PreActionValidator:
                     missing.append(href)
 
         if missing:
+            if self._allows_root_html_graph_seed(str(file_path), str(content), missing):
+                return ValidationResult(valid=True)
             preview = ", ".join(missing[:3])
             if len(missing) > 3:
                 preview += ", ..."
@@ -1028,6 +1039,71 @@ class PreActionValidator:
             )
 
         return ValidationResult(valid=True)
+
+    def _prospective_edit_content(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+    ) -> str:
+        if old_string == "":
+            return new_string
+
+        normalized = Path(file_path).expanduser()
+        try:
+            current = normalized.read_text()
+        except OSError:
+            return new_string
+
+        if old_string not in current:
+            return new_string
+        return current.replace(old_string, new_string, 1)
+
+    def _allows_root_html_graph_seed(
+        self,
+        file_path: str,
+        content: str,
+        missing: list[str],
+    ) -> bool:
+        normalized = Path(file_path).expanduser()
+        if normalized.suffix.lower() not in {".html", ".htm"}:
+            return False
+        if normalized.name.lower() != "index.html":
+            return False
+
+        root = self._resolve_html_artifact_root(normalized)
+        missing_after = self._collect_missing_local_html_targets(normalized, content)
+        if not missing_after:
+            return False
+        if len(missing_after) > len(self._collect_existing_missing_local_html_targets(normalized)):
+            return False
+
+        for href in missing:
+            resolved = (normalized.parent / href).resolve(strict=False)
+            relative = self._relative_html_target(root, resolved)
+            if relative is None:
+                return False
+        return True
+
+    def _collect_existing_missing_local_html_targets(self, file_path: Path) -> list[str]:
+        try:
+            current = file_path.read_text()
+        except OSError:
+            return []
+        return self._collect_missing_local_html_targets(file_path, current)
+
+    def _collect_missing_local_html_targets(
+        self,
+        file_path: Path,
+        content: str,
+    ) -> list[str]:
+        missing: list[str] = []
+        for href, resolved in self._collect_local_html_targets(file_path, content):
+            if resolved.exists():
+                continue
+            if href not in missing:
+                missing.append(href)
+        return missing
 
     def _validate_html_declared_target_set(
         self,

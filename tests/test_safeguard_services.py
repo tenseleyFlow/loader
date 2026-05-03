@@ -408,6 +408,39 @@ def test_pre_action_validator_blocks_index_edit_with_missing_chapter_href(tmp_pa
     assert "chapters/05-control-structures.html" in result.suggestion
 
 
+def test_pre_action_validator_allows_incomplete_root_index_to_reshape_missing_child_target(
+    tmp_path: Path,
+) -> None:
+    validator = PreActionValidator()
+    guide = tmp_path / "guide"
+    chapters = guide / "chapters"
+    chapters.mkdir(parents=True)
+    index = guide / "index.html"
+    index.write_text(
+        "\n".join(
+            [
+                '<li><a href="chapters/01-introduction.html">Chapter 1: Introduction to Nginx</a></li>',
+                '<li><a href="chapters/02-installation.html">Chapter 2: Installation on POSIX Systems</a></li>',
+                '<li><a href="chapters/03-configuration-basics.html">Chapter 3: Configuration Basics</a></li>',
+                "",
+            ]
+        )
+    )
+    (chapters / "01-introduction.html").write_text("<html></html>\n")
+    (chapters / "02-installation.html").write_text("<html></html>\n")
+
+    result = validator.validate(
+        "edit",
+        {
+            "file_path": str(index),
+            "old_string": '<li><a href="chapters/03-configuration-basics.html">Chapter 3: Configuration Basics</a></li>',
+            "new_string": '<li><a href="chapters/03-configuration.html">Chapter 3: Configuration Basics</a></li>',
+        },
+    )
+
+    assert result.valid is True
+
+
 def test_pre_action_validator_blocks_index_edit_with_title_mismatch(tmp_path) -> None:
     validator = PreActionValidator()
     index = tmp_path / "index.html"
