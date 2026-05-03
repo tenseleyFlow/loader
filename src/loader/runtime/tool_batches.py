@@ -32,7 +32,7 @@ from .logging import get_runtime_logger
 from .path_display import display_runtime_path
 from .policy_timeline import append_verification_timeline_entry
 from .recovery import RecoveryContext, detect_missing_mutation_payload
-from .repair_focus import extract_active_repair_context
+from .repair_focus import extract_active_repair_context, path_within_allowed_roots
 from .safeguard_services import extract_shell_text_rewrite_target
 from .tool_batch_checks import ToolBatchConfidenceGate, ToolBatchVerificationGate
 from .tool_batch_recovery import ToolBatchRecoveryController
@@ -118,6 +118,25 @@ _SUMMARY_ARTIFACT_NAMES = {
     "readme.rst",
     "readme.txt",
 }
+_OBSERVATION_TOOLS = frozenset({"read", "glob", "grep", "bash"})
+_READ_ONLY_BASH_PREFIXES = frozenset(
+    {"ls", "pwd", "find", "stat", "cat", "head", "tail", "rg", "grep"}
+)
+_MUTATING_BASH_FRAGMENTS = (
+    " >",
+    ">>",
+    "| tee",
+    "touch ",
+    "mkdir ",
+    "rm ",
+    "mv ",
+    "cp ",
+    "sed -i",
+    "perl -pi",
+    "git add",
+    "git commit",
+    "git apply",
+)
 
 
 @dataclass
@@ -325,6 +344,10 @@ class ToolBatchRunner:
                 self._queue_blocked_html_edit_nudge(tool_call, outcome.event_content)
             else:
                 self._queue_post_mutation_self_audit_nudge(tool_call, dod=dod)
+                self._queue_completed_artifact_observation_handoff_nudge(
+                    tool_call,
+                    dod=dod,
+                )
 
             should_continue = await self.verification_gate.should_continue(
                 tool_call=tool_call,
@@ -543,6 +566,77 @@ class ToolBatchRunner:
                 messages=list(getattr(self.context.session, "messages", []) or []),
             )
             + " Do not spend another turn rereading the file you just wrote or on TodoWrite alone."
+        )
+
+    def _queue_completed_artifact_observation_handoff_nudge(
+        self,
+        tool_call: ToolCall,
+        *,
+        dod: DefinitionOfDone,
+    ) -> None:
+        """Turn successful post-build audit reads into verify/finalize handoffs."""
+
+        if tool_call.name not in _OBSERVATION_TOOLS:
+            return
+        if dod.status in {"fixing", "done"}:
+            return
+        if extract_active_repair_context(self.context.session.messages) is not None:
+            return
+        if not all_planned_artifacts_exist(dod, project_root=self.context.project_root):
+            return
+
+        observed_paths = _extract_observation_paths(tool_call)
+        if not observed_paths:
+            return
+
+        planned_roots = _planned_output_roots(
+            dod,
+            project_root=self.context.project_root,
+        )
+        if not planned_roots:
+            return
+        if not all(path_within_allowed_roots(path, planned_roots) for path in observed_paths):
+            return
+
+        next_pending = preferred_pending_todo_item(
+            dod,
+            project_root=self.context.project_root,
+        )
+        verification_commands = dod.verification_commands or derive_verification_commands(
+            dod,
+            project_root=self.context.project_root,
+            task_statement=getattr(self.context.session, "current_task", "") or "",
+            supplement_existing=True,
+        )
+        roots_preview = ", ".join(f"`{root}`" for root in planned_roots[:2])
+        if len(planned_roots) > 2:
+            roots_preview += ", ..."
+
+        if next_pending and _todo_is_consistency_review_step(next_pending):
+            verification_suffix = (
+                " If no specific mismatch remains, move to verification now."
+                if verification_commands
+                else " If no specific mismatch remains, finish the task now."
+            )
+            self.context.queue_ephemeral_steering_message(
+                "All explicitly planned artifacts already exist. "
+                f"Continue with `{next_pending}` using the generated files under {roots_preview} "
+                "as the source of truth, but do not keep broad-rereading the output set. "
+                "If you already know a concrete mismatch, fix it directly."
+                + verification_suffix
+            )
+            return
+
+        verification_suffix = (
+            "Move to verification or final confirmation using the files already on disk."
+            if verification_commands
+            else "Finish the task using the files already on disk."
+        )
+        self.context.queue_ephemeral_steering_message(
+            "All explicitly planned artifacts already exist. "
+            f"Use the generated files under {roots_preview} as the source of truth and stop broad rereads. "
+            "If you already know a concrete mismatch, fix it directly. "
+            + verification_suffix
         )
 
     def _queue_blocked_shell_rewrite_nudge(self, tool_call: ToolCall) -> None:
@@ -1569,6 +1663,115 @@ class ToolBatchRunner:
 def _todo_is_consistency_review_step(item: str) -> bool:
     text = item.lower()
     return any(hint in text for hint in _CONSISTENCY_REVIEW_HINTS)
+
+
+def _planned_output_roots(
+    dod: DefinitionOfDone,
+    *,
+    project_root: Path,
+) -> tuple[str, ...]:
+    planned_roots: list[str] = []
+    seen_roots: set[str] = set()
+    for target, expect_directory in collect_planned_artifact_targets(
+        dod,
+        project_root=project_root,
+    ):
+        root = str(target if expect_directory else target.parent)
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
+        planned_roots.append(root)
+    return tuple(planned_roots)
+
+
+def _extract_observation_paths(tool_call: ToolCall) -> list[str]:
+    arguments = tool_call.arguments
+    if tool_call.name == "read":
+        file_path = str(arguments.get("file_path", "")).strip()
+        return [file_path] if file_path else []
+
+    if tool_call.name in {"glob", "grep"}:
+        candidates: list[str] = []
+        search_path = str(arguments.get("path", "")).strip()
+        if search_path:
+            anchored_path = _derive_search_anchor(
+                search_path,
+                str(arguments.get("pattern", "")).strip(),
+            )
+            candidates.append(anchored_path or search_path)
+        pattern = str(arguments.get("pattern", "")).strip()
+        if not search_path and pattern.startswith(("/", "~")):
+            candidates.append(str(Path(pattern).expanduser().parent))
+        return candidates
+
+    command = str(arguments.get("command", "")).strip()
+    if not _is_read_only_bash(command):
+        return []
+    return _extract_bash_paths(command)
+
+
+def _derive_search_anchor(search_path: str, pattern: str) -> str:
+    base = str(Path(search_path).expanduser())
+    normalized_pattern = pattern.strip()
+    if not normalized_pattern:
+        return base
+    if normalized_pattern.startswith(("~", "/")):
+        pattern_path = Path(normalized_pattern).expanduser()
+        try:
+            return str(pattern_path.parent.resolve(strict=False))
+        except Exception:
+            return str(pattern_path.parent)
+    if "/" in normalized_pattern:
+        prefix = normalized_pattern.rsplit("/", 1)[0].strip()
+        if prefix and prefix not in {".", ".."}:
+            joined = Path(base).joinpath(prefix).expanduser()
+            try:
+                return str(joined.resolve(strict=False))
+            except Exception:
+                return str(joined)
+    return base
+
+
+def _is_read_only_bash(command: str) -> bool:
+    normalized = " ".join(command.split())
+    if not normalized:
+        return False
+    if extract_shell_text_rewrite_target(normalized) is not None:
+        return False
+    if any(fragment in normalized for fragment in _MUTATING_BASH_FRAGMENTS):
+        return False
+    try:
+        argv = shlex.split(normalized)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    return argv[0] in _READ_ONLY_BASH_PREFIXES
+
+
+def _extract_bash_paths(command: str) -> list[str]:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return []
+    if not argv:
+        return []
+
+    command_name = argv[0]
+    if command_name == "pwd":
+        return [str(Path.cwd())]
+
+    paths: list[str] = []
+    for arg in argv[1:]:
+        if arg.startswith("-"):
+            continue
+        if command_name in {"ls", "stat", "cat", "head", "tail"}:
+            paths.append(arg)
+            continue
+        if command_name in {"find", "rg", "grep"}:
+            paths.append(str(Path.cwd()) if arg in {".", "./"} else arg)
+            break
+    return paths
 
 
 def _should_prioritize_missing_artifact(

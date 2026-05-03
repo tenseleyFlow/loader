@@ -1962,6 +1962,119 @@ async def test_tool_batch_runner_duplicate_read_after_plan_complete_ignores_stal
 
 
 @pytest.mark.asyncio
+async def test_tool_batch_runner_successful_read_after_plan_complete_pushes_review_handoff(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should not run for this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run for this scenario")
+
+    guide_root = temp_dir / "guides" / "nginx"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("<html></html>\n")
+    chapter_one.write_text("<h1>One</h1>\n")
+    chapter_two.write_text("<h1>Two</h1>\n")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}/`",
+                f"- `{chapters}/`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+        auto_recover=False,
+    )
+    persistent_messages: list[str] = []
+    ephemeral_messages: list[str] = []
+    context.queue_steering_message_callback = persistent_messages.append
+    context.queue_ephemeral_steering_message_callback = ephemeral_messages.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file nginx guide.")
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = [f"ls -la {guide_root}"]
+    sync_todos_to_definition_of_done(
+        dod,
+        [
+            {
+                "content": "Create 01-getting-started.html",
+                "active_form": "Creating 01-getting-started.html",
+                "status": "pending",
+            },
+            {
+                "content": "Ensure all files are properly linked and formatted consistently",
+                "active_form": "Reviewing guide consistency and linkage",
+                "status": "pending",
+            },
+        ],
+    )
+
+    tool_call = ToolCall(
+        id="read-built-review",
+        name="read",
+        arguments={"file_path": str(chapter_one)},
+    )
+    executor = FakeExecutor(
+        [tool_outcome(tool_call=tool_call, output=chapter_one.read_text(), is_error=False)]
+    )
+
+    summary = TurnSummary(final_response="")
+    await runner.execute_batch(
+        tool_calls=[tool_call],
+        tool_source="assistant",
+        pending_tool_calls_seen=set(),
+        emit=_noop_emit,
+        summary=summary,
+        dod=dod,
+        executor=executor,  # type: ignore[arg-type]
+        on_confirmation=None,
+        on_user_question=None,
+        emit_confirmation=None,
+        consecutive_errors=0,
+    )
+
+    assert persistent_messages == []
+    assert len(ephemeral_messages) == 1
+    message = ephemeral_messages[0]
+    assert "All explicitly planned artifacts already exist." in message
+    assert "Ensure all files are properly linked and formatted consistently" in message
+    assert "Create 01-getting-started.html" not in message
+    assert "do not keep broad-rereading the output set" in message
+    assert "If no specific mismatch remains, move to verification now." in message
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_runner_observation_handoff_pushes_mutation_step(
     temp_dir: Path,
 ) -> None:
