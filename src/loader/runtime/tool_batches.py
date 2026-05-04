@@ -639,6 +639,16 @@ class ToolBatchRunner:
             )
             return
 
+        if verification_commands:
+            self.context.set_workflow_mode("verify")
+            self.context.queue_steering_message(
+                "All explicitly planned artifacts already exist. "
+                f"Use the generated files under {roots_preview} as the source of truth and stop broad rereads. "
+                "If you already know a concrete mismatch, fix it directly. "
+                "Verification should run next. Do not reopen reference materials or keep auditing the same files."
+            )
+            return
+
         verification_suffix = (
             "Move to verification or final confirmation using the files already on disk."
             if verification_commands
@@ -1627,6 +1637,16 @@ class ToolBatchRunner:
                     "Use the current output files as the source of truth, and do not restart "
                     "early discovery or reopen reference materials."
                     + verification_suffix
+                )
+                return
+
+            if verification_commands:
+                self.context.set_workflow_mode("verify")
+                self.context.queue_steering_message(
+                    "Todo tracking is updated. All explicitly planned artifacts now exist on disk. "
+                    "Verification should run next. Use the current output files as the source of truth, "
+                    "and do not restart discovery, reopen reference materials, or spend another turn "
+                    "on TodoWrite alone."
                 )
                 return
 
