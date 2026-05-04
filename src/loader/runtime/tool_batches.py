@@ -792,7 +792,11 @@ class ToolBatchRunner:
     ) -> None:
         """Keep post-build review anchored to the generated artifact set."""
 
-        if "[Blocked - completed artifact set scope:" not in event_content:
+        blocked_completed_scope = (
+            "[Blocked - completed artifact set scope:" in event_content
+        )
+        blocked_post_build_audit = "[Blocked - post-build audit loop:" in event_content
+        if not blocked_completed_scope and not blocked_post_build_audit:
             return
 
         planned_roots: list[str] = []
@@ -811,6 +815,14 @@ class ToolBatchRunner:
             dod,
             project_root=self.context.project_root,
         )
+        verification_commands = dod.verification_commands or derive_verification_commands(
+            dod,
+            project_root=self.context.project_root,
+            task_statement=getattr(self.context.session, "current_task", "") or "",
+            supplement_existing=True,
+        )
+        if verification_commands:
+            self.context.set_workflow_mode("verify")
         roots_preview = ", ".join(f"`{root}`" for root in planned_roots[:2])
         if len(planned_roots) > 2:
             roots_preview += ", ..."
@@ -820,6 +832,11 @@ class ToolBatchRunner:
                 f"Stay within the current output roots under {roots_preview} and continue "
                 f"with `{next_pending}` using the generated files as the source of truth. "
                 "Do not reopen earlier reference materials."
+                + (
+                    " Verification should run next using those generated files."
+                    if verification_commands
+                    else ""
+                )
             )
             return
 

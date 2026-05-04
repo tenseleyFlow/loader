@@ -6132,9 +6132,82 @@ def test_tool_batch_runner_blocked_completed_artifact_scope_nudge_prefers_verifi
     )
 
     assert queued
+    assert context.workflow_mode == "verify"
     assert "All explicitly planned artifacts already exist." in queued[0]
     assert "Verify all guide files are linked and complete" in queued[0]
     assert "Do not reopen earlier reference materials." in queued[0]
+    assert "Verification should run next" in queued[0]
+
+
+def test_tool_batch_runner_blocked_post_build_audit_nudge_switches_to_verify(
+    temp_dir: Path,
+) -> None:
+    async def assess_confidence(
+        tool_name: str,
+        tool_args: dict,
+        context: str,
+    ) -> ConfidenceAssessment:
+        raise AssertionError("Confidence scoring should be disabled in this scenario")
+
+    async def verify_action(
+        tool_name: str,
+        tool_args: dict,
+        result: str,
+        expected: str = "",
+    ) -> ActionVerification:
+        raise AssertionError("Verification should not run in this scenario")
+
+    guide_root = temp_dir / "guide"
+    chapters = guide_root / "chapters"
+    guide_root.mkdir(parents=True)
+    chapters.mkdir()
+    index_path = guide_root / "index.html"
+    chapter_one = chapters / "01-getting-started.html"
+    chapter_two = chapters / "02-installation.html"
+    index_path.write_text("index")
+    chapter_one.write_text("one")
+    chapter_two.write_text("two")
+
+    implementation_plan = temp_dir / "implementation.md"
+    implementation_plan.write_text(
+        "\n".join(
+            [
+                "# Implementation Plan",
+                "",
+                "## File Changes",
+                f"- `{guide_root}`",
+                f"- `{chapters}`",
+                f"- `{index_path}`",
+                f"- `{chapter_one}`",
+                f"- `{chapter_two}`",
+                "",
+            ]
+        )
+    )
+
+    context = build_context(
+        temp_dir=temp_dir,
+        messages=[],
+        safeguards=FakeSafeguards(),
+        assess_confidence=assess_confidence,
+        verify_action=verify_action,
+    )
+    queued: list[str] = []
+    context.queue_steering_message_callback = queued.append
+    runner = ToolBatchRunner(context, DefinitionOfDoneStore(temp_dir))
+    dod = create_definition_of_done("Create a multi-file guide from a reference")
+    dod.implementation_plan = str(implementation_plan)
+    dod.verification_commands = [f"ls -la {guide_root}"]
+
+    runner._queue_blocked_completed_artifact_scope_nudge(
+        "[Blocked - post-build audit loop: all explicitly planned artifacts already exist.]",
+        dod=dod,
+    )
+
+    assert queued
+    assert context.workflow_mode == "verify"
+    assert "All explicitly planned artifacts already exist." in queued[0]
+    assert "move to verification or final confirmation" in queued[0]
 
 
 def test_tool_batch_runner_blocked_html_declared_target_nudge_uses_closest_declared_target(
