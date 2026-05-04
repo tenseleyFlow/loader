@@ -2915,7 +2915,7 @@ async def test_tool_batch_runner_redirects_post_write_self_audit_to_next_missing
 
 
 @pytest.mark.asyncio
-async def test_tool_batch_runner_softens_first_file_handoff_after_recovery_prompt(
+async def test_tool_batch_runner_preserves_first_file_handoff_after_recovery_prompt(
     temp_dir: Path,
 ) -> None:
     async def assess_confidence(
@@ -3025,9 +3025,9 @@ async def test_tool_batch_runner_softens_first_file_handoff_after_recovery_promp
         consecutive_errors=0,
     )
 
-    assert persistent_messages == []
-    assert ephemeral_messages
-    message = ephemeral_messages[-1]
+    assert persistent_messages
+    assert ephemeral_messages == []
+    message = persistent_messages[-1]
     assert "Next step: create `01-introduction.html`." in message
     assert "Write a compact but real initial version of that file now" not in message
 

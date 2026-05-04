@@ -1479,7 +1479,16 @@ class ToolBatchRunner:
             project_root=self.context.project_root,
         )
         session_messages = list(getattr(self.context.session, "messages", []) or [])
-        if use_persistent_handoff and _recent_recovery_prompt(session_messages):
+        if (
+            use_persistent_handoff
+            and _recent_recovery_prompt(session_messages)
+            and not _should_preserve_first_child_handoff_after_recovery(
+                tool_call=tool_call,
+                resume_target=resume_target,
+                dod=dod,
+                project_root=self.context.project_root,
+            )
+        ):
             use_persistent_handoff = False
         queue_message = (
             self.context.queue_steering_message
@@ -2163,6 +2172,27 @@ def _should_use_persistent_missing_artifact_handoff(
     *,
     project_root: Path,
 ) -> bool:
+    return _confirmed_substantive_file_artifact_count(
+        dod,
+        project_root=project_root,
+    ) == 0
+
+
+def _should_preserve_first_child_handoff_after_recovery(
+    *,
+    tool_call: ToolCall,
+    resume_target: Path | None,
+    dod: DefinitionOfDone,
+    project_root: Path,
+) -> bool:
+    if resume_target is None or not resume_target.suffix or _is_summary_artifact_path(resume_target):
+        return False
+    raw_target = str(tool_call.arguments.get("file_path", "")).strip()
+    if not raw_target:
+        return False
+    written_target = Path(raw_target).expanduser().resolve(strict=False)
+    if not _is_summary_artifact_path(written_target):
+        return False
     return _confirmed_substantive_file_artifact_count(
         dod,
         project_root=project_root,
